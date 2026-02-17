@@ -1,0 +1,5 @@
+firebase-functions
+firebase-admin
+openpyxl
+ortools
+# v5.0 - Frontend mantigi ile uyumlu OR-Tools
