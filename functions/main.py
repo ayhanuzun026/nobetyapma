@@ -564,7 +564,7 @@ def get_days_in_month(yil, ay):
 
 def gun_adi_bul(yil, ay, gun, resmi_tatiller):
     for rt in resmi_tatiller:
-        if int(rt.get('gun', 0)) == gun:
+        if _safe_int(rt.get('gun', 0), 0) == gun:
             tip = rt.get('tip', '')
             if tip == "pzr": return "Pazar"
             if tip == "cmt": return "Cumartesi"
@@ -573,6 +573,69 @@ def gun_adi_bul(yil, ay, gun, resmi_tatiller):
     dt = date(yil, ay, gun)
     gunler = ["Pazartesi", "Sali", "Carsamba", "Persembe", "Cuma", "Cumartesi", "Pazar"]
     return gunler[dt.weekday()]
+
+
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        try:
+            return int(float(value))
+        except (ValueError, TypeError):
+            return default
+
+
+def _extract_mazeret_gunleri(personel_data: Dict) -> Set[int]:
+    mazeretler = set()
+    for key in ['mazeretler', 'yillikIzinler', 'nobetIzinleri']:
+        raw = personel_data.get(key, [])
+        if isinstance(raw, list):
+            for x in raw:
+                try:
+                    mazeretler.add(int(x))
+                except (ValueError, TypeError):
+                    continue
+        elif isinstance(raw, dict):
+            for k in raw.keys():
+                try:
+                    mazeretler.add(int(k))
+                except (ValueError, TypeError):
+                    continue
+    return mazeretler
+
+
+def _resolve_personel_id(raw_ref, personeller, require_existing=True):
+    if raw_ref is None:
+        return None
+
+    if isinstance(raw_ref, str):
+        ref = raw_ref.strip()
+        if not ref:
+            return None
+        for p in personeller:
+            if getattr(p, "ad", None) == ref:
+                return getattr(p, "id", None)
+        raw_ref = ref
+
+    normalized = normalize_id(raw_ref)
+    if not require_existing:
+        return normalized
+
+    for p in personeller:
+        if ids_match(getattr(p, "id", None), normalized):
+            return getattr(p, "id", None)
+    return None
+
+
+def _find_duplicate_personel_ids(personeller) -> List[int]:
+    seen = set()
+    duplicates = []
+    for p in personeller:
+        pid = getattr(p, "id", None)
+        if pid in seen and pid not in duplicates:
+            duplicates.append(pid)
+        seen.add(pid)
+    return duplicates
 
 
 def create_excel(yil, ay, yonetici: NobetYoneticisi):
@@ -702,15 +765,15 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             if not ad:
                 continue
 
-            hici = int(p_data.get("hici", 0))
-            prs = int(p_data.get("prs", 0))
-            cum = int(p_data.get("cum", 0))
-            cmt = int(p_data.get("cmt", 0))
-            pzr = int(p_data.get("pzr", 0))
+            hici = _safe_int(p_data.get("hici", 0), 0)
+            prs = _safe_int(p_data.get("prs", 0), 0)
+            cum = _safe_int(p_data.get("cum", 0), 0)
+            cmt = _safe_int(p_data.get("cmt", 0), 0)
+            pzr = _safe_int(p_data.get("pzr", 0), 0)
             toplam = hici + prs + cum + cmt + pzr
 
             devir = p_data.get("devir", {})
-            yillik_toplam = int(p_data.get("yillikToplam", 0))
+            yillik_toplam = _safe_int(p_data.get("yillikToplam", 0), 0)
 
             # Rol kotaları
             rol_kotalari = {}
@@ -724,40 +787,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
                     except (ValueError, TypeError):
                         pass
 
-            # Mazeretler - güvenli parse
-            mazeretler = set()
-            maz_raw = p_data.get("mazeretler", [])
-            if isinstance(maz_raw, list):
-                for x in maz_raw:
-                    if x is not None:
-                        try:
-                            mazeretler.add(int(x))
-                        except (ValueError, TypeError):
-                            pass
-            elif isinstance(maz_raw, dict):
-                for k in maz_raw.keys():
-                    try:
-                        mazeretler.add(int(k))
-                    except (ValueError, TypeError):
-                        pass
-
-            # Yıllık izinler ve nöbet izinleri de mazeret sayılır
-            yillik_izin = p_data.get("yillikIzinler", [])
-            nobet_izni = p_data.get("nobetIzinleri", [])
-            if isinstance(yillik_izin, list):
-                for x in yillik_izin:
-                    if x is not None:
-                        try:
-                            mazeretler.add(int(x))
-                        except (ValueError, TypeError):
-                            pass
-            if isinstance(nobet_izni, list):
-                for x in nobet_izni:
-                    if x is not None:
-                        try:
-                            mazeretler.add(int(x))
-                        except (ValueError, TypeError):
-                            pass
+            mazeretler = _extract_mazeret_gunleri(p_data)
 
             personel = Personel(
                 id=normalize_id(p_data.get("id", idx)),
@@ -775,6 +805,17 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             personel.yillik_toplam = yillik_toplam
             personeller.append(personel)
 
+        duplicate_ids = _find_duplicate_personel_ids(personeller)
+        if duplicate_ids:
+            return https_fn.Response(
+                json.dumps({
+                    "error": "Duplicate personel ID",
+                    "duplicateIds": duplicate_ids
+                }),
+                status=400,
+                headers=headers
+            )
+
         # Yönetici oluştur
         yonetici = NobetYoneticisi(
             personeller=personeller,
@@ -791,7 +832,8 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         manuel_atamalar = data.get("manuelAtamalar", [])
         for m in manuel_atamalar:
             p_ad = m.get("personel") or m.get("personelAd")
-            gun = int(m.get("gun", 0))
+            p_raw_id = m.get("personelId")
+            gun = _safe_int(m.get("gun", 0), 0)
 
             # BUG FIX (A): gorevId ile doğru slot'u bul (sıralama değişse bile)
             gorev_id = m.get("gorevId")
@@ -801,7 +843,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             if gorev_id is not None:
                 # Yeni format: gorevId ile bul
                 for idx, g in enumerate(gorev_objs):
-                    if g.id == gorev_id:
+                    if ids_match(g.id, gorev_id):
                         gorev_idx = idx
                         break
 
@@ -813,11 +855,17 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
                         break
 
             if gorev_idx is None:
-                # Eski format fallback
-                gorev_idx = int(m.get("gorevIdx", 0))
+                gorev_idx = _safe_int(m.get("slotIdx"), None)
 
-            kisi = next((p for p in personeller if p.ad == p_ad), None)
-            if kisi and 1 <= gun <= days_in_month and gorev_idx is not None and gorev_idx < len(gorev_objs):
+            if gorev_idx is None:
+                # Eski format fallback
+                gorev_idx = _safe_int(m.get("gorevIdx"), None)
+
+            kisi_id = _resolve_personel_id(p_raw_id, personeller, require_existing=True)
+            if kisi_id is None:
+                kisi_id = _resolve_personel_id(p_ad, personeller, require_existing=True)
+            kisi = next((p for p in personeller if ids_match(p.id, kisi_id)), None)
+            if kisi and 1 <= gun <= days_in_month and gorev_idx is not None and 0 <= gorev_idx < len(gorev_objs):
                 if yonetici.cizelge[gun][gorev_idx] is None:
                     yonetici.cizelge[gun][gorev_idx] = kisi.ad
                     yonetici.manuel_atamalar_set.add((gun, gorev_idx))
@@ -912,11 +960,12 @@ def _gun_tipi_hesapla(yil: int, ay: int, gun: int, resmi_tatiller: list) -> str:
     """Gün tipini hesapla (hici, prs, cum, cmt, pzr)"""
     # Önce resmi tatillere bak
     for rt in resmi_tatiller:
-        if int(rt.get('gun', 0)) == gun:
+        if _safe_int(rt.get('gun', 0), 0) == gun:
             tip = rt.get('tip', '')
             if tip == 'pzr': return 'pzr'
             if tip == 'cmt': return 'cmt'
             if tip == 'cum': return 'cum'
+            if tip == 'prs': return 'prs'
 
     # Normal gün hesapla
     dt = date(yil, ay, gun)
@@ -959,9 +1008,9 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
                 status=400, headers=headers
             )
 
-        yil = int(data.get("yil", 2025))
-        ay = int(data.get("ay", 1))
-        slot_sayisi = int(data.get("slotSayisi", 5))
+        yil = _safe_int(data.get("yil", 2025), 2025)
+        ay = _safe_int(data.get("ay", 1), 1)
+        slot_sayisi = _safe_int(data.get("slotSayisi", 5), 5)
         resmi_tatiller = data.get("resmiTatiller", [])
 
         gun_sayisi = get_days_in_month(yil, ay)
@@ -977,12 +1026,7 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
             if not p_data.get("ad"):
                 continue
 
-            # Mazeretleri birleştir
-            mazeretler = set()
-            for key in ['mazeretler', 'yillikIzinler', 'nobetIzinleri']:
-                raw = p_data.get(key, [])
-                if isinstance(raw, list):
-                    mazeretler.update(int(x) for x in raw if x)
+            mazeretler = _extract_mazeret_gunleri(p_data)
 
             # Yıllık gerçekleşen
             yillik_gerceklesen = {}
@@ -1001,6 +1045,17 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
                 kisitli_gorev=p_data.get("kisitliGorev"),
                 yillik_gerceklesen=yillik_gerceklesen
             ))
+
+        duplicate_ids = _find_duplicate_personel_ids(personeller)
+        if duplicate_ids:
+            return https_fn.Response(
+                json.dumps({
+                    "error": "Duplicate personel ID",
+                    "duplicateIds": duplicate_ids
+                }),
+                status=400,
+                headers=headers
+            )
 
         # Kapasite hesapla
         sonuc = kapasite_hesapla(
@@ -1051,39 +1106,17 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             )
 
         # Parametreleri al
-        gun_sayisi = data.get("gunSayisi", 31)
+        gun_sayisi = _safe_int(data.get("gunSayisi", 31), 31)
         gun_tipleri_raw = data.get("gunTipleri", {})
         gun_tipleri = {int(k): v for k, v in gun_tipleri_raw.items()}
-        ara_gun = data.get("araGun", 2)
+        ara_gun = _safe_int(data.get("araGun", 2), 2)
         saat_degerleri = data.get("saatDegerleri", None)
 
         # Personelleri dönüştür
         personeller = []
         for p_data in data.get("personeller", []):
-            # ID'yi int'e standardize et
-            raw_id = p_data.get("id", len(personeller))
-            try:
-                pid = int(float(raw_id))
-            except (ValueError, TypeError):
-                pid = len(personeller)
-
-            # Mazeretleri birleştir (tüm kaynaklardan)
-            mazeret_set = set()
-            for key in ['mazeretler', 'yillikIzinler', 'nobetIzinleri']:
-                raw = p_data.get(key, [])
-                if isinstance(raw, list):
-                    for m in raw:
-                        if m is not None:
-                            try:
-                                mazeret_set.add(int(m))
-                            except (ValueError, TypeError):
-                                pass
-                elif isinstance(raw, dict):
-                    for k in raw.keys():
-                        try:
-                            mazeret_set.add(int(k))
-                        except (ValueError, TypeError):
-                            pass
+            pid = normalize_id(p_data.get("id", len(personeller)))
+            mazeret_set = _extract_mazeret_gunleri(p_data)
 
             # Yıllık gerçekleşen
             yillik_gerceklesen = {}
@@ -1102,6 +1135,17 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
                 kisitli_gorev=p_data.get("kisitliGorev"),
                 yillik_gerceklesen=yillik_gerceklesen
             ))
+
+        duplicate_ids = _find_duplicate_personel_ids(personeller)
+        if duplicate_ids:
+            return https_fn.Response(
+                json.dumps({
+                    "error": "Duplicate personel ID",
+                    "duplicateIds": duplicate_ids
+                }),
+                status=400,
+                headers=headers
+            )
 
         # Görevleri dönüştür
         gorevler = []
@@ -1124,30 +1168,12 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
                     val = k_data.get(key)
                     if val is None:
                         continue
-                    
-                    # kisiler array olabilir
-                    if key == 'kisiler' and isinstance(val, list):
-                        for v in val:
-                            if isinstance(v, (int, float)):
-                                kisiler.append(int(float(v)))
-                            elif isinstance(v, str):
-                                try:
-                                    kisiler.append(int(float(v)))
-                                except (ValueError, TypeError):
-                                    for p in personeller:
-                                        if p.ad == v:
-                                            kisiler.append(p.id)
-                                            break
-                    elif isinstance(val, (int, float)):
-                        kisiler.append(int(float(val)))
-                    elif isinstance(val, str):
-                        try:
-                            kisiler.append(int(float(val)))
-                        except (ValueError, TypeError):
-                            for p in personeller:
-                                if p.ad == val:
-                                    kisiler.append(p.id)
-                                    break
+
+                    refs = val if (key == 'kisiler' and isinstance(val, list)) else [val]
+                    for ref in refs:
+                        pid = _resolve_personel_id(ref, personeller, require_existing=True)
+                        if pid is not None and pid not in kisiler:
+                            kisiler.append(pid)
                 
                 if len(kisiler) >= 2:
                     birlikte_kurallar.append(SolverKural(
@@ -1158,33 +1184,20 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
         # Görev kısıtlamalarını dönüştür
         gorev_kisitlamalari = {}
         for k_data in data.get("gorevKisitlamalari", []):
-            pid = k_data.get("personelId")
+            pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
             gorev_adi = k_data.get("gorevAdi")
             if pid is not None and gorev_adi:
-                try:
-                    gorev_kisitlamalari[int(float(pid))] = gorev_adi
-                except (ValueError, TypeError):
-                    pass
+                gorev_kisitlamalari[pid] = gorev_adi
 
         # Manuel atamaları dönüştür
         manuel_atamalar = []
         for m_data in data.get("manuelAtamalar", []):
             # Personel ID bul (isim veya ID olabilir)
-            p_id = None
             p_ad = m_data.get("personel") or m_data.get("personelAd")
             p_raw_id = m_data.get("personelId")
-            
-            if p_raw_id is not None:
-                try:
-                    p_id = int(float(p_raw_id))
-                except (ValueError, TypeError):
-                    pass
-            
-            if p_id is None and p_ad:
-                for p in personeller:
-                    if p.ad == p_ad:
-                        p_id = p.id
-                        break
+            p_id = _resolve_personel_id(p_raw_id, personeller, require_existing=True)
+            if p_id is None:
+                p_id = _resolve_personel_id(p_ad, personeller, require_existing=True)
             
             if p_id is None:
                 continue
@@ -1197,11 +1210,34 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             except (ValueError, TypeError):
                 continue
             
+            gorev_id = m_data.get("gorevId")
+            gorev_adi = m_data.get("gorevAdi")
+            slot_idx = None
+            if gorev_id is not None:
+                for g in gorevler:
+                    if ids_match(g.id, gorev_id):
+                        slot_idx = g.slot_idx
+                        break
+
+            if slot_idx is None and gorev_adi:
+                for g in gorevler:
+                    if g.ad == gorev_adi:
+                        slot_idx = g.slot_idx
+                        break
+
+            if slot_idx is None:
+                slot_idx = _safe_int(m_data.get("slotIdx"), None)
+            if slot_idx is None:
+                slot_idx = _safe_int(m_data.get("gorevIdx"), None)
+
+            if slot_idx is None or slot_idx < 0 or slot_idx >= len(gorevler):
+                continue
+
             manuel_atamalar.append(SolverAtama(
                 personel_id=p_id,
                 gun=gun,
-                slot_idx=int(m_data.get("slotIdx", 0)),
-                gorev_adi=m_data.get("gorevAdi", "")
+                slot_idx=slot_idx,
+                gorev_adi=gorev_adi or ""
             ))
 
         # Hedef hesapla
@@ -1263,11 +1299,11 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         if not data:
             return https_fn.Response(json.dumps({"error": "No data"}), status=400, headers=headers)
 
-        yil = int(data.get("yil", 2025))
-        ay = int(data.get("ay", 1))
-        slot_sayisi = int(data.get("slotSayisi", 6))
-        ara_gun = int(data.get("araGun", 2))
-        max_sure = int(data.get("maxSure", 300))
+        yil = _safe_int(data.get("yil", 2025), 2025)
+        ay = _safe_int(data.get("ay", 1), 1)
+        slot_sayisi = _safe_int(data.get("slotSayisi", 6), 6)
+        ara_gun = _safe_int(data.get("araGun", 2), 2)
+        max_sure = _safe_int(data.get("maxSure", 300), 300)
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
 
@@ -1324,33 +1360,25 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             pid = normalize_id(raw_id)
 
             # Mazeretleri birleştir
-            mazeretler = set()
-            for key in ['mazeretler', 'yillikIzinler', 'nobetIzinleri']:
-                raw = p_data.get(key, [])
-                if isinstance(raw, list):
-                    for x in raw:
-                        if x:
-                            try:
-                                mazeretler.add(int(x))
-                            except (ValueError, TypeError):
-                                pass
+            mazeretler = _extract_mazeret_gunleri(p_data)
 
             # Görev kısıtlaması - int ID ile güvenli karşılaştırma
             kisitli_gorev = None
             for k in data.get("gorevKisitlamalari", []):
-                k_pid = k.get("personelId", -1)
-                try:
-                    if normalize_id(k_pid) == pid:
-                        raw_gorev_adi = k.get("gorevAdi")
-                        # Frontend slot adı gönderebilir (ör: "AMEL #1"), base_name'e çevir
-                        kisitli_gorev = raw_gorev_adi
-                        for g in gorevler:
-                            if g.ad == raw_gorev_adi and g.base_name:
-                                kisitli_gorev = g.base_name
-                                break
-                        break
-                except (ValueError, TypeError):
-                    pass
+                k_pid = k.get("personelId")
+                k_pid_matches = ids_match(k_pid, pid)
+                if isinstance(k_pid, str) and k_pid.strip() == p_data.get("ad", ""):
+                    k_pid_matches = True
+
+                if k_pid_matches:
+                    raw_gorev_adi = k.get("gorevAdi")
+                    # Frontend slot adı gönderebilir (ör: "AMEL #1"), base_name'e çevir
+                    kisitli_gorev = raw_gorev_adi
+                    for g in gorevler:
+                        if g.ad == raw_gorev_adi and g.base_name:
+                            kisitli_gorev = g.base_name
+                            break
+                    break
 
             # Gün tipi hedefleri
             hedef_tipler = {}
@@ -1392,6 +1420,17 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 yillik_gerceklesen=yillik_gerceklesen
             ))
 
+        duplicate_ids = _find_duplicate_personel_ids(personeller)
+        if duplicate_ids:
+            return https_fn.Response(
+                json.dumps({
+                    "error": "Duplicate personel ID",
+                    "duplicateIds": duplicate_ids
+                }),
+                status=400,
+                headers=headers
+            )
+
         # Kuralları parse et
         kurallar = []
         for k_data in data.get("kurallar", []):
@@ -1404,32 +1443,16 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             kisiler_raw = k_data.get("kisiler", [])
             if isinstance(kisiler_raw, list):
                 for v in kisiler_raw:
-                    if isinstance(v, (int, float)):
-                        kisiler.append(int(float(v)))
-                    elif isinstance(v, str):
-                        try:
-                            kisiler.append(int(float(v)))
-                        except (ValueError, TypeError):
-                            for p in personeller:
-                                if p.ad == v:
-                                    kisiler.append(p.id)
-                                    break
+                    pid = _resolve_personel_id(v, personeller, require_existing=True)
+                    if pid is not None and pid not in kisiler:
+                        kisiler.append(pid)
             
             # Eski format için de kontrol et (p1, p2, p3)
             if len(kisiler) == 0:
                 for key in ['p1', 'p2', 'p3']:
-                    pid = k_data.get(key)
-                    if pid is not None:
-                        if isinstance(pid, (int, float)):
-                            kisiler.append(int(float(pid)))
-                        elif isinstance(pid, str):
-                            try:
-                                kisiler.append(int(float(pid)))
-                            except (ValueError, TypeError):
-                                for p in personeller:
-                                    if p.ad == pid:
-                                        kisiler.append(p.id)
-                                        break
+                    pid = _resolve_personel_id(k_data.get(key), personeller, require_existing=True)
+                    if pid is not None and pid not in kisiler:
+                        kisiler.append(pid)
 
             if len(kisiler) >= 2:
                 kurallar.append(SolverKural(tur=tur, kisiler=kisiler))
@@ -1437,33 +1460,42 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         # Manuel atamaları parse et
         manuel_atamalar = []
         for m_data in data.get("manuelAtamalar", []):
-            gun = int(m_data.get("gun", 0))
+            gun = _safe_int(m_data.get("gun", 0), 0)
             if gun < 1 or gun > gun_sayisi:
                 continue
 
             # Personel ID bul
             p_ad = m_data.get("personel") or m_data.get("personelAd")
-            p_id = None
-            for p in personeller:
-                if p.ad == p_ad:
-                    p_id = p.id
-                    break
+            p_id = _resolve_personel_id(m_data.get("personelId"), personeller, require_existing=True)
+            if p_id is None:
+                p_id = _resolve_personel_id(p_ad, personeller, require_existing=True)
 
             if p_id is None:
                 continue
 
-            # Slot bul
+            # Slot bul (gorevId > gorevAdi > slotIdx > gorevIdx)
+            gorev_id = m_data.get("gorevId")
             gorev_adi = m_data.get("gorevAdi")
             slot_idx = None
-            for g in gorevler:
-                if g.ad == gorev_adi:
-                    slot_idx = g.slot_idx
-                    break
+            if gorev_id is not None:
+                for g in gorevler:
+                    if ids_match(g.id, gorev_id):
+                        slot_idx = g.slot_idx
+                        break
+
+            if slot_idx is None and gorev_adi:
+                for g in gorevler:
+                    if g.ad == gorev_adi:
+                        slot_idx = g.slot_idx
+                        break
 
             if slot_idx is None:
-                slot_idx = int(m_data.get("gorevIdx", 0))
+                slot_idx = _safe_int(m_data.get("slotIdx"), None)
 
-            if slot_idx < len(gorevler):
+            if slot_idx is None:
+                slot_idx = _safe_int(m_data.get("gorevIdx"), None)
+
+            if slot_idx is not None and 0 <= slot_idx < len(gorevler):
                 manuel_atamalar.append(SolverAtama(
                     personel_id=p_id,
                     gun=gun,
@@ -1502,13 +1534,10 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
             gorev_kisitlamalari_dict = {}
             for k_data in data.get("gorevKisitlamalari", []):
-                pid_raw = k_data.get("personelId")
+                pid_raw = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
                 gorev_adi = k_data.get("gorevAdi")
                 if pid_raw is not None and gorev_adi:
-                    try:
-                        gorev_kisitlamalari_dict[int(float(pid_raw))] = gorev_adi
-                    except (ValueError, TypeError):
-                        pass
+                    gorev_kisitlamalari_dict[pid_raw] = gorev_adi
 
             hesaplayici = HedefHesaplayici(
                 gun_sayisi=gun_sayisi,

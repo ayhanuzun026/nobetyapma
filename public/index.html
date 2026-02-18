@@ -601,7 +601,7 @@ let personelListesi = [];
 let resmiTatiller = [];
 let kurallar = [];
 let gorevler = [];
-let manuelAtamalar = []; // { personelId, gun, gorevIdx, gorevAdi }
+let manuelAtamalar = []; // { personelId, gun, gorevId, gorevIdx, gorevAdi }
 let gorevKisitlamalari = []; // { personelId, gorevAdi } - kişi sadece bu göreve atanır
 let gorevKapasiteAyar = {}; // { gorevAdi: { toplam: X, hici: X, prs: X, cum: X, cmt: X, pzr: X } }
 let kisitlamaExclusive = false; // true = kısıtlamalı kişiler kendi aralarında döner
@@ -610,6 +610,7 @@ let isMouseDown = false;
 let hesaplananListe = null;
 let atananlar = {}; // Step 6 önizleme için (hesaplananListe.atanan ile senkron)
 let devirListesi = [];
+let personelIdCounter = 0;
 
 // Saat değerleri
 const SAAT_DEGER = { hici: 8, prs: 8, cum: 16, cmt: 24, pzr: 16 };
@@ -640,6 +641,15 @@ function escapeHtml(text) {
   const str = String(text);
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
   return str.replace(/[&<>"']/g, m => map[m]);
+}
+
+function yeniPersonelId() {
+  let aday = 0;
+  do {
+    personelIdCounter = (personelIdCounter + 1) % 1000;
+    aday = Date.now() * 1000 + personelIdCounter;
+  } while (personelListesi.some(p => String(p.id) === String(aday)));
+  return aday;
 }
 
 // Firebase
@@ -947,7 +957,7 @@ function gorevSutunSayisi(gorevAdi) {
 // ============================================
 function personelEkle(ad = '', gecmis = null) {
   personelListesi.push({
-    id: Date.now() + Math.random(),
+    id: yeniPersonelId(),
     ad: ad,
     // Yıllık geçmiş: { 2024: { 1: {hici:0, prs:0, ...}, 2: {...}, ... }, 2025: {...} }
     yillikGecmis: gecmis || {},
@@ -4008,12 +4018,21 @@ async function hedefHesaplaOrtools() {
   }));
   
   // Manuel atamaları hazırla
-  const manuelData = manuelAtamalar.map(m => ({
-    personelId: m.personelId,
-    gun: m.gun,
-    slotIdx: gorevler.findIndex(g => g.ad === m.gorevAdi),
-    gorevAdi: m.gorevAdi
-  }));
+  const manuelData = manuelAtamalar.map(m => {
+    const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => g.id === m.gorevId) : -1;
+    const slotByAd = gorevler.findIndex(g => g.ad === m.gorevAdi);
+    const slotByStored = Number.isFinite(Number(m.gorevIdx)) ? parseInt(m.gorevIdx, 10) : null;
+    const slotIdx = slotById >= 0 ? slotById : (slotByAd >= 0 ? slotByAd : slotByStored);
+
+    return {
+      personelId: m.personelId,
+      gun: m.gun,
+      gorevId: m.gorevId,
+      slotIdx: slotIdx,
+      gorevIdx: slotByStored,
+      gorevAdi: m.gorevAdi
+    };
+  });
   
   const requestData = {
     gunSayisi,
@@ -4151,11 +4170,19 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
   // Manuel atamalar
   const manuelAtamalarData = manuelAtamalar.map(m => {
     const p = personelListesi.find(x => String(x.id) === String(m.personelId));
+    const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => g.id === m.gorevId) : -1;
+    const slotByAd = gorevler.findIndex(g => g.ad === m.gorevAdi);
+    const slotByStored = Number.isFinite(Number(m.gorevIdx)) ? parseInt(m.gorevIdx, 10) : null;
+    const slotIdx = slotById >= 0 ? slotById : (slotByAd >= 0 ? slotByAd : slotByStored);
+
     return {
+      personelId: m.personelId,
       personel: p?.ad || '',
       gun: m.gun,
+      gorevId: m.gorevId,
+      slotIdx: slotIdx,
       gorevAdi: m.gorevAdi,
-      gorevIdx: m.gorevIdx
+      gorevIdx: slotByStored
     };
   });
   

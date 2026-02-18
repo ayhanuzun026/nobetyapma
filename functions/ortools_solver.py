@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional
 import time
 import math
+import hashlib
 
 # Lazy import for ortools (Firebase deploy timeout fix)
 cp_model = None
@@ -24,10 +25,37 @@ def normalize_id(pid) -> int:
     """ID'yi int'e normalize et"""
     if pid is None:
         return None
+    if isinstance(pid, bool):
+        return int(pid)
+
+    if isinstance(pid, int):
+        return pid
+
+    if isinstance(pid, float):
+        if math.isfinite(pid) and pid.is_integer():
+            return int(pid)
+        token = f"float:{pid:.15g}" if math.isfinite(pid) else f"float:{pid}"
+        return int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:15], 16)
+
+    raw = str(pid).strip()
+    if not raw:
+        return int(hashlib.sha1(b"text:").hexdigest()[:15], 16)
+
+    if raw.lstrip("+-").isdigit():
+        return int(raw, 10)
+
     try:
-        return int(float(pid))
+        numeric = float(raw)
+        if math.isfinite(numeric) and numeric.is_integer():
+            return int(numeric)
+        if math.isfinite(numeric):
+            token = f"float:{numeric:.15g}"
+            return int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:15], 16)
     except (ValueError, TypeError):
-        return int(str(pid), 10) if str(pid).isdigit() else hash(str(pid))
+        pass
+
+    token = f"text:{raw}"
+    return int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:15], 16)
 
 def ids_match(id1, id2) -> bool:
     """İki ID'nin eşit olup olmadığını kontrol et"""
