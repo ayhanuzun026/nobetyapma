@@ -7,7 +7,6 @@ import io
 import json
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional
-import itertools
 
 # OR-Tools sınıflarını dosya başında import et
 from ortools_solver import (
@@ -142,6 +141,7 @@ class NobetYoneticisi:
         self.kurallar = kurallar
         self.gorev_kisitlamalari = gorev_kisitlamalari or []
         self.cizelge = {d: [None] * len(self.gorevler) for d in range(1, days_in_month + 1)}
+        self.manuel_atamalar_set = set()  # (gun, slot_idx) ciftleri - backtracking koruması
 
         # Mazeret istatistikleri
         self.gun_mazeret_sayisi = {}
@@ -237,8 +237,9 @@ class NobetYoneticisi:
 
         # Görev kısıtlaması kontrolü
         for kisit in self.gorev_kisitlamalari:
-            if str(kisit.get('personelId')) == str(p.id):
-                if kisit.get('gorevAdi') != gorev.ad and kisit.get('gorevAdi') != gorev.base_name:
+            if ids_match(kisit.get('personelId'), p.id):
+                kisit_gorev = kisit.get('gorevAdi')
+                if kisit_gorev != gorev.ad and kisit_gorev != gorev.base_name:
                     return False
 
         # Ayrı tutma kuralı
@@ -383,30 +384,40 @@ class NobetYoneticisi:
                 if len(bos_slotlar) < len(grup_uyeleri):
                     continue
 
-                # Permütasyonlarla en iyi eşleşmeyi bul
+                # Greedy matching ile eşleşme (O(n*m) - permutasyon yerine)
+                # Önce kısıtlı kişileri (az seçenek olanları) yerleştir
                 en_iyi_atama = None
-                for sira in itertools.permutations(grup_uyeleri):
-                    gecici_atama = {}
-                    kullanilan = set()
-                    basarili = True
+                puanli_uyeler = []
+                for p in grup_uyeleri:
+                    uygun_slot_sayisi = sum(
+                        1 for s_idx, g_obj in bos_slotlar
+                        if p.kota_kontrol(gun_tipi, g_obj.ad, g_obj.base_name)
+                    )
+                    puanli_uyeler.append((p, uygun_slot_sayisi))
 
-                    for p in sira:
-                        yer_buldu = False
-                        for s_idx, g_obj in bos_slotlar:
-                            if s_idx in kullanilan:
-                                continue
-                            if p.kota_kontrol(gun_tipi, g_obj.ad, g_obj.base_name):
-                                gecici_atama[p.id] = (s_idx, g_obj)
-                                kullanilan.add(s_idx)
-                                yer_buldu = True
-                                break
-                        if not yer_buldu:
-                            basarili = False
+                # En az seçeneği olan kişi önce (kısıtlı olan önce yerleşsin)
+                puanli_uyeler.sort(key=lambda x: x[1])
+
+                gecici_atama = {}
+                kullanilan = set()
+                basarili = True
+
+                for p, _ in puanli_uyeler:
+                    yer_buldu = False
+                    for s_idx, g_obj in bos_slotlar:
+                        if s_idx in kullanilan:
+                            continue
+                        if p.kota_kontrol(gun_tipi, g_obj.ad, g_obj.base_name):
+                            gecici_atama[p.id] = (s_idx, g_obj)
+                            kullanilan.add(s_idx)
+                            yer_buldu = True
                             break
-
-                    if basarili:
-                        en_iyi_atama = gecici_atama
+                    if not yer_buldu:
+                        basarili = False
                         break
+
+                if basarili:
+                    en_iyi_atama = gecici_atama
 
                 if en_iyi_atama:
                     for pid, (s_idx, g_obj) in en_iyi_atama.items():
@@ -417,7 +428,7 @@ class NobetYoneticisi:
                     yazilan_sayisi += 1
 
     def tekli_dagitim(self, min_ara_gun: int):
-        """Tekli atamaları yap"""
+        """Tekli atamaları yap - backtracking destekli"""
         sirali_gunler = self.gunleri_sirala()
 
         for gun in sirali_gunler:
@@ -433,6 +444,72 @@ class NobetYoneticisi:
                     self.cizelge[gun][slot_idx] = aday.ad
                     aday.nobet_yaz(gun, gun_tipi, gorev.ad, gorev.base_name)
                     bugun_atananlar.append(aday.ad)
+                elif min_ara_gun > 1:
+                    # Backtracking: aday bulunamazsa komşu günlerdeki atamaları geri al ve tekrar dene
+                    geri_alinan = self._backtrack_komsular(gun, slot_idx, gorev, min_ara_gun)
+                    if geri_alinan:
+                        bugun_atananlar = [x for x in self.cizelge[gun] if x is not None]
+                        aday = self.en_uygun_adayi_sec(gun, gun_tipi, gorev, min_ara_gun, bugun_atananlar)
+                        if aday:
+                            self.cizelge[gun][slot_idx] = aday.ad
+                            aday.nobet_yaz(gun, gun_tipi, gorev.ad, gorev.base_name)
+                            bugun_atananlar.append(aday.ad)
+
+    def _backtrack_komsular(self, gun: int, slot_idx: int, gorev: GorevTanim, min_ara_gun: int) -> bool:
+        """Komşu günlerdeki son 2 atamayı geri alarak yeni aday alanı aç"""
+        geri_alinan = False
+        # Önceki 2 gün içindeki atamalara bak
+        for geri_gun in range(max(1, gun - min_ara_gun), gun):
+            for geri_slot in range(len(self.gorevler) - 1, -1, -1):
+                # Manuel atamayı geri alma - sabitlenmiş atamayı koru
+                if (geri_gun, geri_slot) in self.manuel_atamalar_set:
+                    continue
+                atanan_ad = self.cizelge[geri_gun][geri_slot]
+                if atanan_ad is None:
+                    continue
+                # Bu kişiyi bul
+                kisi = None
+                for p in self.personeller:
+                    if p.ad == atanan_ad:
+                        kisi = p
+                        break
+                if kisi is None:
+                    continue
+                # Geri al
+                geri_gun_tipi = self._get_gun_tipi(geri_gun)
+                geri_gorev = self.gorevler[geri_slot]
+                self._atama_geri_al(kisi, geri_gun, geri_gun_tipi, geri_gorev)
+                self.cizelge[geri_gun][geri_slot] = None
+                geri_alinan = True
+                # Sadece bir atama geri al
+                return geri_alinan
+        return geri_alinan
+
+    def _atama_geri_al(self, p: Personel, gun: int, gun_tipi: str, gorev: GorevTanim):
+        """Bir atamayı geri al - personelin kotalarını güncelle"""
+        p.atanan_gunler.discard(gun)
+        p.kalan_toplam += 1
+
+        if gun_tipi == "hici":
+            p.kalan_hici += 1
+        elif gun_tipi == "persembe":
+            p.kalan_prs += 1
+        elif gun_tipi == "cuma":
+            p.kalan_cum += 1
+        elif gun_tipi == "cumartesi":
+            p.kalan_cmt += 1
+        elif gun_tipi == "pazar":
+            p.kalan_pzr += 1
+
+        kontrol_adi = gorev.base_name if gorev.base_name else gorev.ad
+        if kontrol_adi in p.kalan_roller:
+            p.kalan_roller[kontrol_adi] += 1
+
+        # son_nobet_gunu güncelle (en son atanan güne geri dön)
+        if p.atanan_gunler:
+            p.son_nobet_gunu = max(p.atanan_gunler)
+        else:
+            p.son_nobet_gunu = -999
 
     def son_vurus(self):
         """Kalan boşlukları en esnek kuralla doldur (ara gün = 1)"""
@@ -492,6 +569,7 @@ def gun_adi_bul(yil, ay, gun, resmi_tatiller):
             if tip == "pzr": return "Pazar"
             if tip == "cmt": return "Cumartesi"
             if tip == "cum": return "Cuma"
+            if tip == "prs": return "Persembe"
     dt = date(yil, ay, gun)
     gunler = ["Pazartesi", "Sali", "Carsamba", "Persembe", "Cuma", "Cumartesi", "Pazar"]
     return gunler[dt.weekday()]
@@ -643,27 +721,46 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
                         v = int(kota)
                         if v > 0:
                             rol_kotalari[gorev_adi] = v
-                    except:
+                    except (ValueError, TypeError):
                         pass
 
-            # Mazeretler
+            # Mazeretler - güvenli parse
             mazeretler = set()
             maz_raw = p_data.get("mazeretler", [])
             if isinstance(maz_raw, list):
-                mazeretler = set(int(x) for x in maz_raw if x)
+                for x in maz_raw:
+                    if x is not None:
+                        try:
+                            mazeretler.add(int(x))
+                        except (ValueError, TypeError):
+                            pass
             elif isinstance(maz_raw, dict):
-                mazeretler = set(int(k) for k in maz_raw.keys())
+                for k in maz_raw.keys():
+                    try:
+                        mazeretler.add(int(k))
+                    except (ValueError, TypeError):
+                        pass
 
             # Yıllık izinler ve nöbet izinleri de mazeret sayılır
             yillik_izin = p_data.get("yillikIzinler", [])
             nobet_izni = p_data.get("nobetIzinleri", [])
             if isinstance(yillik_izin, list):
-                mazeretler.update(int(x) for x in yillik_izin if x)
+                for x in yillik_izin:
+                    if x is not None:
+                        try:
+                            mazeretler.add(int(x))
+                        except (ValueError, TypeError):
+                            pass
             if isinstance(nobet_izni, list):
-                mazeretler.update(int(x) for x in nobet_izni if x)
+                for x in nobet_izni:
+                    if x is not None:
+                        try:
+                            mazeretler.add(int(x))
+                        except (ValueError, TypeError):
+                            pass
 
             personel = Personel(
-                id=int(p_data.get("id", idx)),
+                id=normalize_id(p_data.get("id", idx)),
                 ad=ad,
                 hedef_toplam=toplam,
                 hedef_hici=hici,
@@ -723,6 +820,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             if kisi and 1 <= gun <= days_in_month and gorev_idx is not None and gorev_idx < len(gorev_objs):
                 if yonetici.cizelge[gun][gorev_idx] is None:
                     yonetici.cizelge[gun][gorev_idx] = kisi.ad
+                    yonetici.manuel_atamalar_set.add((gun, gorev_idx))
                     g_obj = gorev_objs[gorev_idx]
                     gun_tipi = yonetici._get_gun_tipi(gun)
                     kisi.nobet_yaz(gun, gun_tipi, g_obj.ad, g_obj.base_name)
@@ -773,12 +871,17 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             excel_file,
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        blob.make_public()
+        # Signed URL ile güvenli erişim (1 saat geçerli)
+        signed_url = blob.generate_signed_url(
+            version="v4",
+            expiration=timedelta(hours=1),
+            method="GET"
+        )
 
         return https_fn.Response(
             json.dumps({
                 "basari": True,
-                "excelUrl": blob.public_url,
+                "excelUrl": signed_url,
                 "cizelge": sonuc_cizelge,
                 "kisiOzet": kisi_ozet,
                 "eksikAtamalar": eksik_atamalar,
@@ -888,11 +991,11 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
                 for key, val in yg_raw.items():
                     try:
                         yillik_gerceklesen[key] = int(val)
-                    except:
+                    except (ValueError, TypeError):
                         yillik_gerceklesen[key] = 0
 
             personeller.append(SolverPersonel(
-                id=int(p_data.get("id", len(personeller))),
+                id=normalize_id(p_data.get("id", len(personeller))),
                 ad=p_data.get("ad"),
                 mazeret_gunleri=mazeretler,
                 kisitli_gorev=p_data.get("kisitliGorev"),
@@ -957,14 +1060,13 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
         # Personelleri dönüştür
         personeller = []
         for p_data in data.get("personeller", []):
-            # BUG FIX: ID'yi float olarak koru (frontend float ID gönderiyor)
+            # ID'yi int'e standardize et
             raw_id = p_data.get("id", len(personeller))
-            pid = float(raw_id) if isinstance(raw_id, (int, float, str)) else float(len(personeller))
             try:
-                pid = float(raw_id)
-            except:
-                pid = float(len(personeller))
-            
+                pid = int(float(raw_id))
+            except (ValueError, TypeError):
+                pid = len(personeller)
+
             # Mazeretleri birleştir (tüm kaynaklardan)
             mazeret_set = set()
             for key in ['mazeretler', 'yillikIzinler', 'nobetIzinleri']:
@@ -974,13 +1076,13 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
                         if m is not None:
                             try:
                                 mazeret_set.add(int(m))
-                            except:
+                            except (ValueError, TypeError):
                                 pass
                 elif isinstance(raw, dict):
                     for k in raw.keys():
                         try:
                             mazeret_set.add(int(k))
-                        except:
+                        except (ValueError, TypeError):
                             pass
 
             # Yıllık gerçekleşen
@@ -990,7 +1092,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
                 for key, val in yg_raw.items():
                     try:
                         yillik_gerceklesen[key] = int(val)
-                    except:
+                    except (ValueError, TypeError):
                         yillik_gerceklesen[key] = 0
 
             personeller.append(SolverPersonel(
@@ -1027,25 +1129,21 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
                     if key == 'kisiler' and isinstance(val, list):
                         for v in val:
                             if isinstance(v, (int, float)):
-                                kisiler.append(float(v))
+                                kisiler.append(int(float(v)))
                             elif isinstance(v, str):
-                                # Önce string'i float'a çevirmeyi dene (ID olabilir)
                                 try:
-                                    kisiler.append(float(v))
-                                except ValueError:
-                                    # Float değilse isimden ID bul
+                                    kisiler.append(int(float(v)))
+                                except (ValueError, TypeError):
                                     for p in personeller:
                                         if p.ad == v:
                                             kisiler.append(p.id)
                                             break
                     elif isinstance(val, (int, float)):
-                        kisiler.append(float(val))
+                        kisiler.append(int(float(val)))
                     elif isinstance(val, str):
-                        # Önce string'i float'a çevirmeyi dene (ID olabilir)
                         try:
-                            kisiler.append(float(val))
-                        except ValueError:
-                            # Float değilse isimden ID bul
+                            kisiler.append(int(float(val)))
+                        except (ValueError, TypeError):
                             for p in personeller:
                                 if p.ad == val:
                                     kisiler.append(p.id)
@@ -1064,8 +1162,8 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             gorev_adi = k_data.get("gorevAdi")
             if pid is not None and gorev_adi:
                 try:
-                    gorev_kisitlamalari[float(pid)] = gorev_adi
-                except:
+                    gorev_kisitlamalari[int(float(pid))] = gorev_adi
+                except (ValueError, TypeError):
                     pass
 
         # Manuel atamaları dönüştür
@@ -1078,8 +1176,8 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             
             if p_raw_id is not None:
                 try:
-                    p_id = float(p_raw_id)
-                except:
+                    p_id = int(float(p_raw_id))
+                except (ValueError, TypeError):
                     pass
             
             if p_id is None and p_ad:
@@ -1096,7 +1194,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
                 continue
             try:
                 gun = int(gun)
-            except:
+            except (ValueError, TypeError):
                 continue
             
             manuel_atamalar.append(SolverAtama(
@@ -1171,6 +1269,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         ara_gun = int(data.get("araGun", 2))
         max_sure = int(data.get("maxSure", 300))
         resmi_tatiller = data.get("resmiTatiller", [])
+        saat_degerleri = data.get("saatDegerleri", None)
 
         gun_sayisi = get_days_in_month(yil, ay)
 
@@ -1220,9 +1319,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             if not p_data.get("ad"):
                 continue
 
-            # BUG FIX: ID'yi float olarak koru (frontend float ID gönderiyor)
+            # ID'yi güvenli şekilde normalize et
             raw_id = p_data.get("id", len(personeller))
-            pid = float(raw_id) if isinstance(raw_id, (int, float)) else float(len(personeller))
+            pid = normalize_id(raw_id)
 
             # Mazeretleri birleştir
             mazeretler = set()
@@ -1233,16 +1332,25 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                         if x:
                             try:
                                 mazeretler.add(int(x))
-                            except:
+                            except (ValueError, TypeError):
                                 pass
 
-            # Görev kısıtlaması - normalize_id ile güvenli karşılaştırma
+            # Görev kısıtlaması - int ID ile güvenli karşılaştırma
             kisitli_gorev = None
             for k in data.get("gorevKisitlamalari", []):
                 k_pid = k.get("personelId", -1)
-                if ids_match(k_pid, pid):
-                    kisitli_gorev = k.get("gorevAdi")
-                    break
+                try:
+                    if normalize_id(k_pid) == pid:
+                        raw_gorev_adi = k.get("gorevAdi")
+                        # Frontend slot adı gönderebilir (ör: "AMEL #1"), base_name'e çevir
+                        kisitli_gorev = raw_gorev_adi
+                        for g in gorevler:
+                            if g.ad == raw_gorev_adi and g.base_name:
+                                kisitli_gorev = g.base_name
+                                break
+                        break
+                except (ValueError, TypeError):
+                    pass
 
             # Gün tipi hedefleri
             hedef_tipler = {}
@@ -1251,7 +1359,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 if val is not None:
                     try:
                         hedef_tipler[tip] = int(val)
-                    except:
+                    except (ValueError, TypeError):
                         hedef_tipler[tip] = 0
 
             # Görev kotaları
@@ -1261,7 +1369,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 for gorev_adi, kota in gk_raw.items():
                     try:
                         gorev_kotalari[gorev_adi] = int(kota)
-                    except:
+                    except (ValueError, TypeError):
                         pass
 
             # YENİ: Yıllık gerçekleşen (önceki ayların toplamı)
@@ -1271,7 +1379,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 for key, val in yg_raw.items():
                     try:
                         yillik_gerceklesen[key] = int(val)
-                    except:
+                    except (ValueError, TypeError):
                         yillik_gerceklesen[key] = 0
 
             personeller.append(SolverPersonel(
@@ -1297,13 +1405,11 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             if isinstance(kisiler_raw, list):
                 for v in kisiler_raw:
                     if isinstance(v, (int, float)):
-                        kisiler.append(float(v))
+                        kisiler.append(int(float(v)))
                     elif isinstance(v, str):
-                        # Önce string'i float'a çevirmeyi dene (ID olabilir)
                         try:
-                            kisiler.append(float(v))
-                        except ValueError:
-                            # Float değilse isimden ID bul
+                            kisiler.append(int(float(v)))
+                        except (ValueError, TypeError):
                             for p in personeller:
                                 if p.ad == v:
                                     kisiler.append(p.id)
@@ -1315,11 +1421,11 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                     pid = k_data.get(key)
                     if pid is not None:
                         if isinstance(pid, (int, float)):
-                            kisiler.append(float(pid))
+                            kisiler.append(int(float(pid)))
                         elif isinstance(pid, str):
                             try:
-                                kisiler.append(float(pid))
-                            except ValueError:
+                                kisiler.append(int(float(pid)))
+                            except (ValueError, TypeError):
                                 for p in personeller:
                                     if p.ad == pid:
                                         kisiler.append(p.id)
@@ -1364,42 +1470,111 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                     slot_idx=slot_idx
                 ))
 
-        # Hedefleri hazırla - otomatik hesapla
-        toplam_slot = gun_sayisi * len(gorevler)
-        kisi_sayisi = len(personeller)
-        kisi_basi_hedef = toplam_slot // kisi_sayisi if kisi_sayisi > 0 else 0
-        kalan = toplam_slot % kisi_sayisi if kisi_sayisi > 0 else 0
-
-        hedefler = {}
-        for idx, p in enumerate(personeller):
-            # Frontend'den gelen hedef varsa kullan, yoksa otomatik hesapla
-            if p.hedef_tipler and sum(p.hedef_tipler.values()) > 0:
-                hedef_toplam = sum(p.hedef_tipler.values())
-            else:
-                # Mazeretli günleri çıkararak hesapla
-                musait_gun = gun_sayisi - len(p.mazeret_gunleri)
-                hedef_toplam = min(kisi_basi_hedef + (1 if idx < kalan else 0), musait_gun)
-
-            hedefler[p.id] = {
-                'hedef_toplam': hedef_toplam,
-                'hedef_tipler': p.hedef_tipler or {},
-                'gorev_kotalari': p.gorev_kotalari or {}
-            }
-
-        # Çözücüyü oluştur ve çöz
-        solver = NobetSolver(
-            gun_sayisi=gun_sayisi,
-            gun_tipleri=gun_tipleri,
-            personeller=personeller,
-            gorevler=gorevler,
-            kurallar=kurallar,
-            manuel_atamalar=manuel_atamalar,
-            hedefler=hedefler,
-            ara_gun=ara_gun,
-            max_sure_saniye=max_sure
+        # Hedefleri hazırla - HedefHesaplayici ile tutarlı hesapla
+        # Frontend'den gelen hedefler varsa kullan, yoksa HedefHesaplayici ile hesapla
+        frontend_hedefleri_var = any(
+            p.hedef_tipler and sum(p.hedef_tipler.values()) > 0
+            for p in personeller
         )
 
-        sonuc = solver.coz()
+        if frontend_hedefleri_var:
+            # Frontend hedefleri kullan
+            hedefler = {}
+            toplam_slot = gun_sayisi * len(gorevler)
+            kisi_sayisi = len(personeller)
+            kisi_basi_hedef = toplam_slot // kisi_sayisi if kisi_sayisi > 0 else 0
+            kalan = toplam_slot % kisi_sayisi if kisi_sayisi > 0 else 0
+
+            for idx, p in enumerate(personeller):
+                if p.hedef_tipler and sum(p.hedef_tipler.values()) > 0:
+                    hedef_toplam = sum(p.hedef_tipler.values())
+                else:
+                    musait_gun = gun_sayisi - len(p.mazeret_gunleri)
+                    hedef_toplam = min(kisi_basi_hedef + (1 if idx < kalan else 0), musait_gun)
+
+                hedefler[p.id] = {
+                    'hedef_toplam': hedef_toplam,
+                    'hedef_tipler': p.hedef_tipler or {},
+                    'gorev_kotalari': p.gorev_kotalari or {}
+                }
+        else:
+            # HedefHesaplayici ile hesapla (nobet_hedef_hesapla ile aynı)
+            birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
+            gorev_kisitlamalari_dict = {}
+            for k_data in data.get("gorevKisitlamalari", []):
+                pid_raw = k_data.get("personelId")
+                gorev_adi = k_data.get("gorevAdi")
+                if pid_raw is not None and gorev_adi:
+                    try:
+                        gorev_kisitlamalari_dict[int(float(pid_raw))] = gorev_adi
+                    except (ValueError, TypeError):
+                        pass
+
+            hesaplayici = HedefHesaplayici(
+                gun_sayisi=gun_sayisi,
+                gun_tipleri=gun_tipleri,
+                personeller=personeller,
+                gorevler=gorevler,
+                birlikte_kurallar=birlikte_kurallar,
+                gorev_kisitlamalari=gorev_kisitlamalari_dict,
+                manuel_atamalar=manuel_atamalar,
+                ara_gun=ara_gun,
+                saat_degerleri=saat_degerleri
+            )
+            hesap_sonuc = hesaplayici.hesapla()
+            hedefler = {}
+            for h in hesap_sonuc.hedefler:
+                pid = h.get('id')
+                hedefler[pid] = {
+                    'hedef_toplam': h.get('hedef_toplam', 0),
+                    'hedef_tipler': h.get('hedef_tipler', {}),
+                    'gorev_kotalari': h.get('gorev_kotalari', {})
+                }
+
+        # Kademeli çözüm: ara_gun azaltarak fallback (0 dahil)
+        sonuc = None
+        kullanilan_ara_gun = ara_gun
+        for dene_ara_gun in range(ara_gun, -1, -1):
+            solver = NobetSolver(
+                gun_sayisi=gun_sayisi,
+                gun_tipleri=gun_tipleri,
+                personeller=personeller,
+                gorevler=gorevler,
+                kurallar=kurallar,
+                manuel_atamalar=manuel_atamalar,
+                hedefler=hedefler,
+                ara_gun=dene_ara_gun,
+                max_sure_saniye=max_sure
+            )
+
+            sonuc = solver.coz()
+            kullanilan_ara_gun = dene_ara_gun
+            if sonuc.basarili:
+                break
+
+        # Döngü 0'a kadar indigi icin ayrıca ara_gun=0 denemesine gerek yok
+        # Ama sonuc hala None ise (personel yok vb.) güvenli dönüş yap
+        if sonuc is None:
+            sonuc = SolverSonuc(
+                basarili=False,
+                atamalar=[],
+                istatistikler={'status': 'NO_SOLUTION', 'ara_gun': ara_gun},
+                sure_ms=0,
+                mesaj="Çözüm üretilemedi - parametre hatası olabilir"
+            )
+            kullanilan_ara_gun = ara_gun
+
+        # Fallback bilgisini mesaja ekle
+        if kullanilan_ara_gun != ara_gun and sonuc.basarili:
+            sonuc = SolverSonuc(
+                basarili=sonuc.basarili,
+                atamalar=sonuc.atamalar,
+                istatistikler={**sonuc.istatistikler,
+                               'fallback_ara_gun': kullanilan_ara_gun,
+                               'istenen_ara_gun': ara_gun},
+                sure_ms=sonuc.sure_ms,
+                mesaj=f"{sonuc.mesaj} (ara_gun {ara_gun}->{kullanilan_ara_gun} gevsetildi)"
+            )
 
         # Çizelge formatına dönüştür (frontend uyumluluğu için)
         cizelge = {}

@@ -6,6 +6,7 @@ Gorev kotalari + Gun tipi kotalari dahil
 from dataclasses import dataclass, field
 from typing import List, Dict, Set, Optional
 import time
+import math
 
 # Lazy import for ortools (Firebase deploy timeout fix)
 cp_model = None
@@ -19,27 +20,23 @@ def _get_cp_model():
 
 GUN_TIPLERI = ['hici', 'prs', 'cum', 'cmt', 'pzr']
 
-def normalize_id(pid) -> str:
-    """ID'yi string'e normalize et (float hassasiyeti sorunlarını önle)"""
+def normalize_id(pid) -> int:
+    """ID'yi int'e normalize et"""
     if pid is None:
         return None
     try:
-        # Float ise int'e çevir, sonra string yap
-        f = float(pid)
-        if f == int(f):
-            return str(int(f))
-        return str(f)
+        return int(float(pid))
     except (ValueError, TypeError):
-        return str(pid)
+        return int(str(pid), 10) if str(pid).isdigit() else hash(str(pid))
 
 def ids_match(id1, id2) -> bool:
-    """İki ID'nin eşit olup olmadığını kontrol et (float hassasiyeti ile)"""
+    """İki ID'nin eşit olup olmadığını kontrol et"""
     if id1 is None or id2 is None:
         return False
     return normalize_id(id1) == normalize_id(id2)
 
 def find_matching_id(target_id, id_collection):
-    """Bir ID'yi koleksiyonda bul (float hassasiyeti ile)"""
+    """Bir ID'yi koleksiyonda bul"""
     target_norm = normalize_id(target_id)
     for pid in id_collection:
         if normalize_id(pid) == target_norm:
@@ -641,6 +638,75 @@ class NobetSolver:
                     p.musait_tipler[tip] += 1
                     p.musait_gunler.add(g)
     
+    def _hesapla_kalite_skoru(self, kisi_sayac: Dict, atamalar: List[Dict],
+                              toplam_atama: int, toplam_slot: int) -> Dict:
+        """Çözüm kalitesi metrikleri hesapla"""
+        nobet_sayilari = [k['toplam'] for k in kisi_sayac.values()]
+        ortalama = sum(nobet_sayilari) / len(nobet_sayilari) if nobet_sayilari else 0
+        max_nobet = max(nobet_sayilari) if nobet_sayilari else 0
+        min_nobet = min(nobet_sayilari) if nobet_sayilari else 0
+
+        # 1. Denge puanı: max-min farkının ortalamaya oranı (düşük = iyi)
+        denge_puani = round(
+            (max_nobet - min_nobet) / ortalama * 100, 1
+        ) if ortalama > 0 else 0
+
+        # 2. Saat adaleti: saat dağılımının standart sapması
+        saat_listesi = []
+        for pid, sayac in kisi_sayac.items():
+            toplam_saat = sum(
+                sayac['tipler'].get(tip, 0) * SAAT_DEGERLERI.get(tip, 8)
+                for tip in GUN_TIPLERI
+            )
+            saat_listesi.append(toplam_saat)
+        ortalama_saat = sum(saat_listesi) / len(saat_listesi) if saat_listesi else 0
+        saat_varyans = sum((s - ortalama_saat) ** 2 for s in saat_listesi) / len(saat_listesi) if saat_listesi else 0
+        saat_std = math.sqrt(saat_varyans)
+        saat_adaleti = round(
+            saat_std / ortalama_saat * 100, 1
+        ) if ortalama_saat > 0 else 0
+
+        # 3. Homojenlik: nöbet aralıklarının standart sapması
+        aralik_listesi = []
+        for pid, sayac in kisi_sayac.items():
+            kisi_gunleri = sorted(
+                a['gun'] for a in atamalar if a['personel_id'] == pid
+            )
+            if len(kisi_gunleri) >= 2:
+                araliklar = [kisi_gunleri[i+1] - kisi_gunleri[i]
+                             for i in range(len(kisi_gunleri) - 1)]
+                aralik_listesi.extend(araliklar)
+        if aralik_listesi:
+            aralik_ort = sum(aralik_listesi) / len(aralik_listesi)
+            aralik_var = sum((a - aralik_ort) ** 2 for a in aralik_listesi) / len(aralik_listesi)
+            homojenlik = round(math.sqrt(aralik_var), 2)
+        else:
+            homojenlik = 0
+
+        # 4. Doluluk yüzdesi
+        doluluk = round(100 * toplam_atama / toplam_slot, 1) if toplam_slot > 0 else 0
+
+        # 5. Hedef uyumu: hedeften sapma yüzdesi
+        hedef_sapmalar = []
+        for p in self.personel_listesi:
+            hedef = self.hedefler.get(p.id, {})
+            hedef_toplam = hedef.get('hedef_toplam', 0)
+            gerceklesen = kisi_sayac.get(p.id, {}).get('toplam', 0)
+            if hedef_toplam > 0:
+                sapma = abs(gerceklesen - hedef_toplam) / hedef_toplam
+                hedef_sapmalar.append(sapma)
+        kural_uyumu = round(
+            (1 - sum(hedef_sapmalar) / len(hedef_sapmalar)) * 100, 1
+        ) if hedef_sapmalar else 100
+
+        return {
+            'denge_puani': denge_puani,
+            'saat_adaleti': saat_adaleti,
+            'homojenlik': homojenlik,
+            'doluluk': doluluk,
+            'kural_uyumu': kural_uyumu
+        }
+
     def coz(self) -> SolverSonuc:
         baslangic = time.time()
         cp = _get_cp_model()
@@ -649,8 +715,13 @@ class NobetSolver:
         x = {}
         for p in self.personel_listesi:
             for g in range(1, self.gun_sayisi + 1):
-                for s in range(self.slot_sayisi):
-                    x[p.id, g, s] = model.NewBoolVar(f'x_{p.id}_{g}_{s}')
+                if g in p.mazeret_gunleri:
+                    # Mazeret günlerinde değişken oluşturma - sabit 0
+                    for s in range(self.slot_sayisi):
+                        x[p.id, g, s] = model.NewConstant(0)
+                else:
+                    for s in range(self.slot_sayisi):
+                        x[p.id, g, s] = model.NewBoolVar(f'x_{p.id}_{g}_{s}')
         
         # H1. Her slot EN FAZLA 1 kişi olsun, boş kalırsa ceza (SOFT)
         bos_slotlar = []
@@ -715,7 +786,13 @@ class NobetSolver:
         # H7. Kisitli gorev - kısıtlı kişi sadece kendi görevine gidebilir
         for p in self.personel_listesi:
             if p.kisitli_gorev:
+                # Önce base_name ile dene, sonra ad ile dene (frontend her iki formatı gönderebilir)
                 izinli_slotlar = self.role_slots.get(p.kisitli_gorev, [])
+                if not izinli_slotlar:
+                    # Slot adıyla da dene: "AMELIYATHANE #1" -> slot index'i bul
+                    for s, gorev in enumerate(self.gorevler):
+                        if gorev.ad == p.kisitli_gorev or gorev.base_name == p.kisitli_gorev:
+                            izinli_slotlar.append(s)
                 for g in range(1, self.gun_sayisi + 1):
                     for s in range(self.slot_sayisi):
                         if s not in izinli_slotlar:
@@ -826,24 +903,24 @@ class NobetSolver:
         for p in self.personel_listesi:
             hedef = self.hedefler.get(p.id, {})
             hedef_toplam = hedef.get('hedef_toplam', 3)
-            
+
             if hedef_toplam >= 2:
                 # İdeal aralık hesapla: ay_gunu / hedef_nobet
                 # Örn: 31 gün, 4 nöbet → ideal 7-8 gün arayla
                 ideal_aralik = self.gun_sayisi // hedef_toplam
-                
+
                 # Ayı haftalara böl ve her haftada max 1 nöbet tercih et
                 hafta_sayisi = (self.gun_sayisi + 6) // 7  # Yukarı yuvarla
-                
+
                 for hafta in range(hafta_sayisi):
                     hafta_baslangic = hafta * 7 + 1
                     hafta_bitis = min((hafta + 1) * 7, self.gun_sayisi)
-                    
+
                     if hafta_bitis >= hafta_baslangic:
                         hafta_gunleri = list(range(hafta_baslangic, hafta_bitis + 1))
                         # Bu haftadaki toplam nöbet sayısı
                         hafta_nobet = sum(
-                            x[p.id, g, s] 
+                            x[p.id, g, s]
                             for g in hafta_gunleri if g <= self.gun_sayisi
                             for s in range(self.slot_sayisi)
                         )
@@ -852,6 +929,24 @@ class NobetSolver:
                         model.Add(hafta_nobet - 1 <= fazla)
                         model.Add(fazla >= 0)
                         penalties.append(fazla * WEIGHT_HOMOJEN)
+
+                # Max aralık penceresi (SOFT): nöbetler arasında çok uzun boşluk olmasın
+                # max_aralik = ideal_aralik + tolerans
+                tolerans = max(2, ideal_aralik // 2)
+                max_aralik = ideal_aralik + tolerans
+                if max_aralik < self.gun_sayisi:
+                    for baslangic in range(1, self.gun_sayisi - max_aralik + 1):
+                        pencere_gunleri = list(range(baslangic, baslangic + max_aralik + 1))
+                        pencere_nobet = sum(
+                            x[p.id, g, s]
+                            for g in pencere_gunleri if 1 <= g <= self.gun_sayisi
+                            for s in range(self.slot_sayisi)
+                        )
+                        # Pencere içinde en az 1 nöbet olsun (SOFT)
+                        bos_pencere = model.NewBoolVar(f'bos_pencere_{p.id}_{baslangic}')
+                        model.Add(pencere_nobet == 0).OnlyEnforceIf(bos_pencere)
+                        model.Add(pencere_nobet >= 1).OnlyEnforceIf(bos_pencere.Not())
+                        penalties.append(bos_pencere * WEIGHT_HOMOJEN)
         
         # S6. Yıllık dengeleme - Geçmiş ay eksiklerini bu ay tamamla
         # yillik_gerceklesen: {'hici': 10, 'cmt': 5, ...} şeklinde geçmiş ayların toplamı
@@ -974,6 +1069,7 @@ class NobetSolver:
                 'doluluk_yuzde': round(100 * toplam_atama / toplam_slot, 1) if toplam_slot > 0 else 0,
                 'min_nobet': min_nobet, 'max_nobet': max_nobet,
                 'denge_farki': max_nobet - min_nobet,
+                'kalite_skoru': self._hesapla_kalite_skoru(kisi_sayac, atamalar, toplam_atama, toplam_slot),
                 'kisi_detay': [
                     {'personel_id': p.id, 'personel_ad': p.ad, 'toplam': kisi_sayac[p.id]['toplam'],
                      'tipler': kisi_sayac[p.id]['tipler'], 'gorevler': kisi_sayac[p.id]['gorevler']}

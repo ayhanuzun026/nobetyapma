@@ -924,10 +924,10 @@ function gorevDegisti() {
 
 // BUG FIX (H): Özel görev tespiti artık explicit 'ozel' alanını kullanıyor
 function getOzelGorevler() {
-  // Benzersiz özel görev isimleri
+  // Benzersiz özel görev isimleri (baseName varsa onu kullan - solver base_name ile çalışıyor)
   const ozeller = gorevler
     .filter(g => g.ozel === true || (!g.ozel && !g.ad.startsWith('Nöbet Yeri') && !g.ad.startsWith('Nöbetçi')))
-    .map(g => g.ad);
+    .map(g => g.baseName || g.ad);
   return [...new Set(ozeller)]; // Duplicate'leri kaldır
 }
 
@@ -2148,7 +2148,7 @@ function hedefleriHesaplaYerel() {
   const { yil, ay } = getYilAy();
   const gunSayisi = getGunSayisi(yil, ay);
   const gunluk = parseInt(document.getElementById('inp-gunluk').value) || 5;
-  const araGun = parseInt(document.getElementById('inp-aragun').value) || 2;
+  const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
   const ozelGorevler = getOzelGorevler();
   
   // ============================================
@@ -3796,7 +3796,7 @@ function ozelGorevFooterGuncelle() {
 // Hedef: Grubun minimum hedefi kadar birlikte gün bulmaya çalış
 function birlikteTutmaUygula(atanan, kisiAtama, siraliGorevler, gunSirasi) {
   const { yil, ay } = getYilAy();
-  const araGun = parseInt(document.getElementById('inp-aragun').value) || 2;
+  const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
   const ozelGorevler = getOzelGorevler();
   
   const birlikteKurallar = kurallar.filter(k => k.tur === 'birlikte');
@@ -3943,7 +3943,7 @@ const ortoolsAktif = true;
 async function hedefHesaplaOrtools() {
   const { yil, ay } = getYilAy();
   const gunSayisi = getGunSayisi(yil, ay);
-  const araGun = parseInt(document.getElementById('inp-aragun').value) || 2;
+  const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
   const gunluk = parseInt(document.getElementById('inp-gunluk').value) || 5;
   
   // Saat değerlerini al
@@ -4052,7 +4052,7 @@ async function hedefHesaplaOrtools() {
 async function listeOlustur() {
   const { yil, ay } = getYilAy();
   const gunSayisi = getGunSayisi(yil, ay);
-  const araGun = parseInt(document.getElementById('inp-aragun').value) || 2;
+  const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
   const gunluk = parseInt(document.getElementById('inp-gunluk').value) || 5;
   const ozelGorevler = getOzelGorevler();
   
@@ -4465,7 +4465,7 @@ function isleBackendSonucu(result, gunSayisi) {
 function listeOlusturYerel() {
   const { yil, ay } = getYilAy();
   const gunSayisi = getGunSayisi(yil, ay);
-  const araGun = parseInt(document.getElementById('inp-aragun').value) || 2;
+  const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
   const ozelGorevler = getOzelGorevler();
   
   // Sıralı görevler
@@ -5392,7 +5392,7 @@ function yukle() {
         document.getElementById('inp-yil').value = data.ayarlar.yil || 2025;
         document.getElementById('inp-ay').value = data.ayarlar.ay || 12;
         document.getElementById('inp-gunluk').value = data.ayarlar.gunluk || 5;
-        document.getElementById('inp-aragun').value = data.ayarlar.aragun || 2;
+        document.getElementById('inp-aragun').value = (data.ayarlar.aragun != null) ? data.ayarlar.aragun : 2;
         // detayli-mod artık her zaman true, checkbox kaldırıldı
         
         if (data.ayarlar.saatler) {
