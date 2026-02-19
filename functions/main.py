@@ -30,6 +30,7 @@ from parsers import (
     parse_solver_personeller_hedef, parse_solver_personeller_coz,
     parse_kurallar, parse_birlikte_kurallar,
     parse_gorev_kisitlamalari, parse_manuel_atamalar, parse_gorev_havuzlari,
+    parse_kisitlama_istisnalari,
 )
 
 initialize_app()
@@ -262,6 +263,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": "Duplicate personel ID", "duplicateIds": duplicate_ids}, status=400)
 
         gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
         kurallar = parse_kurallar(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
 
@@ -320,6 +322,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                 personeller=personeller, gorevler=gorevler,
                 kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+                kisitlama_istisnalari=kisitlama_istisnalari,
                 manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                 ara_gun=dene_ara_gun, max_sure_saniye=max_sure
             )

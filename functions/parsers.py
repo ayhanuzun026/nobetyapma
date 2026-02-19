@@ -519,6 +519,44 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
     return gorev_havuzlari
 
 
+def parse_kisitlama_istisnalari(data: Dict, personeller,
+                                gorevler: List[SolverGorev]) -> List[Dict]:
+    """Kisitlama istisnalarini parse et (manuel atama bazli gun/gorev izinleri)."""
+
+    def _normalize_gorev_adi(raw_gorev_adi):
+        if not raw_gorev_adi:
+            return None
+        for g in gorevler:
+            if g.ad == raw_gorev_adi or g.base_name == raw_gorev_adi:
+                return g.base_name if g.base_name else g.ad
+        return str(raw_gorev_adi).strip() or None
+
+    istisnalar = []
+    seen = set()
+    for raw in data.get("kisitlamaIstisnalari", []):
+        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True)
+        gun = _safe_int(raw.get("gun"), 0)
+        istisna_gorev = _normalize_gorev_adi(raw.get("istisnaGorev") or raw.get("gorevAdi"))
+        kisitli_gorev = _normalize_gorev_adi(raw.get("kisitliGorev"))
+        if pid is None or gun < 1 or not istisna_gorev:
+            continue
+
+        key = (pid, gun, istisna_gorev)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        istisnalar.append({
+            "personel_id": pid,
+            "gun": gun,
+            "istisna_gorev": istisna_gorev,
+            "kisitli_gorev": kisitli_gorev,
+            "onay_tarihi": raw.get("onayTarihi")
+        })
+
+    return istisnalar
+
+
 # ============================================
 # YARDIMCI (İÇ)
 # ============================================

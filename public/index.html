@@ -744,7 +744,7 @@ function yeniPersonelId() {
     personelIdCounter = (personelIdCounter + 1) % 1000;
     aday = Date.now() * 1000 + personelIdCounter;
   } while (personelListesi.some(p => String(p.id) === String(aday)));
-  return aday;
+  return String(aday);
 }
 
 // Firebase
@@ -5117,6 +5117,207 @@ const BACKEND_URL_HEDEF = 'https://us-central1-nobetyap-29acf.cloudfunctions.net
 // OR-Tools her zaman aktif (daha iyi sonuç veriyor)
 const ortoolsAktif = true;
 
+function normalizeGorevAdi(ad) {
+  if (!ad) return '';
+  return String(ad).replace(/ #\d+$/, '').trim();
+}
+
+function manuelAtamaSlotIdxBul(m) {
+  const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => g.id === m.gorevId) : -1;
+  const slotByAd = gorevler.findIndex(g => g.ad === m.gorevAdi);
+  const slotByStored = Number.isFinite(Number(m.gorevIdx)) ? parseInt(m.gorevIdx, 10) : -1;
+  return slotById >= 0 ? slotById : (slotByAd >= 0 ? slotByAd : slotByStored);
+}
+
+function ortoolsOnKontrolYap(gunSayisi, araGun) {
+  const kritik = [];
+  const uyari = [];
+  const roleBySlot = gorevler.map(g => normalizeGorevAdi(g.baseName || g.ad));
+  const kisitMap = {};
+  gorevKisitlamalari.forEach(k => {
+    kisitMap[String(k.personelId)] = normalizeGorevAdi(k.gorevAdi);
+  });
+
+  const istisnaSet = new Set(
+    (kisitlamaIstisnalari || []).map(ist =>
+      `${String(ist.personelId)}|${parseInt(ist.gun, 10)}|${normalizeGorevAdi(ist.istisnaGorev)}`
+    )
+  );
+
+  const ayriPairs = kurallar
+    .filter(k => k.tur === 'ayri')
+    .map(k => [String(k.p1), String(k.p2)]);
+  const birlikteUyeSet = new Set(
+    kurallar
+      .filter(k => k.tur === 'birlikte')
+      .flatMap(k => (k.kisiler || []).map(String))
+  );
+  const ayriBinaSlotlar = new Set(
+    gorevler.map((g, idx) => ({ g, idx })).filter(x => x.g.ayriBina === true).map(x => x.idx)
+  );
+  const roleAllowedMap = {};
+  Object.entries(gorevHavuzlari || {}).forEach(([role, ids]) => {
+    roleAllowedMap[normalizeGorevAdi(role)] = new Set((ids || []).map(String));
+  });
+  const exclusiveRoles = new Set(
+    gorevKisitlamalari
+      .filter(k => (k.exclusive !== false || kisitlamaExclusive) && !((gorevHavuzlari[k.gorevAdi] || []).length > 0))
+      .map(k => normalizeGorevAdi(k.gorevAdi))
+  );
+
+  const perPersonDay = {};
+  const perSlotDay = {};
+
+  manuelAtamalar.forEach((m, idx) => {
+    const pid = String(m.personelId);
+    const gun = parseInt(m.gun, 10);
+    const slotIdx = manuelAtamaSlotIdxBul(m);
+    const p = personelListesi.find(x => String(x.id) === pid);
+
+    if (!p) {
+      kritik.push(`[M${idx}] Personel bulunamadi (id=${pid})`);
+      return;
+    }
+    if (!(gun >= 1 && gun <= gunSayisi)) {
+      kritik.push(`[M${idx}] ${p.ad}: gun aralik disi (${gun})`);
+      return;
+    }
+    if (!(slotIdx >= 0 && slotIdx < gorevler.length)) {
+      kritik.push(`[M${idx}] ${p.ad}: gorev/slot eslesmedi (${m.gorevAdi || m.gorevId || m.gorevIdx})`);
+      return;
+    }
+
+    const role = roleBySlot[slotIdx];
+    const keyPD = `${pid}|${gun}`;
+    const keySD = `${gun}|${slotIdx}`;
+    perPersonDay[keyPD] = (perPersonDay[keyPD] || 0) + 1;
+    perSlotDay[keySD] = (perSlotDay[keySD] || 0) + 1;
+
+    if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) {
+      kritik.push(`[M${idx}] ${p.ad}: mazeretli gune manuel atama (${gun}. gun)`);
+    }
+
+    const kisitliRole = kisitMap[pid];
+    if (kisitliRole && role !== kisitliRole) {
+      const istisnaKey = `${pid}|${gun}|${role}`;
+      if (!istisnaSet.has(istisnaKey)) {
+        kritik.push(`[M${idx}] ${p.ad}: kisitli gorev disi manuel atama (${role} != ${kisitliRole})`);
+      }
+    }
+
+    if (exclusiveRoles.has(role) && kisitliRole !== role) {
+      kritik.push(`[M${idx}] ${p.ad}: exclusive goreve manuel atama (${role})`);
+    }
+
+    if (roleAllowedMap[role] && !roleAllowedMap[role].has(pid)) {
+      kritik.push(`[M${idx}] ${p.ad}: gorev havuzu disinda manuel atama (${role})`);
+    }
+
+    if (ayriBinaSlotlar.has(slotIdx) && birlikteUyeSet.has(pid)) {
+      kritik.push(`[M${idx}] ${p.ad}: birlikte kurali uyesi ama ayri bina slotuna atanmis (${gun}. gun)`);
+    }
+  });
+
+  Object.entries(perPersonDay).forEach(([key, cnt]) => {
+    if (cnt > 1) {
+      const [pid, gun] = key.split('|');
+      const p = personelListesi.find(x => String(x.id) === pid);
+      kritik.push(`${p?.ad || pid}: ${gun}. gunde ${cnt} manuel atama var`);
+    }
+  });
+
+  Object.entries(perSlotDay).forEach(([key, cnt]) => {
+    if (cnt > 1) {
+      const [gun, slotIdx] = key.split('|');
+      kritik.push(`${gun}. gunde ${slotIdx}. slotta ${cnt} manuel atama var`);
+    }
+  });
+
+  const manualByPerson = {};
+  manuelAtamalar.forEach(m => {
+    const pid = String(m.personelId);
+    const gun = parseInt(m.gun, 10);
+    if (!(gun >= 1 && gun <= gunSayisi)) return;
+    if (!manualByPerson[pid]) manualByPerson[pid] = [];
+    manualByPerson[pid].push(gun);
+  });
+  Object.entries(manualByPerson).forEach(([pid, gunler]) => {
+    gunler.sort((a, b) => a - b);
+    for (let i = 0; i < gunler.length - 1; i++) {
+      if (gunler[i + 1] - gunler[i] <= araGun) {
+        const p = personelListesi.find(x => String(x.id) === pid);
+        kritik.push(`${p?.ad || pid}: ara gun ihlali (${gunler[i]}-${gunler[i + 1]}, araGun=${araGun})`);
+      }
+    }
+  });
+
+  const ayriMapByDay = {};
+  manuelAtamalar.forEach(m => {
+    const gun = parseInt(m.gun, 10);
+    if (!(gun >= 1 && gun <= gunSayisi)) return;
+    if (!ayriMapByDay[gun]) ayriMapByDay[gun] = new Set();
+    ayriMapByDay[gun].add(String(m.personelId));
+  });
+  Object.entries(ayriMapByDay).forEach(([gun, pidSet]) => {
+    ayriPairs.forEach(([p1, p2]) => {
+      if (pidSet.has(p1) && pidSet.has(p2)) {
+        const n1 = personelListesi.find(x => String(x.id) === p1)?.ad || p1;
+        const n2 = personelListesi.find(x => String(x.id) === p2)?.ad || p2;
+        kritik.push(`${gun}. gunde ayri kurali ihlali: ${n1} & ${n2}`);
+      }
+    });
+  });
+
+  if (kisitlamaIstisnalari.length > 0) {
+    uyari.push(`Kisitlama istisnasi aktif: ${kisitlamaIstisnalari.length} adet`);
+  }
+
+  return { kritik, uyari };
+}
+
+function solverDetayLogla(result, requestData) {
+  console.group('[SOLVER][DETAY]');
+  try {
+    console.log('Istek ozeti:', {
+      personel: requestData?.personeller?.length || 0,
+      gorev: requestData?.gorevler?.length || 0,
+      manuelAtama: requestData?.manuelAtamalar?.length || 0,
+      kisitlama: requestData?.gorevKisitlamalari?.length || 0,
+      istisna: requestData?.kisitlamaIstisnalari?.length || 0,
+      araGun: requestData?.araGun
+    });
+    console.log('Backend mesaj:', result?.mesaj || 'yok');
+    console.log('Backend istatistikler:', result?.istatistikler || {});
+    if (result?.istatistikler?.manual_conflicts?.length) {
+      console.table(result.istatistikler.manual_conflicts);
+    }
+    const feas = result?.istatistikler?.feasibility_debug;
+    if (feas && Object.keys(feas).length > 0) {
+      console.log('Feasibility debug:', feas);
+      if (feas.slot_day_zero_candidate_count > 0) {
+        console.warn(`Zero-candidate slot/day: ${feas.slot_day_zero_candidate_count}`);
+      }
+      if (feas.slot_day_zero_candidate_preview?.length) {
+        console.table(feas.slot_day_zero_candidate_preview);
+      }
+      if (feas.role_ara_gun_capacity_issues?.length) {
+        console.warn(`AraGun kapasite sorunu: ${feas.role_ara_gun_capacity_issues.length} gorev`);
+        console.table(
+          feas.role_ara_gun_capacity_issues.map(x => ({
+            gorev: x.gorev,
+            slot_sayisi: x.slot_sayisi,
+            talep: x.talep,
+            ara_gun_ust_kapasite: x.ara_gun_ust_kapasite,
+            eksik: x.eksik
+          }))
+        );
+      }
+    }
+  } finally {
+    console.groupEnd();
+  }
+}
+
 // OR-Tools ile hedef hesapla
 async function hedefHesaplaOrtools() {
   const { yil, ay } = getYilAy();
@@ -5296,6 +5497,32 @@ async function listeOlustur() {
         }
       }
     }
+
+    // OR-Tools ön kontrol: manuel/hard çakışmaları hızlı yakala
+    const onKontrol = ortoolsOnKontrolYap(gunSayisi, araGun);
+    if (onKontrol.kritik.length > 0 || onKontrol.uyari.length > 0) {
+      console.group('[SOLVER][ONKONTROL]');
+      if (onKontrol.kritik.length > 0) {
+        console.error(`Kritik bulgu: ${onKontrol.kritik.length}`);
+        onKontrol.kritik.forEach((m, i) => console.error(`K${i + 1}: ${m}`));
+      }
+      if (onKontrol.uyari.length > 0) {
+        onKontrol.uyari.forEach((m, i) => console.warn(`U${i + 1}: ${m}`));
+      }
+      console.groupEnd();
+
+      if (onKontrol.kritik.length > 0) {
+        const onizleme = onKontrol.kritik.slice(0, 8).join('\n- ');
+        const devam = confirm(
+          `OR-Tools on kontrol ${onKontrol.kritik.length} kritik çakışma buldu.\n\n` +
+          `Ilk bulgular:\n- ${onizleme}\n\n` +
+          `Yine de OR-Tools denensin mi?`
+        );
+        if (!devam) {
+          throw new Error('OR-Tools ön kontrol: kritik çakışma nedeniyle işlem iptal edildi');
+        }
+      }
+    }
     
     // OR-Tools aktifse yeni endpoint'i kullan
     if (ortoolsAktif) {
@@ -5387,6 +5614,13 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
     gunTipiDagilimi: k.gunTipiDagilimi || null,
     tasmaGorevi: k.tasmaGorevi || null
   }));
+  const kisitlamaIstisnalariData = (kisitlamaIstisnalari || []).map(ist => ({
+    personelId: ist.personelId,
+    kisitliGorev: ist.kisitliGorev,
+    istisnaGorev: ist.istisnaGorev,
+    gun: ist.gun,
+    onayTarihi: ist.onayTarihi
+  }));
 
   const requestData = {
     yil,
@@ -5400,11 +5634,16 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
     manuelAtamalar: manuelAtamalarData,
     gorevKisitlamalari: gorevKisitlamalariData,
     gorevHavuzlari: gorevHavuzlari,
+    kisitlamaIstisnalari: kisitlamaIstisnalariData,
     kisitlamaExclusive: kisitlamaExclusive,
     resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
   };
   
-  console.log(`[SOLVER] OR-Tools isteği: ${requestData.personeller?.length || 0} personel, ${requestData.slotSayisi} slot/gün, araGün: ${requestData.araGun}`);
+  console.log(
+    `[SOLVER] OR-Tools isteği: ${requestData.personeller?.length || 0} personel, ` +
+    `${requestData.slotSayisi} slot/gün, araGün: ${requestData.araGun}, ` +
+    `manuel=${requestData.manuelAtamalar?.length || 0}, istisna=${requestData.kisitlamaIstisnalari?.length || 0}`
+  );
 
   const response = await fetch(BACKEND_URL_ORTOOLS, {
     method: 'POST',
@@ -5421,6 +5660,7 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
     const ist = result.istatistikler;
     console.log(`[SOLVER] İstatistik: doluluk=%${ist.doluluk_yuzde}, denge_farkı=${ist.denge_farki}, araGün=${ist.ara_gun}`);
   }
+  solverDetayLogla(result, requestData);
   
   if (!response.ok || result.error) {
     throw new Error(result.error || 'OR-Tools backend hatası');
@@ -5429,7 +5669,7 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
   if (!result.basari) {
     // Çözüm bulunamadı - ara gün 1 ile tekrar denenebilir mi?
     const istatistikler = result.istatistikler || {};
-    if (istatistikler.ara_gun_1_dene && araGun > 1) {
+    if (istatistikler.status === 'INFEASIBLE' && istatistikler.ara_gun_1_dene && araGun > 1) {
       const cevap = confirm(
         `⚠️ OR-Tools çözüm bulamadı (ara gün: ${araGun})\n\n` +
         `Ara gün kuralını 1'e düşürerek tekrar denemek ister misiniz?\n\n` +
@@ -5442,7 +5682,26 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
         return await listeOlusturOrtools(yil, ay, gunSayisi, 1, gunluk);
       }
     }
-    throw new Error(result.mesaj || 'OR-Tools çözüm bulamadı');
+
+    let detayMesaj = result.mesaj || 'OR-Tools çözüm bulamadı';
+    if (istatistikler.status) {
+      detayMesaj += ` [status=${istatistikler.status}]`;
+    }
+    if (istatistikler.manual_conflicts?.length) {
+      const ilk = istatistikler.manual_conflicts[0];
+      detayMesaj += ` | ilk çakışma: ${ilk.mesaj || ilk.code || 'detay yok'}`;
+    } else if (istatistikler.feasibility_debug?.slot_day_zero_candidate_count > 0) {
+      const ilk = istatistikler.feasibility_debug.slot_day_zero_candidate_preview?.[0];
+      if (ilk) {
+        detayMesaj += ` | aday yok: ${ilk.gun}. gün ${ilk.gorev} (slot ${ilk.slot_idx})`;
+      }
+    } else if (istatistikler.feasibility_debug?.role_ara_gun_capacity_issues?.length) {
+      const ilk = istatistikler.feasibility_debug.role_ara_gun_capacity_issues[0];
+      detayMesaj += ` | kapasite yetersiz: ${ilk.gorev} talep=${ilk.talep}, araGunÜstKapasite=${ilk.ara_gun_ust_kapasite}`;
+    } else if (istatistikler.reason_hint) {
+      detayMesaj += ` | ${istatistikler.reason_hint}`;
+    }
+    throw new Error(detayMesaj);
   }
   
   // Sonuçları işle
@@ -5628,6 +5887,13 @@ async function listeOlusturEskiBackend(yil, ay, gunSayisi, araGun, gunluk) {
     gunTipiDagilimi: k.gunTipiDagilimi || null,
     tasmaGorevi: k.tasmaGorevi || null
   }));
+  const kisitlamaIstisnalariData = (kisitlamaIstisnalari || []).map(ist => ({
+    personelId: ist.personelId,
+    kisitliGorev: ist.kisitliGorev,
+    istisnaGorev: ist.istisnaGorev,
+    gun: ist.gun,
+    onayTarihi: ist.onayTarihi
+  }));
 
   return {
     yil,
@@ -5640,6 +5906,7 @@ async function listeOlusturEskiBackend(yil, ay, gunSayisi, araGun, gunluk) {
     manuelAtamalar: manuelAtamalarData,
     gorevKisitlamalari: gorevKisitlamalariData,
     gorevHavuzlari: gorevHavuzlari,
+    kisitlamaIstisnalari: kisitlamaIstisnalariData,
     resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
   };
 }
