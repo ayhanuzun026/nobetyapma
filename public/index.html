@@ -2593,15 +2593,16 @@ async function hedefleriHesaplaOrtoolsAsync() {
       if (result.gorevKotalari) {
         window.ortoolsGorevKotalari = result.gorevKotalari;
         console.log('[HEDEF] OR-Tools görev kotaları alındı:', Object.keys(result.gorevKotalari));
+      }
 
-        // Top-level görev kotalarını kişilere dağıt
-        const ozelGorevler = getOzelGorevler();
+      // Görev kotalarını dağıt (tek seferlik)
+      const ozelGorevler = getOzelGorevler();
+      if (ozelGorevler.length > 0) {
         const { yil, ay } = getYilAy();
         const gunSayisi = getGunSayisi(yil, ay);
-        console.log('[HEDEF] Görev kotaları kişilere dağıtılıyor...');
         ozelGorevKotalariniDagit(ozelGorevler, gunSayisi);
       }
-      
+
       // Tabloyu güncelle
       hedefTablosuGuncelle();
       ozelGorevSectionGuncelle();
@@ -3941,6 +3942,10 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
 
           for (const aday of digerAdaylar) {
             if (fazlaKota <= 0) break;
+            if (gorevKapasite[gorevAdi] <= 0) {
+              console.warn(`[KOTA-ADIM3] ⚠️ ${gorevAdi} kapasitesi dolu! ${fazlaKota} fazla kota dağıtılamadı`);
+              break;
+            }
             if (!aday.gorevKotalari) aday.gorevKotalari = {};
             aday.gorevKotalari[gorevAdi] = (aday.gorevKotalari[gorevAdi] || 0) + 1;
             gorevKapasite[gorevAdi]--;
@@ -3991,6 +3996,10 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
 
         for (const digerGorev of digerGorevler) {
           if (kalanEksik <= 0) break;
+          if (gorevKapasite[digerGorev] <= 0) {
+            console.warn(`[KOTA-ADIM4] ⚠️ ${digerGorev} kapasitesi dolu! Havuz tamamlama atlandı`);
+            continue;
+          }
           if (!personel.gorevKotalari) personel.gorevKotalari = {};
           personel.gorevKotalari[digerGorev] = (personel.gorevKotalari[digerGorev] || 0) + 1;
           gorevKapasite[digerGorev]--;
