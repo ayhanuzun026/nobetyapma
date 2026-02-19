@@ -254,7 +254,7 @@
     <!-- STEP 2: Görev Yerleri -->
     <div class="step-content" id="step-2">
       <h2>🏥 Görev Yerleri</h2>
-      <div class="help mb-3">Her görev için isim ve özel görev durumunu belirleyin (örn: Mavi Kod, Amatem). Az slotlu görevler otomatik önceliklendirilir.</div>
+      <div class="help mb-3">Her görev için isim, özel görev ve ayrı bina durumunu belirleyin (örn: Mavi Kod, Amatem). Az slotlu görevler otomatik önceliklendirilir.</div>
       <div id="gorev-listesi" class="form-grid"></div>
     </div>
 
@@ -349,11 +349,13 @@
         <h4>🎯 Kişi-Görev Kısıtlaması</h4>
         <div class="help mb-3">Bir kişiyi sadece belirli bir göreve atayın. Tüm nöbetleri o görevde tutacak.</div>
         <div class="flex gap-2 flex-wrap items-center">
-          <select id="kisitlama-personel" class="p-select" style="min-width:150px; padding:8px; border:2px solid #e2e8f0; border-radius:8px;"></select>
+          <select id="kisitlama-personel" class="p-select" onchange="kisitlamaHavuzSecenekleriniGuncelle()" style="min-width:150px; padding:8px; border:2px solid #e2e8f0; border-radius:8px;"></select>
           <span style="font-weight:700;">→ sadece →</span>
           <select id="kisitlama-gorev" style="min-width:150px; padding:8px; border:2px solid #e2e8f0; border-radius:8px;"></select>
+          <select id="kisitlama-havuz" multiple size="4" style="min-width:180px; padding:8px; border:2px solid #e2e8f0; border-radius:8px;"></select>
           <button class="btn btn-sm" style="background:#8b5cf6; color:#fff;" onclick="gorevKisitlamasiEkle()"><i class="fa-solid fa-plus"></i> Ekle</button>
         </div>
+        <div class="help mt-2">Ek Havuz: "Sadece kendi aralarında dönsün" kapalıysa, kalan nöbetler bu havuzdan da atanır.</div>
         <div class="mt-3" style="background:#f5f3ff; padding:10px; border-radius:8px;">
           <label style="display:flex; align-items:center; gap:8px; cursor:pointer;">
             <input type="checkbox" id="kisitlama-exclusive" onchange="kisitlamaExclusiveDegisti()">
@@ -602,7 +604,7 @@ let resmiTatiller = [];
 let kurallar = [];
 let gorevler = [];
 let manuelAtamalar = []; // { personelId, gun, gorevId, gorevIdx, gorevAdi }
-let gorevKisitlamalari = []; // { personelId, gorevAdi } - kişi sadece bu göreve atanır
+let gorevKisitlamalari = []; // { personelId, gorevAdi, exclusive?, havuzIds? }
 let gorevKapasiteAyar = {}; // { gorevAdi: { toplam: X, hici: X, prs: X, cum: X, cmt: X, pzr: X } }
 let kisitlamaExclusive = false; // true = kısıtlamalı kişiler kendi aralarında döner
 let selectedCells = [];
@@ -897,14 +899,21 @@ function gorevleriGuncelle() {
             Özel Görev (kota gerektirir)
           </label>
         </div>
+        <div class="input-group mt-2">
+          <label>
+            <input type="checkbox" class="gorev-ayri-bina" data-idx="${i-1}" ${mevcut.ayriBina ? 'checked' : ''} onchange="gorevDegisti()">
+            Ayrı Bina (birlikte gruplar atanmasın)
+          </label>
+        </div>
       `;
       container.appendChild(div);
     }
     
     gorevler.push({
-      id: mevcut.id || i,
+      id: mevcut.id ?? i,
       ad: gorevAdi,
-      ozel: mevcut.ozel !== undefined ? mevcut.ozel : isOzel
+      ozel: mevcut.ozel !== undefined ? mevcut.ozel : isOzel,
+      ayriBina: mevcut.ayriBina === true
     });
   }
   
@@ -928,6 +937,10 @@ function gorevDegisti() {
   document.querySelectorAll('.gorev-ozel').forEach(inp => {
     const idx = parseInt(inp.dataset.idx);
     if (gorevler[idx]) gorevler[idx].ozel = inp.checked;
+  });
+  document.querySelectorAll('.gorev-ayri-bina').forEach(inp => {
+    const idx = parseInt(inp.dataset.idx);
+    if (gorevler[idx]) gorevler[idx].ayriBina = inp.checked;
   });
   kaydetDebounced();
 }
@@ -1291,7 +1304,7 @@ function excelYukle(input) {
 function selectleriGuncelle() {
   const selects = document.querySelectorAll('.p-select');
   const options = '<option value="">Seçiniz...</option>' + 
-    personelListesi.map(p => `<option value="${p.id}">${p.ad || '(isimsiz)'}</option>`).join('');
+    personelListesi.map(p => `<option value="${p.id}">${escapeHtml(p.ad || '(isimsiz)')}</option>`).join('');
   selects.forEach(sel => sel.innerHTML = options);
   
   // Manuel görev select
@@ -1309,10 +1322,32 @@ function selectleriGuncelle() {
     kisitlamaGorevSelect.innerHTML = '<option value="">Görev seçin...</option>' +
       benzersizGorevler.map(g => `<option value="${g}">${g}</option>`).join('');
   }
+  kisitlamaHavuzSecenekleriniGuncelle();
   
   // Manuel atama listesini güncelle
   manuelAtamaListesiGuncelle();
   gorevKisitlamaListesiGuncelle();
+}
+
+function kisitlamaHavuzSecenekleriniGuncelle() {
+  const havuzSelect = document.getElementById('kisitlama-havuz');
+  if (!havuzSelect) return;
+
+  const seciliPersonelId = document.getElementById('kisitlama-personel')?.value || '';
+  const oncekiSecimler = new Set(
+    Array.from(havuzSelect.selectedOptions || []).map(opt => String(opt.value))
+  );
+
+  havuzSelect.innerHTML = personelListesi
+    .filter(p => String(p.id) !== String(seciliPersonelId))
+    .map(p => `<option value="${p.id}">${escapeHtml(p.ad || '(isimsiz)')}</option>`)
+    .join('');
+
+  Array.from(havuzSelect.options).forEach(opt => {
+    if (oncekiSecimler.has(String(opt.value))) {
+      opt.selected = true;
+    }
+  });
 }
 
 function kuralEkle(tur) {
@@ -1447,6 +1482,7 @@ function manuelAtamaListesiGuncelle() {
 function gorevKisitlamasiEkle() {
   const personelId = document.getElementById('kisitlama-personel').value;
   const gorevAdi = document.getElementById('kisitlama-gorev').value;
+  const havuzSelect = document.getElementById('kisitlama-havuz');
   
   if (!personelId) return alert('Personel seçiniz!');
   if (!gorevAdi) return alert('Görev seçiniz!');
@@ -1458,12 +1494,23 @@ function gorevKisitlamasiEkle() {
   }
   
   const personel = personelListesi.find(p => String(p.id) === String(personelId));
+  if (!personel) return alert('Personel bulunamadı!');
+  const havuzIds = havuzSelect
+    ? Array.from(havuzSelect.selectedOptions || [])
+        .map(opt => opt.value)
+        .filter(id => String(id) !== String(personel.id))
+    : [];
   
   gorevKisitlamalari.push({
     personelId: personel.id,
     gorevAdi: gorevAdi,
-    exclusive: true  // Varsayılan: sadece kendi aralarında dönsün
+    exclusive: true,  // Varsayılan: sadece kendi aralarında dönsün
+    havuzIds
   });
+
+  if (havuzSelect) {
+    Array.from(havuzSelect.options).forEach(opt => { opt.selected = false; });
+  }
   
   gorevKisitlamaListesiGuncelle();
   kaydetDebounced();
@@ -1503,6 +1550,10 @@ function gorevKisitlamaListesiGuncelle() {
   
   container.innerHTML = gorevKisitlamalari.map((k, idx) => {
     const personel = personelListesi.find(p => String(p.id) === String(k.personelId));
+    const havuzIds = Array.isArray(k.havuzIds) ? k.havuzIds : [];
+    const havuzAdlari = havuzIds
+      .map(id => personelListesi.find(p => String(p.id) === String(id))?.ad)
+      .filter(Boolean);
     
     // Kişinin müsait gün tiplerini hesapla
     const musaitGunler = { hici: 0, prs: 0, cum: 0, cmt: 0, pzr: 0 };
@@ -1530,6 +1581,10 @@ function gorevKisitlamaListesiGuncelle() {
     const bilgi = bilgiParcalari.length > 0 ? bilgiParcalari.join(' + ') : 'Hedef yok';
     
     const isExclusive = k.exclusive !== false; // Varsayılan true
+    const havuzMetni = havuzAdlari.length > 0
+      ? havuzAdlari.map(ad => escapeHtml(ad)).join(', ')
+      : 'Tanımlı değil';
+    const havuzBilgisi = isExclusive ? 'Bu modda kullanılmaz' : havuzMetni;
     
     return `
       <div style="background:#f5f3ff; border:1px solid #c4b5fd; border-radius:8px; padding:10px; margin-bottom:8px;">
@@ -1552,6 +1607,9 @@ function gorevKisitlamaListesiGuncelle() {
         </div>
         <div class="help" style="margin-top:6px; color:#6d28d9;">
           📊 ${k.gorevAdi} görevine atanacak: ${bilgi}
+        </div>
+        <div class="help" style="margin-top:4px; color:#5b21b6;">
+          👥 Ek havuz: ${havuzBilgisi}
         </div>
       </div>
     `;
@@ -3995,7 +4053,8 @@ async function hedefHesaplaOrtools() {
     id: g.id,
     ad: g.ad,
     baseName: g.baseName || g.ad,
-    exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad))
+    exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad)),
+    ayriBina: g.ayriBina === true
   }));
   
   // Kuralları hazırla
@@ -4014,7 +4073,8 @@ async function hedefHesaplaOrtools() {
   const gorevKisitData = gorevKisitlamalari.map(k => ({
     personelId: k.personelId,
     gorevAdi: k.gorevAdi,
-    exclusive: k.exclusive !== false || kisitlamaExclusive  // Kişi bazlı veya global
+    exclusive: k.exclusive !== false || kisitlamaExclusive,  // Kişi bazlı veya global
+    havuzIds: Array.isArray(k.havuzIds) ? k.havuzIds : []
   }));
   
   // Manuel atamaları hazırla
@@ -4136,7 +4196,8 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
   const gorevlerData = gorevler.map((g, idx) => ({
     id: g.id,
     ad: g.ad,
-    baseName: g.ad.replace(/ #\d+$/, '') // "AMELİYATHANE #1" -> "AMELİYATHANE"
+    baseName: g.baseName || g.ad.replace(/ #\d+$/, ''), // "AMELİYATHANE #1" -> "AMELİYATHANE"
+    ayriBina: g.ayriBina === true
   }));
   
   // Personel verileri - gün tipi hedefleri + görev kotaları
@@ -4186,6 +4247,13 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
     };
   });
   
+  const gorevKisitlamalariData = gorevKisitlamalari.map(k => ({
+    personelId: k.personelId,
+    gorevAdi: k.gorevAdi,
+    exclusive: k.exclusive !== false || kisitlamaExclusive,
+    havuzIds: Array.isArray(k.havuzIds) ? k.havuzIds : []
+  }));
+
   const requestData = {
     yil,
     ay,
@@ -4196,7 +4264,7 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
     personeller: personelVerileri,
     kurallar: kurallarData,
     manuelAtamalar: manuelAtamalarData,
-    gorevKisitlamalari: gorevKisitlamalari,
+    gorevKisitlamalari: gorevKisitlamalariData,
     kisitlamaExclusive: kisitlamaExclusive,
     resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
   };
@@ -4353,7 +4421,8 @@ async function listeOlusturEskiBackend(yil, ay, gunSayisi, araGun, gunluk) {
   const gorevTanimlari = gorevler.map((g, idx) => ({
     id: g.id,
     ad: g.ad,
-    baseName: g.ad.replace(/ #\d+$/, '') // "Mavi Kod #1" -> "Mavi Kod"
+    baseName: g.baseName || g.ad.replace(/ #\d+$/, ''), // "Mavi Kod #1" -> "Mavi Kod"
+    ayriBina: g.ayriBina === true
   }));
   
   // Personel verileri
@@ -4413,7 +4482,9 @@ async function listeOlusturEskiBackend(yil, ay, gunSayisi, araGun, gunluk) {
   // Görev kısıtlamaları
   const gorevKisitlamalariData = gorevKisitlamalari.map(k => ({
     personelId: k.personelId,
-    gorevAdi: k.gorevAdi
+    gorevAdi: k.gorevAdi,
+    exclusive: k.exclusive !== false || kisitlamaExclusive,
+    havuzIds: Array.isArray(k.havuzIds) ? k.havuzIds : []
   }));
   
   return {
@@ -5404,9 +5475,20 @@ function yukle() {
       personelListesi = data.personelListesi || [];
       resmiTatiller = data.resmiTatiller || [];
       kurallar = data.kurallar || [];
-      gorevler = data.gorevler || [];
+      gorevler = (data.gorevler || []).map((g, idx) => ({
+        ...g,
+        id: g?.id ?? (idx + 1),
+        ad: g?.ad || `Nöbet Yeri ${idx + 1}`,
+        ayriBina: g?.ayriBina === true
+      }));
       manuelAtamalar = data.manuelAtamalar || [];
-      gorevKisitlamalari = data.gorevKisitlamalari || [];
+      gorevKisitlamalari = (data.gorevKisitlamalari || []).map(k => ({
+        ...k,
+        exclusive: k?.exclusive !== false,
+        havuzIds: Array.isArray(k?.havuzIds)
+          ? k.havuzIds.filter(id => String(id) !== String(k.personelId))
+          : []
+      }));
       kisitlamaExclusive = data.kisitlamaExclusive || false;
       gorevKapasiteAyar = data.gorevKapasiteAyar || {};
       devirListesi = data.devirListesi || [];

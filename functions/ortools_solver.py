@@ -102,6 +102,7 @@ class SolverGorev:
     slot_idx: int
     base_name: str = ""
     exclusive: bool = False
+    ayri_bina: bool = False
 
 @dataclass
 class SolverKural:
@@ -623,6 +624,7 @@ class NobetSolver:
     def __init__(self, gun_sayisi: int, gun_tipleri: Dict[int, str],
                  personeller: List[SolverPersonel], gorevler: List[SolverGorev],
                  kurallar: List[SolverKural] = None,
+                 gorev_havuzlari: Dict[str, Set[int]] = None,
                  manuel_atamalar: List[SolverAtama] = None,
                  hedefler: Dict[int, Dict] = None,
                  ara_gun: int = 2, max_sure_saniye: int = 300):
@@ -632,6 +634,7 @@ class NobetSolver:
         self.personel_listesi = personeller
         self.gorevler = gorevler
         self.kurallar = kurallar or []
+        self.gorev_havuzlari = gorev_havuzlari or {}
         self.manuel_atamalar = manuel_atamalar or []
         self.hedefler = hedefler or {}
         self.ara_gun = ara_gun
@@ -649,6 +652,18 @@ class NobetSolver:
             if base not in self.role_slots:
                 self.role_slots[base] = []
             self.role_slots[base].append(s)
+
+        # Role bazli havuz ID'lerini mevcut personel ID'lerine normalize et
+        normalized_havuzlar = {}
+        for role, raw_ids in self.gorev_havuzlari.items():
+            matched_ids = set()
+            for pid in raw_ids or []:
+                matched_id = find_matching_id(pid, self.personeller.keys())
+                if matched_id is not None:
+                    matched_ids.add(matched_id)
+            if matched_ids:
+                normalized_havuzlar[role] = matched_ids
+        self.gorev_havuzlari = normalized_havuzlar
         
         # Slot kıtlık ağırlığı: Az slotlu görevler daha önemli
         # max_slot / slot_sayisi formülü ile hesapla
@@ -845,6 +860,38 @@ class NobetSolver:
                     for g in range(1, self.gun_sayisi + 1):
                         for s in exclusive_slotlar:
                             model.Add(x[p.id, g, s] == 0)
+
+        # H9. Ayrı bina slotlarına birlikte kuralı üyeleri atanmasın
+        ayri_bina_slotlar = [
+            s for s, gorev in enumerate(self.gorevler)
+            if getattr(gorev, 'ayri_bina', False)
+        ]
+        if ayri_bina_slotlar:
+            birlikte_uye_ids = set()
+            for kural in self.kurallar:
+                if kural.tur != 'birlikte':
+                    continue
+                for raw_pid in kural.kisiler:
+                    matched_pid = find_matching_id(raw_pid, self.personeller.keys())
+                    if matched_pid is not None:
+                        birlikte_uye_ids.add(matched_pid)
+
+            for pid in birlikte_uye_ids:
+                for g in range(1, self.gun_sayisi + 1):
+                    for s in ayri_bina_slotlar:
+                        model.Add(x[pid, g, s] == 0)
+
+        # H10. Non-exclusive görev havuzu varsa sadece o havuzdan seçim yap
+        for role, allowed_ids in self.gorev_havuzlari.items():
+            role_slotlari = self.role_slots.get(role, [])
+            if not role_slotlari or not allowed_ids:
+                continue
+            for p in self.personel_listesi:
+                if p.id in allowed_ids:
+                    continue
+                for g in range(1, self.gun_sayisi + 1):
+                    for s in role_slotlari:
+                        model.Add(x[p.id, g, s] == 0)
         
         # SOFT CONSTRAINTS
         penalties = []

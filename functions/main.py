@@ -30,6 +30,7 @@ class GorevTanim:
     ad: str
     slot_index: int
     base_name: str = ""
+    ayri_bina: bool = False
 
 
 @dataclass
@@ -142,10 +143,34 @@ class NobetYoneticisi:
         self.gorev_kisitlamalari = gorev_kisitlamalari or []
         self.cizelge = {d: [None] * len(self.gorevler) for d in range(1, days_in_month + 1)}
         self.manuel_atamalar_set = set()  # (gun, slot_idx) ciftleri - backtracking koruması
+        self.birlikte_uye_adlari = self._birlikte_uye_adlarini_hesapla()
 
         # Mazeret istatistikleri
         self.gun_mazeret_sayisi = {}
         self._hesapla_mazeret_istatistikleri()
+
+    def _birlikte_uye_adlarini_hesapla(self) -> Set[str]:
+        adlar = set()
+        for kural in self.kurallar:
+            if kural.get('tur') != 'birlikte':
+                continue
+            for key in ['p1', 'p2', 'p3']:
+                ad = kural.get(key)
+                if isinstance(ad, str) and ad.strip():
+                    adlar.add(ad.strip())
+            kisiler = kural.get('kisiler')
+            if isinstance(kisiler, list):
+                for ref in kisiler:
+                    if isinstance(ref, str):
+                        ref_s = ref.strip()
+                        if ref_s:
+                            adlar.add(ref_s)
+                        continue
+                    pid = normalize_id(ref)
+                    p = next((x for x in self.personeller if ids_match(x.id, pid)), None)
+                    if p:
+                        adlar.add(p.ad)
+        return adlar
 
     def _hesapla_mazeret_istatistikleri(self):
         """Her gün için kaç kişinin mazeretli olduğunu hesapla"""
@@ -241,6 +266,10 @@ class NobetYoneticisi:
                 kisit_gorev = kisit.get('gorevAdi')
                 if kisit_gorev != gorev.ad and kisit_gorev != gorev.base_name:
                     return False
+
+        # Ayrı bina slotlarına birlikte grubu üyeleri atanmasın
+        if gorev.ayri_bina and p.ad in self.birlikte_uye_adlari:
+            return False
 
         # Ayrı tutma kuralı
         for kural in self.kurallar:
@@ -378,7 +407,7 @@ class NobetYoneticisi:
                 # Boş slotları bul
                 bos_slotlar = []
                 for s_idx, g_obj in enumerate(self.gorevler):
-                    if self.cizelge[gun][s_idx] is None:
+                    if self.cizelge[gun][s_idx] is None and not g_obj.ayri_bina:
                         bos_slotlar.append((s_idx, g_obj))
 
                 if len(bos_slotlar) < len(grup_uyeleri):
@@ -737,19 +766,20 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
                     id=gorev_id,
                     ad=g.get("ad", f"Nöbetçi {idx + 1}"),
                     slot_index=idx,
-                    base_name=g.get("baseName", g.get("ad", ""))
+                    base_name=g.get("baseName", g.get("ad", "")),
+                    ayri_bina=bool(g.get("ayriBina", False))
                 ))
         else:
             for idx, g_ad in enumerate(raw_gorevler):
                 gorev_objs.append(GorevTanim(
-                    id=idx, ad=str(g_ad), slot_index=idx, base_name=str(g_ad)
+                    id=idx, ad=str(g_ad), slot_index=idx, base_name=str(g_ad), ayri_bina=False
                 ))
 
         # Eksik görevleri tamamla
         while len(gorev_objs) < gunluk_sayi:
             idx = len(gorev_objs)
             gorev_objs.append(GorevTanim(
-                id=idx, ad=f"Nöbetçi {idx + 1}", slot_index=idx
+                id=idx, ad=f"Nöbetçi {idx + 1}", slot_index=idx, ayri_bina=False
             ))
 
         days_in_month = get_days_in_month(yil, ay)
@@ -1155,7 +1185,8 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
                 ad=g_data.get("ad", f"Görev {idx}"),
                 slot_idx=idx,
                 base_name=g_data.get("baseName", ""),
-                exclusive=g_data.get("exclusive", False)
+                exclusive=g_data.get("exclusive", False),
+                ayri_bina=bool(g_data.get("ayriBina", False))
             ))
 
         # Birlikte kurallarını dönüştür
@@ -1319,8 +1350,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         exclusive_gorevler = set()  # Hangi görevler exclusive?
         for k in gorev_kisitlamalari_raw:
             # Kişi bazlı exclusive: k.exclusive true ise bu görev exclusive
-            if k.get("exclusive", False):
-                exclusive_gorevler.add(k.get("gorevAdi"))
+            gorev_adi = k.get("gorevAdi")
+            if k.get("exclusive", False) and gorev_adi:
+                exclusive_gorevler.add(gorev_adi)
         
         # Görevleri parse et - BASE_NAME ÖNEMLİ!
         gorevler = []
@@ -1331,23 +1363,45 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 base_name = g_data.get("baseName", gorev_ad.split(" #")[0] if " #" in gorev_ad else gorev_ad)
                 # Kişi bazlı exclusive: gorev adı veya base_name exclusive_gorevler'da mı?
                 exclusive = g_data.get("exclusive", False) or gorev_ad in exclusive_gorevler or base_name in exclusive_gorevler
+                ayri_bina = bool(g_data.get("ayriBina", False))
             else:
                 gorev_ad = str(g_data)
                 base_name = gorev_ad.split(" #")[0] if " #" in gorev_ad else gorev_ad
                 exclusive = gorev_ad in exclusive_gorevler or base_name in exclusive_gorevler
+                ayri_bina = False
 
             gorevler.append(SolverGorev(
                 id=idx,
                 ad=gorev_ad,
                 slot_idx=idx,
                 base_name=base_name,
-                exclusive=exclusive
+                exclusive=exclusive,
+                ayri_bina=ayri_bina
             ))
 
         # Eksik görevleri tamamla
         while len(gorevler) < slot_sayisi:
             idx = len(gorevler)
-            gorevler.append(SolverGorev(id=idx, ad=f"Nöbetçi {idx + 1}", slot_idx=idx, base_name=f"Nöbetçi {idx + 1}"))
+            gorevler.append(SolverGorev(
+                id=idx,
+                ad=f"Nöbetçi {idx + 1}",
+                slot_idx=idx,
+                base_name=f"Nöbetçi {idx + 1}",
+                ayri_bina=False
+            ))
+
+        def _normalize_gorev_adi(raw_gorev_adi):
+            if not raw_gorev_adi:
+                return None
+            for g in gorevler:
+                if g.ad == raw_gorev_adi or g.base_name == raw_gorev_adi:
+                    return g.base_name if g.base_name else g.ad
+            return raw_gorev_adi
+
+        exclusive_role_adlari = {
+            g.base_name if g.base_name else g.ad
+            for g in gorevler if g.exclusive
+        }
 
         # Personelleri parse et
         personeller = []
@@ -1373,11 +1427,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 if k_pid_matches:
                     raw_gorev_adi = k.get("gorevAdi")
                     # Frontend slot adı gönderebilir (ör: "AMEL #1"), base_name'e çevir
-                    kisitli_gorev = raw_gorev_adi
-                    for g in gorevler:
-                        if g.ad == raw_gorev_adi and g.base_name:
-                            kisitli_gorev = g.base_name
-                            break
+                    kisitli_gorev = _normalize_gorev_adi(raw_gorev_adi)
                     break
 
             # Gün tipi hedefleri
@@ -1432,6 +1482,45 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             )
 
         # Kuralları parse et
+        # Non-exclusive gorevler icin ek aday havuzlari (role -> izinli personel ID seti)
+        gorev_havuz_kayitlari = {}
+        for k_data in gorev_kisitlamalari_raw:
+            if k_data.get("exclusive", False):
+                continue
+
+            role = _normalize_gorev_adi(k_data.get("gorevAdi"))
+            if not role or role in exclusive_role_adlari:
+                continue
+
+            kayit = gorev_havuz_kayitlari.setdefault(role, {
+                "kisitlilar": set(),
+                "havuz": set(),
+                "has_pool": False
+            })
+
+            kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
+            if kisit_pid is not None:
+                kayit["kisitlilar"].add(kisit_pid)
+
+            havuz_ids_raw = k_data.get("havuzIds", [])
+            eklenen_havuz_id = False
+            if isinstance(havuz_ids_raw, list):
+                for raw_id in havuz_ids_raw:
+                    pid = _resolve_personel_id(raw_id, personeller, require_existing=True)
+                    if pid is not None:
+                        kayit["havuz"].add(pid)
+                        eklenen_havuz_id = True
+            if eklenen_havuz_id:
+                kayit["has_pool"] = True
+
+        gorev_havuzlari = {}
+        for role, kayit in gorev_havuz_kayitlari.items():
+            if not kayit["has_pool"]:
+                continue
+            allowed_ids = kayit["kisitlilar"] | kayit["havuz"]
+            if allowed_ids:
+                gorev_havuzlari[role] = allowed_ids
+
         kurallar = []
         for k_data in data.get("kurallar", []):
             tur = k_data.get("tur")
@@ -1570,6 +1659,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 personeller=personeller,
                 gorevler=gorevler,
                 kurallar=kurallar,
+                gorev_havuzlari=gorev_havuzlari,
                 manuel_atamalar=manuel_atamalar,
                 hedefler=hedefler,
                 ara_gun=dene_ara_gun,
