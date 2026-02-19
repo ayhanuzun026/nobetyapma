@@ -502,7 +502,7 @@ class HedefHesaplayici:
             we_val = sum(p.hedef_tipler.get(tip, 0) for tip in we_tipleri)
             wd_val = sum(p.hedef_tipler.get(tip, 0) for tip in wd_tipleri)
             hedefler.append({
-                'id': p.id, 'ad': p.ad,
+                'id': str(p.id), 'ad': p.ad,
                 'hedef_hici': p.hedef_tipler.get('hici', 0),
                 'hedef_prs': p.hedef_tipler.get('prs', 0),
                 'hedef_cum': p.hedef_tipler.get('cum', 0),
@@ -1096,7 +1096,7 @@ class NobetSolver:
                 'denge_farki': max_nobet - min_nobet,
                 'kalite_skoru': self._hesapla_kalite_skoru(kisi_sayac, atamalar, toplam_atama, toplam_slot),
                 'kisi_detay': [
-                    {'personel_id': p.id, 'personel_ad': p.ad, 'toplam': kisi_sayac[p.id]['toplam'],
+                    {'personel_id': str(p.id), 'personel_ad': p.ad, 'toplam': kisi_sayac[p.id]['toplam'],
                      'tipler': kisi_sayac[p.id]['tipler'], 'gorevler': kisi_sayac[p.id]['gorevler']}
                     for p in self.personel_listesi
                 ],
