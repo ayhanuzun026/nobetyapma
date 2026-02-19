@@ -3123,15 +3123,16 @@ function hedefleriHesaplaYerel() {
   const exclusiveGorevler = new Set();
   gorevKisitlamalari.forEach(k => {
     // Kişi bazlı exclusive veya global exclusive aktifse
-    if (k.exclusive !== false || kisitlamaExclusive) {
+    // Havuzlu görevleri hariç tut - havuz zaten kimin gidebileceğini kontrol ediyor
+    if ((k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0)) {
       exclusiveGorevler.add(k.gorevAdi);
     }
   });
-  
+
   // EXCLUSIVE MOD için kişi başı limit hesapla
   const exclusiveLimitler = {}; // { personelId: maxNobet }
   // Sadece exclusive olan kısıtlamalar için hesapla
-  const exclusiveKisitlamalar = gorevKisitlamalari.filter(k => k.exclusive !== false || kisitlamaExclusive);
+  const exclusiveKisitlamalar = gorevKisitlamalari.filter(k => (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0));
   
   if (exclusiveKisitlamalar.length > 0) {
     const gorevKisitlamaSayisi = {};
@@ -5100,7 +5101,7 @@ async function hedefHesaplaOrtools() {
     id: g.id,
     ad: g.ad,
     baseName: g.baseName || g.ad,
-    exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad)),
+    exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad)) && !(gorevHavuzlari[g.baseName || g.ad]?.length > 0),
     ayriBina: g.ayriBina === true
   }));
   
@@ -5120,7 +5121,7 @@ async function hedefHesaplaOrtools() {
   const gorevKisitData = gorevKisitlamalari.map(k => ({
     personelId: k.personelId,
     gorevAdi: k.gorevAdi,
-    exclusive: k.exclusive !== false || kisitlamaExclusive,  // Kişi bazlı veya global
+    exclusive: (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0),  // Kişi bazlı veya global, havuzlu görevler hariç
     havuzIds: gorevHavuzlari[k.gorevAdi] || [],  // gorevHavuzlari'dan oku (görev bazlı)
     gunTipiDagilimi: k.gunTipiDagilimi || null,
     tasmaGorevi: k.tasmaGorevi || null
@@ -5300,7 +5301,7 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
   const gorevKisitlamalariData = gorevKisitlamalari.map(k => ({
     personelId: k.personelId,
     gorevAdi: k.gorevAdi,
-    exclusive: k.exclusive !== false || kisitlamaExclusive,
+    exclusive: (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0),
     havuzIds: gorevHavuzlari[k.gorevAdi] || [],  // gorevHavuzlari'dan oku
     gunTipiDagilimi: k.gunTipiDagilimi || null,
     tasmaGorevi: k.tasmaGorevi || null
@@ -5536,7 +5537,7 @@ async function listeOlusturEskiBackend(yil, ay, gunSayisi, araGun, gunluk) {
   const gorevKisitlamalariData = gorevKisitlamalari.map(k => ({
     personelId: k.personelId,
     gorevAdi: k.gorevAdi,
-    exclusive: k.exclusive !== false || kisitlamaExclusive,
+    exclusive: (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0),
     havuzIds: gorevHavuzlari[k.gorevAdi] || [],  // gorevHavuzlari'dan oku
     gunTipiDagilimi: k.gunTipiDagilimi || null,
     tasmaGorevi: k.tasmaGorevi || null

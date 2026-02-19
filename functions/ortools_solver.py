@@ -791,11 +791,13 @@ class NobetSolver:
         
         # H8. Exclusive görevler - kısıtlı OLMAYAN kişi exclusive slotlara gidemez
         # Hangi görevlerin exclusive olduğunu bul (görevin exclusive flag'i true ise)
+        # AMA: Havuzu olan görevleri hariç tut - H10 zaten havuz kontrolü yapıyor
         exclusive_gorevler = set()
         for gorev in self.gorevler:
             if gorev.exclusive:
                 base = gorev.base_name if gorev.base_name else gorev.ad
-                exclusive_gorevler.add(base)
+                if base not in self.gorev_havuzlari:
+                    exclusive_gorevler.add(base)
         
         # Kısıtlı olmayan kişiler exclusive slotlara gidemez
         # Veya farklı bir göreve kısıtlı kişiler de exclusive slotlara gidemez
