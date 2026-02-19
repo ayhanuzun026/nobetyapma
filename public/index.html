@@ -4202,42 +4202,44 @@ function hazirlikAnaliziGoster(kapasite, atananToplam, gunSayisi) {
   const ozelGorevler = getOzelGorevler();
   const kisitlamaAnalizleri = [];
   ozelGorevler.forEach(gorevAdi => {
-    const kisitlama = gorevKisitlamalari.find(k => k.gorevAdi === gorevAdi);
     const gorevSlotSayisi = gorevler.filter(g => (g.baseName || g.ad) === gorevAdi).length;
+    const gunlukIhtiyac = gorevSlotSayisi;
 
-    if (kisitlama) {
-      // Havuz varsa kontrol et
-      const havuzIds = kisitlama.havuzIds || [];
-      const havuzPersoneller = personelListesi.filter(p => havuzIds.some(id => String(p.id) === String(id)));
-      const toplamHavuzHedef = havuzPersoneller.reduce((s, p) => s + GUN_TIPLERI.reduce((ss, t) => ss + p.hedef[t], 0), 0);
-      const gunlukIhtiyac = gorevSlotSayisi; // Her gün bu kadar slot lazım
+    // Bu göreve kotası olan TÜM personeli bul
+    const kotaliPersoneller = personelListesi.filter(p => (p.gorevKotalari?.[gorevAdi] || 0) > 0);
+    const toplamKota = kotaliPersoneller.reduce((s, p) => s + (p.gorevKotalari?.[gorevAdi] || 0), 0);
 
-      // Havuz personellerinin müsait günlerini hesapla
-      let havuzMusaitGunToplam = 0;
-      havuzPersoneller.forEach(hp => {
-        const m = kisiMusaitlikHesapla(hp, gunSayisi, yil, ay, araGun);
-        havuzMusaitGunToplam += m.maxNobet;
-      });
+    // Bu göreve kısıtlı kişiler
+    const kisitliKisiler = gorevKisitlamalari.filter(k => k.gorevAdi === gorevAdi);
 
-      const yeterli = havuzMusaitGunToplam >= gunSayisi * gunlukIhtiyac;
-      kisitlamaAnalizleri.push({
-        gorevAdi, havuzBuyuklugu: havuzPersoneller.length,
-        gunlukIhtiyac, toplamHavuzHedef, havuzMusaitGunToplam,
-        ihtiyac: gunSayisi * gunlukIhtiyac, yeterli,
-        havuzPersonelAdlari: havuzPersoneller.map(p => p.ad)
-      });
-    } else {
-      // Havuz yok - tüm personelden kotası olan var mı kontrol et
-      const kotaliPersoneller = personelListesi.filter(p => (p.gorevKotalari?.[gorevAdi] || 0) > 0);
-      kisitlamaAnalizleri.push({
-        gorevAdi, havuzBuyuklugu: kotaliPersoneller.length,
-        gunlukIhtiyac: gorevSlotSayisi,
-        toplamHavuzHedef: kotaliPersoneller.reduce((s, p) => s + (p.gorevKotalari?.[gorevAdi] || 0), 0),
-        yeterli: kotaliPersoneller.length >= 2,
-        havuzTanim: false,
-        havuzPersonelAdlari: kotaliPersoneller.map(p => p.ad)
-      });
-    }
+    // Görev havuzu üyeleri
+    const havuzIds = gorevHavuzlari[gorevAdi] || [];
+    const havuzPersoneller = havuzIds
+      .map(id => personelListesi.find(p => String(p.id) === String(id)))
+      .filter(Boolean);
+
+    // Toplam müsait gün hesapla (kotası olan herkes)
+    let havuzMusaitGunToplam = 0;
+    kotaliPersoneller.forEach(hp => {
+      const m = kisiMusaitlikHesapla(hp, gunSayisi, yil, ay, araGun);
+      havuzMusaitGunToplam += m.maxNobet;
+    });
+
+    const ihtiyac = gunSayisi * gunlukIhtiyac;
+    const yeterli = toplamKota >= ihtiyac * 0.9; // %90 yeterliyse OK
+
+    kisitlamaAnalizleri.push({
+      gorevAdi,
+      havuzBuyuklugu: kotaliPersoneller.length,
+      gunlukIhtiyac,
+      toplamHavuzHedef: toplamKota,
+      havuzMusaitGunToplam,
+      ihtiyac,
+      yeterli,
+      havuzPersonelAdlari: kotaliPersoneller.map(p => p.ad),
+      kisitliKisiSayisi: kisitliKisiler.length,
+      havuzUyeSayisi: havuzPersoneller.length
+    });
   });
 
   // ── 6. Ara gün analizi ──
@@ -4301,8 +4303,8 @@ function hazirlikAnaliziGoster(kapasite, atananToplam, gunSayisi) {
   // Görev kısıtlama riskleri
   kisitlamaAnalizleri.forEach(k => {
     if (!k.yeterli) {
-      kritikler.push(`"${k.gorevAdi}" gorevi icin havuz yetersiz! Havuz: ${k.havuzBuyuklugu} kisi, ihtiyac: ${k.ihtiyac} kisi-gun, mevcut kapasite: ${k.havuzMusaitGunToplam || '?'}`);
-      tavsiyeler.push(`"${k.gorevAdi}" havuzuna daha fazla personel ekleyin veya bu gorev icin kotalari artirin.`);
+      kritikler.push(`"${k.gorevAdi}" gorevi icin kapasite yetersiz! Atanan: ${k.havuzBuyuklugu} kisi (toplam kota: ${k.toplamHavuzHedef}), ihtiyac: ${k.ihtiyac} kisi-gun`);
+      tavsiyeler.push(`"${k.gorevAdi}" icin daha fazla personele kota atanmali veya mevcut kotalari artirin.`);
     }
   });
 
