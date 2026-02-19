@@ -565,6 +565,9 @@ ta<!DOCTYPE html>
           <div class="help">Oluşturulan listeyi kontrol edin ve indirin</div>
         </div>
         <div class="flex gap-1">
+          <button class="btn btn-sm" style="background:#059669; color:#fff;" onclick="hedefleriHesapla()" title="Hazırlık analizini tekrar çalıştır">
+            <i class="fa-solid fa-calculator"></i> Hazırlık Analizi
+          </button>
           <button class="btn btn-primary" onclick="listeOlustur()">
             <i class="fa-solid fa-sync"></i> Listeyi Oluştur
           </button>
@@ -645,6 +648,9 @@ ta<!DOCTYPE html>
     <div class="footer">
       <button class="btn btn-secondary" id="btn-geri" onclick="stepDegistir(-1)">
         <i class="fa-solid fa-arrow-left"></i> Geri
+      </button>
+      <button class="btn btn-sm" style="background:#059669; color:#fff;" onclick="kaydet(); alert('Veriler kaydedildi!')">
+        <i class="fa-solid fa-floppy-disk"></i> Kaydet
       </button>
       <button class="btn btn-primary" id="btn-ileri" onclick="stepDegistir(1)">
         İleri <i class="fa-solid fa-arrow-right"></i>
