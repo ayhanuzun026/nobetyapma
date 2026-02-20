@@ -133,7 +133,14 @@ class NobetYoneticisi:
             if ids_match(kisit.get('personelId'), p.id):
                 kisit_gorev = kisit.get('gorevAdi')
                 if kisit_gorev != gorev.ad and kisit_gorev != gorev.base_name:
-                    return False
+                    # Havuz üyesi ise (exclusive=false) diğer görevlere de atanabilir
+                    is_exclusive = kisit.get('exclusive', True)
+                    havuz_ids = kisit.get('havuzIds', [])
+                    if not is_exclusive or len(havuz_ids) > 0:
+                        # Havuz varsa veya exclusive değilse, kısıtlama yumuşak
+                        pass
+                    else:
+                        return False
 
         if gorev.ayri_bina and p.ad in self.birlikte_uye_adlari:
             return False
@@ -153,6 +160,16 @@ class NobetYoneticisi:
         kontrol_adi = gorev.base_name if gorev.base_name else gorev.ad
         if kontrol_adi in p.kalan_roller and p.kalan_roller[kontrol_adi] > 0:
             puan += 5000
+
+        # Kişi SADECE bu göreve atanabiliyorsa (diğer görevlere kotası 0) → çok yüksek öncelik
+        diger_gorev_var = False
+        for g in self.gorevler:
+            g_adi = g.base_name if g.base_name else g.ad
+            if g_adi != kontrol_adi and p.kalan_roller.get(g_adi, 0) > 0:
+                diger_gorev_var = True
+                break
+        if not diger_gorev_var and kontrol_adi in p.kalan_roller and p.kalan_roller[kontrol_adi] > 0:
+            puan += 20000  # Çok yüksek bonus - bu kişi SADECE bu göreve gidebilir
 
         puan += p.mazeret_sayisi * 100
 

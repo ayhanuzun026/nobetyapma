@@ -273,7 +273,8 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
 # ============================================
 
 def _greedy_fallback(personeller, gorevler, gun_sayisi, gun_tipleri,
-                     kurallar, hedefler, ara_gun, yil, ay, resmi_tatiller):
+                     kurallar, hedefler, ara_gun, yil, ay, resmi_tatiller,
+                     gorev_kisitlamalari=None):
     """SolverPersonel -> Personel dönüşümü yapıp greedy solver çalıştırır,
     sonucu SolverSonuc formatına çevirir."""
     import time as _time
@@ -327,7 +328,8 @@ def _greedy_fallback(personeller, gorevler, gun_sayisi, gun_tipleri,
         ara_gun=ara_gun,
         days_in_month=gun_sayisi,
         gorev_tanimlari=greedy_gorevler,
-        kurallar=greedy_kurallar
+        kurallar=greedy_kurallar,
+        gorev_kisitlamalari=gorev_kisitlamalari
     )
     yonetici.dagit()
 
@@ -663,7 +665,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                         kurallar=kurallar, hedefler=hedefler,
                         ara_gun=min(1, ara_gun), yil=yil, ay=ay,
-                        resmi_tatiller=resmi_tatiller
+                        resmi_tatiller=resmi_tatiller,
+                        gorev_kisitlamalari=data.get('gorevKisitlamalari', [])
                     )
                     if greedy_sonuc and greedy_sonuc.basarili:
                         sonuc = greedy_sonuc
