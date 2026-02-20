@@ -464,14 +464,16 @@ class HedefHesaplayici:
                 continue
             
             birlikte_debug.append(f"Grup: {grup_adlar}")
-            
-            for i in range(len(grup) - 1):
-                p1_id, p2_id = grup[i], grup[i + 1]
-                diff = model.NewIntVar(-5, 5, f'birlikte_diff_{p1_id}_{p2_id}')
-                model.Add(t[p1_id] - t[p2_id] == diff)
-                abs_diff = model.NewIntVar(0, 5, f'abs_birlikte_{p1_id}_{p2_id}')
-                model.AddAbsEquality(abs_diff, diff)
-                penalties.append(abs_diff * 500)
+
+            # All-pairs: tüm çiftleri karşılaştır (yıldız yerine)
+            for i in range(len(grup)):
+                for j in range(i + 1, len(grup)):
+                    p1_id, p2_id = grup[i], grup[j]
+                    diff = model.NewIntVar(-5, 5, f'birlikte_diff_{p1_id}_{p2_id}')
+                    model.Add(t[p1_id] - t[p2_id] == diff)
+                    abs_diff = model.NewIntVar(0, 5, f'abs_birlikte_{p1_id}_{p2_id}')
+                    model.AddAbsEquality(abs_diff, diff)
+                    penalties.append(abs_diff * 500)
         
         # --- 6. ÇÖZÜM ---
         model.Minimize(sum(penalties))
@@ -502,7 +504,7 @@ class HedefHesaplayici:
             we_val = sum(p.hedef_tipler.get(tip, 0) for tip in we_tipleri)
             wd_val = sum(p.hedef_tipler.get(tip, 0) for tip in wd_tipleri)
             hedefler.append({
-                'id': str(p.id), 'ad': p.ad,
+                'id': p.id, 'ad': p.ad,
                 'hedef_hici': p.hedef_tipler.get('hici', 0),
                 'hedef_prs': p.hedef_tipler.get('prs', 0),
                 'hedef_cum': p.hedef_tipler.get('cum', 0),
@@ -979,7 +981,189 @@ class NobetSolver:
             "slot_day_zero_candidate_preview": zero_slot_days,
             "role_ara_gun_capacity_issues": role_summaries[:limit_preview]
         }
-    
+
+    def _diagnose_infeasible(self, diagnostics: Dict) -> 'List[Dict]':
+        """INFEASIBLE nedenini analiz et, akıllı gevşetme aksiyonları öner.
+
+        Mevcut diagnostics verisine bakarak kök nedeni tespit eder ve
+        en etkili gevşetme sırasını döndürür.
+
+        Returns: Sıralı aksiyon listesi, ör:
+        [
+            {'aksiyon': 'ara_gun_azalt', 'oncelik': 1, 'neden': '...', 'puan': 90},
+            {'aksiyon': 'exclusive_gevset', 'oncelik': 2, 'neden': '...', 'puan': 70},
+        ]
+        """
+        aksiyonlar = []
+        zero_count = diagnostics.get('slot_day_zero_candidate_count', 0)
+        zero_preview = diagnostics.get('slot_day_zero_candidate_preview', [])
+        capacity_issues = diagnostics.get('role_ara_gun_capacity_issues', [])
+        toplam_slot_gun = self.gun_sayisi * self.slot_sayisi
+
+        # --- KURAL 1: Ara gün kapasite sorunu ---
+        # role_ara_gun_capacity_issues varsa, ara gün azaltmak en etkili çözüm
+        if capacity_issues:
+            toplam_eksik = sum(r.get('eksik', 0) for r in capacity_issues)
+            etkilenen_gorevler = [r['gorev'] for r in capacity_issues]
+            aksiyonlar.append({
+                'aksiyon': 'ara_gun_azalt',
+                'puan': 95,  # Çok yüksek öncelik
+                'neden': (
+                    f"Ara gun kapasite sorunu: {len(capacity_issues)} gorevde "
+                    f"toplam {toplam_eksik} atama eksik. "
+                    f"Etkilenen gorevler: {', '.join(etkilenen_gorevler[:5])}"
+                ),
+                'detay': {
+                    'etkilenen_gorevler': etkilenen_gorevler,
+                    'toplam_eksik': toplam_eksik
+                }
+            })
+
+        # --- KURAL 2: Exclusive darboğaz ---
+        # zero_candidate slotların çoğu exclusive görevlerdeyse
+        exclusive_roles = self._exclusive_roles_without_pool()
+        if zero_preview and exclusive_roles:
+            exclusive_zero = sum(
+                1 for z in zero_preview
+                if z.get('gorev', '') in exclusive_roles
+            )
+            exclusive_orani = exclusive_zero / max(len(zero_preview), 1)
+
+            if exclusive_orani > 0.3 or exclusive_zero > 5:
+                # Exclusive görevler için kapasite analizi
+                exclusive_kapasite = {}
+                for role in exclusive_roles:
+                    kisitli_kisiler = [
+                        p for p in self.personel_listesi
+                        if p.kisitli_gorev == role
+                    ]
+                    role_slot_count = len(self.role_slots.get(role, []))
+                    talep = self.gun_sayisi * role_slot_count
+                    musait_gunler = sum(
+                        len(p.musait_gunler) for p in kisitli_kisiler
+                    )
+                    exclusive_kapasite[role] = {
+                        'kisitli_kisi': len(kisitli_kisiler),
+                        'slot_sayisi': role_slot_count,
+                        'talep': talep,
+                        'toplam_musait_gun': musait_gunler
+                    }
+
+                aksiyonlar.append({
+                    'aksiyon': 'exclusive_gevset',
+                    'puan': 85 if exclusive_orani > 0.5 else 70,
+                    'neden': (
+                        f"Exclusive darbogaz: {exclusive_zero}/{len(zero_preview)} "
+                        f"bos slot exclusive gorevlerde. "
+                        f"Exclusive roller: {', '.join(list(exclusive_roles)[:5])}"
+                    ),
+                    'detay': {
+                        'exclusive_zero': exclusive_zero,
+                        'toplam_zero': len(zero_preview),
+                        'oran': round(exclusive_orani, 2),
+                        'kapasite': exclusive_kapasite
+                    }
+                })
+
+        # --- KURAL 3: Ayrı tutma kuralları çakışması ---
+        # Çok sayıda ayrı kuralı + yüksek mazeret → kullanılabilir gün azalır
+        ayri_kurallari = [k for k in self.kurallar if k.tur == 'ayri']
+        if ayri_kurallari:
+            # Ayrı kurallarının etki alanını hesapla
+            ayri_kisi_ids = set()
+            for k in ayri_kurallari:
+                for pid in k.kisiler:
+                    matched = find_matching_id(pid, self.personeller.keys())
+                    if matched is not None:
+                        ayri_kisi_ids.add(matched)
+
+            # Etkilenen kişilerin ortalama müsait gün sayısı
+            if ayri_kisi_ids:
+                ort_musait = sum(
+                    len(self.personeller[pid].musait_gunler)
+                    for pid in ayri_kisi_ids
+                    if pid in self.personeller
+                ) / max(len(ayri_kisi_ids), 1)
+
+                # Çok fazla kişi ayrı tutuluyorsa ve müsait gün azsa
+                etki_skoru = len(ayri_kisi_ids) * (self.gun_sayisi - ort_musait)
+                if etki_skoru > self.gun_sayisi * 2 or len(ayri_kurallari) > 3:
+                    aksiyonlar.append({
+                        'aksiyon': 'ayri_gevset',
+                        'puan': 65,
+                        'neden': (
+                            f"Ayri tutma cakismasi: {len(ayri_kurallari)} ayri kurali "
+                            f"{len(ayri_kisi_ids)} kisiyi etkiliyor, "
+                            f"ort musait gun: {ort_musait:.0f}/{self.gun_sayisi}"
+                        ),
+                        'detay': {
+                            'kural_sayisi': len(ayri_kurallari),
+                            'etkilenen_kisi': len(ayri_kisi_ids),
+                            'ort_musait_gun': round(ort_musait, 1)
+                        }
+                    })
+
+        # --- KURAL 4: Birlikte kuralları (genellikle sorun değil ama bazen) ---
+        birlikte_kurallari = [k for k in self.kurallar if k.tur == 'birlikte']
+        if birlikte_kurallari:
+            aksiyonlar.append({
+                'aksiyon': 'birlikte_kaldir',
+                'puan': 50,
+                'neden': (
+                    f"{len(birlikte_kurallari)} birlikte kurali var, "
+                    "bunlar model karmasikligini artirabilir"
+                ),
+                'detay': {'kural_sayisi': len(birlikte_kurallari)}
+            })
+
+        # --- KURAL 5: Genel kapasite krizi ---
+        # Çok fazla zero-candidate varsa durumu çok kötü
+        if zero_count > toplam_slot_gun * 0.3:
+            aksiyonlar.append({
+                'aksiyon': 'tum_soft_kaldir',
+                'puan': 40,
+                'neden': (
+                    f"Genel kapasite krizi: {zero_count}/{toplam_slot_gun} "
+                    f"slot/gun ciftinde hic aday yok (%{round(100*zero_count/max(toplam_slot_gun,1))})"
+                ),
+                'detay': {'zero_count': zero_count, 'toplam': toplam_slot_gun}
+            })
+
+        # --- Her zaman en sonda: Greedy fallback ---
+        aksiyonlar.append({
+            'aksiyon': 'greedy',
+            'puan': 10,
+            'neden': 'Son care: Greedy algoritma ile cozum uret',
+            'detay': {}
+        })
+
+        # Ara gün azalt yoksa ekle (her zaman denenebilir)
+        if not any(a['aksiyon'] == 'ara_gun_azalt' for a in aksiyonlar):
+            aksiyonlar.insert(0, {
+                'aksiyon': 'ara_gun_azalt',
+                'puan': 60,
+                'neden': 'Ara gun azaltma her zaman denenebilir',
+                'detay': {}
+            })
+
+        # tum_soft_kaldir yoksa ekle (greedy'den önce)
+        if not any(a['aksiyon'] == 'tum_soft_kaldir' for a in aksiyonlar):
+            aksiyonlar.insert(-1, {
+                'aksiyon': 'tum_soft_kaldir',
+                'puan': 30,
+                'neden': 'Tum soft kisitlari kaldirarak dene',
+                'detay': {}
+            })
+
+        # Puana göre sırala (yüksek puan = önce dene)
+        aksiyonlar.sort(key=lambda a: a['puan'], reverse=True)
+
+        # Öncelik numarası ekle
+        for i, a in enumerate(aksiyonlar):
+            a['oncelik'] = i + 1
+
+        return aksiyonlar
+
     def _hesapla_kalite_skoru(self, kisi_sayac: Dict, atamalar: List[Dict],
                               toplam_atama: int, toplam_slot: int) -> Dict:
         """Çözüm kalitesi metrikleri hesapla"""
@@ -1074,16 +1258,27 @@ class NobetSolver:
                 mesaj=f"Manuel atamalarda hard kisit cakismasi var ({len(manual_conflicts)} adet)"
             )
         
+        # Pre-compute impossible slot assignments for each person
+        exclusive_roles = self._exclusive_roles_without_pool()
+        birlikte_uye_ids = self._birlikte_uye_ids()
+
         x = {}
+        eliminated_vars = 0
         for p in self.personel_listesi:
             for g in range(1, self.gun_sayisi + 1):
                 if g in p.mazeret_gunleri:
                     # Mazeret günlerinde değişken oluşturma - sabit 0
                     for s in range(self.slot_sayisi):
                         x[p.id, g, s] = model.NewConstant(0)
+                        eliminated_vars += 1
                 else:
                     for s in range(self.slot_sayisi):
-                        x[p.id, g, s] = model.NewBoolVar(f'x_{p.id}_{g}_{s}')
+                        # Role-based elimination: impossible by role constraints
+                        if not self._person_can_take_slot_on_day(p.id, s, g, exclusive_roles, birlikte_uye_ids):
+                            x[p.id, g, s] = model.NewConstant(0)
+                            eliminated_vars += 1
+                        else:
+                            x[p.id, g, s] = model.NewBoolVar(f'x_{p.id}_{g}_{s}')
         
         # H1. Her slot EN FAZLA 1 kişi olsun, boş kalırsa ceza (SOFT)
         bos_slotlar = []
@@ -1141,9 +1336,10 @@ class NobetSolver:
         
         # H6. Manuel atamalar
         for m in self.manuel_atamalar:
-            if m.personel_id in self.personeller and 0 <= m.slot_idx < self.slot_sayisi:
+            matched_pid = find_matching_id(m.personel_id, self.personeller.keys())
+            if matched_pid is not None and 0 <= m.slot_idx < self.slot_sayisi:
                 if 1 <= m.gun <= self.gun_sayisi:
-                    model.Add(x[m.personel_id, m.gun, m.slot_idx] == 1)
+                    model.Add(x[matched_pid, m.gun, m.slot_idx] == 1)
         
         # H7. Kisitli gorev - kısıtlı kişi sadece kendi görevine gidebilir
         for p in self.personel_listesi:
@@ -1277,24 +1473,26 @@ class NobetSolver:
                         valid_ids.append(matched_id)
                 
                 if len(valid_ids) >= 2:
-                    # SOFT: Birlikte çalışma tercihi - eşit olmadığında ceza
-                    p1_id = valid_ids[0]
-                    p1_obj = self.personeller[p1_id]
-                    for p2_id in valid_ids[1:]:
-                        p2_obj = self.personeller[p2_id]
-                        # Her iki kişinin de müsait olduğu günleri bul
-                        ortak_gunler = p1_obj.musait_gunler & p2_obj.musait_gunler
-                        
-                        for g in range(1, self.gun_sayisi + 1):
-                            p1_atama = sum(x[p1_id, g, s] for s in range(self.slot_sayisi))
-                            p2_atama = sum(x[p2_id, g, s] for s in range(self.slot_sayisi))
-                            
-                            if g in ortak_gunler:
-                                # SOFT: Ortak günlerde birlikte atama tercih et
-                                fark = model.NewIntVar(0, 2, f'birlikte_fark_{p1_id}_{p2_id}_{g}')
-                                model.Add(p1_atama - p2_atama <= fark)
-                                model.Add(p2_atama - p1_atama <= fark)
-                                penalties.append(fark * WEIGHT_BIRLIKTE)
+                    # SOFT: Birlikte çalışma tercihi - all-pairs karşılaştırma
+                    for i in range(len(valid_ids)):
+                        for j in range(i + 1, len(valid_ids)):
+                            p1_id = valid_ids[i]
+                            p2_id = valid_ids[j]
+                            p1_obj = self.personeller[p1_id]
+                            p2_obj = self.personeller[p2_id]
+                            # Her iki kişinin de müsait olduğu günleri bul
+                            ortak_gunler = p1_obj.musait_gunler & p2_obj.musait_gunler
+
+                            for g in range(1, self.gun_sayisi + 1):
+                                p1_atama = sum(x[p1_id, g, s] for s in range(self.slot_sayisi))
+                                p2_atama = sum(x[p2_id, g, s] for s in range(self.slot_sayisi))
+
+                                if g in ortak_gunler:
+                                    # SOFT: Ortak günlerde birlikte atama tercih et
+                                    fark = model.NewIntVar(0, 2, f'birlikte_fark_{p1_id}_{p2_id}_{g}')
+                                    model.Add(p1_atama - p2_atama <= fark)
+                                    model.Add(p2_atama - p1_atama <= fark)
+                                    penalties.append(fark * WEIGHT_BIRLIKTE)
         
         # S5. Homojen dağılım - Nöbetleri ay geneline yay (haftada ~1 nöbet hedefi)
         # Mazeretler izin veriyorsa yay, vermiyorsa sıkışık tutulabilir
@@ -1332,6 +1530,8 @@ class NobetSolver:
                 # max_aralik = ideal_aralik + tolerans
                 tolerans = max(2, ideal_aralik // 2)
                 max_aralik = ideal_aralik + tolerans
+                # Sert üst sınır: ideal_aralik * 2'den büyük boşluklar için 5x ceza
+                sert_ust_sinir = ideal_aralik * 2
                 if max_aralik < self.gun_sayisi:
                     for baslangic in range(1, self.gun_sayisi - max_aralik + 1):
                         pencere_gunleri = list(range(baslangic, baslangic + max_aralik + 1))
@@ -1345,6 +1545,20 @@ class NobetSolver:
                         model.Add(pencere_nobet == 0).OnlyEnforceIf(bos_pencere)
                         model.Add(pencere_nobet >= 1).OnlyEnforceIf(bos_pencere.Not())
                         penalties.append(bos_pencere * WEIGHT_HOMOJEN)
+
+                # Kademeli ceza: sert_ust_sinir penceresi (büyük boşluklar için 5x)
+                if sert_ust_sinir < self.gun_sayisi:
+                    for baslangic in range(1, self.gun_sayisi - sert_ust_sinir + 1):
+                        pencere_gunleri = list(range(baslangic, baslangic + sert_ust_sinir + 1))
+                        pencere_nobet = sum(
+                            x[p.id, g, s]
+                            for g in pencere_gunleri if 1 <= g <= self.gun_sayisi
+                            for s in range(self.slot_sayisi)
+                        )
+                        buyuk_bosluk = model.NewBoolVar(f'buyuk_bosluk_{p.id}_{baslangic}')
+                        model.Add(pencere_nobet == 0).OnlyEnforceIf(buyuk_bosluk)
+                        model.Add(pencere_nobet >= 1).OnlyEnforceIf(buyuk_bosluk.Not())
+                        penalties.append(buyuk_bosluk * WEIGHT_HOMOJEN * 5)
         
         # S6. Yıllık dengeleme - Geçmiş ay eksiklerini bu ay tamamla
         # yillik_gerceklesen: {'hici': 10, 'cmt': 5, ...} şeklinde geçmiş ayların toplamı
@@ -1471,6 +1685,7 @@ class NobetSolver:
                 'solver_num_conflicts': solver.NumConflicts(),
                 'solver_num_branches': solver.NumBranches(),
                 'solver_wall_time_s': round(solver.WallTime(), 3),
+                'eliminated_vars': eliminated_vars,
                 'kalite_skoru': self._hesapla_kalite_skoru(kisi_sayac, atamalar, toplam_atama, toplam_slot),
                 'kisi_detay': [
                     {'personel_id': str(p.id), 'personel_ad': p.ad, 'toplam': kisi_sayac[p.id]['toplam'],

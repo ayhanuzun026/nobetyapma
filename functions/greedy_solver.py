@@ -327,9 +327,24 @@ class NobetYoneticisi:
                             bugun_atananlar.append(aday.ad)
 
     def _backtrack_komsular(self, gun: int, slot_idx: int, gorev: GorevTanim, min_ara_gun: int) -> bool:
-        """Komşu günlerdeki son 2 atamayı geri alarak yeni aday alanı aç"""
+        """Komşu günlerdeki atamayı geri alarak yeni aday alanı aç.
+        Hem önceki hem sonraki günleri tarar. max_backtrack_depth ile korunur."""
+        max_backtrack_depth = 3  # Sonsuz döngü koruması
+
+        # Hem önceki hem sonraki günleri tara
+        aday_gunler = []
         for geri_gun in range(max(1, gun - min_ara_gun), gun):
+            aday_gunler.append(geri_gun)
+        for ileri_gun in range(gun + 1, min(gun + min_ara_gun + 1, self.days_in_month + 1)):
+            aday_gunler.append(ileri_gun)
+
+        denemeler = 0
+        for geri_gun in aday_gunler:
+            if denemeler >= max_backtrack_depth:
+                break
             for geri_slot in range(len(self.gorevler) - 1, -1, -1):
+                if denemeler >= max_backtrack_depth:
+                    break
                 if (geri_gun, geri_slot) in self.manuel_atamalar_set:
                     continue
                 atanan_ad = self.cizelge[geri_gun][geri_slot]
@@ -342,11 +357,25 @@ class NobetYoneticisi:
                         break
                 if kisi is None:
                     continue
+                denemeler += 1
+
+                # Geri almayı dene, sonra aday var mı kontrol et
                 geri_gun_tipi = self._get_gun_tipi(geri_gun)
                 geri_gorev = self.gorevler[geri_slot]
                 self._atama_geri_al(kisi, geri_gun, geri_gun_tipi, geri_gorev)
                 self.cizelge[geri_gun][geri_slot] = None
-                return True
+
+                # Yeni aday var mı kontrol et
+                gun_tipi = self._get_gun_tipi(gun)
+                bugun_atananlar = [x for x in self.cizelge[gun] if x is not None]
+                yeni_aday = self.en_uygun_adayi_sec(gun, gun_tipi, gorev, min_ara_gun, bugun_atananlar)
+                if yeni_aday:
+                    return True  # Başarılı, geri alma kalıcı
+
+                # Başarısız - geri almayı undo yap
+                self.cizelge[geri_gun][geri_slot] = kisi.ad
+                kisi.nobet_yaz(geri_gun, geri_gun_tipi, geri_gorev.ad, geri_gorev.base_name)
+
         return False
 
     def _atama_geri_al(self, p: Personel, gun: int, gun_tipi: str, gorev: GorevTanim):

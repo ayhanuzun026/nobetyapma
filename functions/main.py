@@ -58,7 +58,21 @@ def _json_response(payload: dict, status: int = 200):
 
 def _error_response(e: Exception, context: str = ""):
     logger.exception("Sunucu hatası [%s]", context)
-    return _json_response({"error": "Sunucu hatası oluştu. Lütfen tekrar deneyin."}, status=500)
+    error_type = type(e).__name__
+    if isinstance(e, (ValueError, TypeError)):
+        detail = f"Geçersiz veri formatı: {str(e)[:200]}"
+        status = 400
+    elif isinstance(e, KeyError):
+        detail = f"Eksik alan: {str(e)[:200]}"
+        status = 400
+    else:
+        detail = "Beklenmeyen bir hata oluştu. Lütfen tekrar deneyin."
+        status = 500
+    return _json_response({
+        "error": detail,
+        "error_type": error_type,
+        "context": context,
+    }, status=status)
 
 
 # ============================================
@@ -73,12 +87,21 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "No data"}, status=400)
+            return _json_response({"error": "Veri gönderilmedi"}, status=400)
 
-        yil = int(data.get("yil", 2025))
-        ay = int(data.get("ay", 1))
-        gunluk_sayi = int(data.get("gunlukSayi", 5))
-        ara_gun = int(data.get("araGun", 2))
+        try:
+            yil = int(data.get("yil", 2025))
+            ay = int(data.get("ay", 1))
+            gunluk_sayi = int(data.get("gunlukSayi", 5))
+            ara_gun = int(data.get("araGun", 2))
+        except (ValueError, TypeError) as ve:
+            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+
+        if not (1 <= ay <= 12):
+            return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+        if not (2000 <= yil <= 2100):
+            return _json_response({"error": f"Geçersiz yıl değeri: {yil}"}, status=400)
+
         kurallar = data.get("kurallar", [])
         gorev_kisitlamalari = data.get("gorevKisitlamalari", [])
 
@@ -153,11 +176,18 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "No data"}, status=400)
+            return _json_response({"error": "Veri gönderilmedi"}, status=400)
 
-        yil = _safe_int(data.get("yil", 2025), 2025)
-        ay = _safe_int(data.get("ay", 1), 1)
-        slot_sayisi = _safe_int(data.get("slotSayisi", 5), 5)
+        try:
+            yil = _safe_int(data.get("yil", 2025), 2025)
+            ay = _safe_int(data.get("ay", 1), 1)
+            slot_sayisi = _safe_int(data.get("slotSayisi", 5), 5)
+        except (ValueError, TypeError) as ve:
+            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+
+        if not (1 <= ay <= 12):
+            return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+
         resmi_tatiller = data.get("resmiTatiller", [])
 
         gun_sayisi = get_days_in_month(yil, ay)
@@ -191,12 +221,19 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "No data"}, status=400)
+            return _json_response({"error": "Veri gönderilmedi"}, status=400)
 
-        gun_sayisi = _safe_int(data.get("gunSayisi", 31), 31)
-        gun_tipleri_raw = data.get("gunTipleri", {})
-        gun_tipleri = {int(k): v for k, v in gun_tipleri_raw.items()}
-        ara_gun = _safe_int(data.get("araGun", 2), 2)
+        try:
+            gun_sayisi = _safe_int(data.get("gunSayisi", 31), 31)
+            gun_tipleri_raw = data.get("gunTipleri", {})
+            gun_tipleri = {int(k): v for k, v in gun_tipleri_raw.items()}
+            ara_gun = _safe_int(data.get("araGun", 2), 2)
+        except (ValueError, TypeError) as ve:
+            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+
+        if gun_sayisi < 1 or gun_sayisi > 31:
+            return _json_response({"error": f"Geçersiz gün sayısı: {gun_sayisi}"}, status=400)
+
         saat_degerleri = data.get("saatDegerleri", None)
 
         personeller = parse_solver_personeller_hedef(data)
@@ -232,6 +269,106 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
 
 
 # ============================================
+# GREEDY FALLBACK YARDIMCISI
+# ============================================
+
+def _greedy_fallback(personeller, gorevler, gun_sayisi, gun_tipleri,
+                     kurallar, hedefler, ara_gun, yil, ay, resmi_tatiller):
+    """SolverPersonel -> Personel dönüşümü yapıp greedy solver çalıştırır,
+    sonucu SolverSonuc formatına çevirir."""
+    import time as _time
+    baslangic = _time.time()
+
+    # SolverGorev -> GorevTanim dönüşümü
+    greedy_gorevler = []
+    for g in gorevler:
+        greedy_gorevler.append(GorevTanim(
+            id=g.id, ad=g.ad, slot_index=g.slot_idx,
+            base_name=g.base_name if g.base_name else g.ad,
+            ayri_bina=g.ayri_bina
+        ))
+
+    # SolverPersonel -> Personel dönüşümü
+    greedy_personeller = []
+    for sp in personeller:
+        h = hedefler.get(sp.id, {})
+        hedef_tipler = h.get('hedef_tipler', {})
+        hedef_toplam = h.get('hedef_toplam', 3)
+
+        greedy_p = Personel(
+            id=sp.id, ad=sp.ad,
+            hedef_toplam=hedef_toplam,
+            hedef_hici=hedef_tipler.get('hici', 0),
+            hedef_prs=hedef_tipler.get('prs', 0),
+            hedef_cum=hedef_tipler.get('cum', 0),
+            hedef_cmt=hedef_tipler.get('cmt', 0),
+            hedef_pzr=hedef_tipler.get('pzr', 0),
+            hedef_roller=h.get('gorev_kotalari', {}),
+            mazeret_gunleri=sp.mazeret_gunleri.copy()
+        )
+        greedy_personeller.append(greedy_p)
+
+    # Greedy kurallar: SolverKural -> dict format
+    greedy_kurallar = []
+    for k in kurallar:
+        kural_dict = {'tur': k.tur}
+        for i, pid in enumerate(k.kisiler):
+            # Kişi adını bul
+            p = next((pp for pp in greedy_personeller if pp.id == pid), None)
+            if p:
+                kural_dict[f'p{i+1}'] = p.ad
+        greedy_kurallar.append(kural_dict)
+
+    takvim = build_takvim(yil, ay, resmi_tatiller)
+    yonetici = NobetYoneticisi(
+        personeller=greedy_personeller,
+        gunluk_sayi=len(greedy_gorevler),
+        takvim=takvim,
+        ara_gun=ara_gun,
+        days_in_month=gun_sayisi,
+        gorev_tanimlari=greedy_gorevler,
+        kurallar=greedy_kurallar
+    )
+    yonetici.dagit()
+
+    # Greedy sonucunu SolverSonuc formatına dönüştür
+    atamalar = []
+    for gun, slotlar in yonetici.cizelge.items():
+        for slot_idx, personel_ad in enumerate(slotlar):
+            if personel_ad is not None:
+                gorev = greedy_gorevler[slot_idx] if slot_idx < len(greedy_gorevler) else None
+                gorev_ad = gorev.ad if gorev else f'Slot {slot_idx}'
+                base_name = gorev.base_name if gorev and gorev.base_name else gorev_ad
+                gun_tipi = gun_tipleri.get(gun, 'hici')
+                p = next((pp for pp in greedy_personeller if pp.ad == personel_ad), None)
+                pid = p.id if p else 0
+                atamalar.append({
+                    'gun': gun, 'slot_idx': slot_idx, 'gorev_ad': gorev_ad,
+                    'gorev_base': base_name, 'personel_id': pid,
+                    'personel_ad': personel_ad, 'gun_tipi': gun_tipi
+                })
+
+    toplam_atama = len(atamalar)
+    toplam_slot = gun_sayisi * len(greedy_gorevler)
+    sure_ms = int((_time.time() - baslangic) * 1000)
+
+    return SolverSonuc(
+        basarili=toplam_atama > 0,
+        atamalar=atamalar,
+        istatistikler={
+            'status': 'GREEDY_FALLBACK',
+            'toplam_atama': toplam_atama,
+            'toplam_slot': toplam_slot,
+            'doluluk_yuzde': round(100 * toplam_atama / toplam_slot, 1) if toplam_slot > 0 else 0,
+            'bos_slot_sayisi': toplam_slot - toplam_atama,
+            'ara_gun': ara_gun,
+        },
+        sure_ms=sure_ms,
+        mesaj='GREEDY_FALLBACK'
+    )
+
+
+# ============================================
 # ENDPOINT: nobet_coz
 # ============================================
 
@@ -243,13 +380,20 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "No data"}, status=400)
+            return _json_response({"error": "Veri gönderilmedi"}, status=400)
 
-        yil = _safe_int(data.get("yil", 2025), 2025)
-        ay = _safe_int(data.get("ay", 1), 1)
-        slot_sayisi = _safe_int(data.get("slotSayisi", 6), 6)
-        ara_gun = _safe_int(data.get("araGun", 2), 2)
-        max_sure = _safe_int(data.get("maxSure", 300), 300)
+        try:
+            yil = _safe_int(data.get("yil", 2025), 2025)
+            ay = _safe_int(data.get("ay", 1), 1)
+            slot_sayisi = _safe_int(data.get("slotSayisi", 6), 6)
+            ara_gun = _safe_int(data.get("araGun", 2), 2)
+            max_sure = _safe_int(data.get("maxSure", 300), 300)
+        except (ValueError, TypeError) as ve:
+            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+
+        if not (1 <= ay <= 12):
+            return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
 
@@ -307,47 +451,259 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             hesap_sonuc = hesaplayici.hesapla()
             hedefler = {}
             for h in hesap_sonuc.hedefler:
-                pid = h.get('id')
+                pid = normalize_id(h.get('id'))
+                # HedefHesaplayici hedef_tipler'i ayrı alanlar olarak döner
+                hedef_tipler = h.get('hedef_tipler', {})
+                if not hedef_tipler:
+                    hedef_tipler = {
+                        'hici': h.get('hedef_hici', 0),
+                        'prs': h.get('hedef_prs', 0),
+                        'cum': h.get('hedef_cum', 0),
+                        'cmt': h.get('hedef_cmt', 0),
+                        'pzr': h.get('hedef_pzr', 0),
+                    }
                 hedefler[pid] = {
                     'hedef_toplam': h.get('hedef_toplam', 0),
-                    'hedef_tipler': h.get('hedef_tipler', {}),
+                    'hedef_tipler': hedef_tipler,
                     'gorev_kotalari': h.get('gorev_kotalari', {})
                 }
 
-        # Kademeli çözüm
+        # ============================================
+        # AKILLI TEŞHİS TABANLI ÇÖZÜM STRATEJİSİ
+        # ============================================
+        import time as _time
+        baslangic_toplam = _time.time()
+        tani_mesajlari = []
+        gevsetme_bilgisi = {}
+        teshis_bilgisi = {}
+
+        # Zaman bütçelemesi: max_sure'yi fazlara böl
+        sure_ilk = int(max_sure * 0.50)   # İlk deneme: %50
+        sure_gevsetme = int(max_sure * 0.40)  # Gevşetme denemeleri: %40
+        # Greedy: <1s
+
         sonuc = None
         kullanilan_ara_gun = ara_gun
-        for dene_ara_gun in range(ara_gun, -1, -1):
-            solver = NobetSolver(
-                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
-                personeller=personeller, gorevler=gorevler,
-                kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
-                kisitlama_istisnalari=kisitlama_istisnalari,
-                manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-                ara_gun=dene_ara_gun, max_sure_saniye=max_sure
-            )
-            sonuc = solver.coz()
-            kullanilan_ara_gun = dene_ara_gun
-            if sonuc.basarili:
-                break
 
+        # ---- FAZA 1: Orijinal parametrelerle çöz ----
+        solver = NobetSolver(
+            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+            personeller=personeller, gorevler=gorevler,
+            kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+            kisitlama_istisnalari=kisitlama_istisnalari,
+            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+            ara_gun=ara_gun, max_sure_saniye=sure_ilk
+        )
+        sonuc = solver.coz()
+
+        # ---- FAZA 2: INFEASIBLE ise akıllı teşhis ve otomatik gevşetme ----
+        if sonuc and not sonuc.basarili:
+            tani_mesajlari.append("Ilk deneme basarisiz, teshis baslatiliyor...")
+
+            # Teşhis: Neden INFEASIBLE olduğunu analiz et
+            diagnostics = solver._build_feasibility_diagnostics()
+            aksiyonlar = solver._diagnose_infeasible(diagnostics)
+
+            # Teşhis bilgisini kaydet
+            teshis_bilgisi = {
+                'kok_neden': aksiyonlar[0]['aksiyon'] if aksiyonlar else 'bilinmiyor',
+                'kok_neden_aciklama': aksiyonlar[0]['neden'] if aksiyonlar else '',
+                'teshis_sira': [
+                    {'aksiyon': a['aksiyon'], 'puan': a['puan'], 'neden': a['neden']}
+                    for a in aksiyonlar
+                ],
+                'zero_candidate_count': diagnostics.get('slot_day_zero_candidate_count', 0),
+                'kapasite_sorunlari': len(diagnostics.get('role_ara_gun_capacity_issues', []))
+            }
+            tani_mesajlari.append(
+                f"Teshis: Kok neden = {teshis_bilgisi['kok_neden']}, "
+                f"Aciklama: {teshis_bilgisi['kok_neden_aciklama']}"
+            )
+
+            # Gevşetme için kalan süreyi hesapla
+            gecen_sure = _time.time() - baslangic_toplam
+            kalan_sure = max(max_sure - gecen_sure, 5)
+            aksiyon_sayisi = len(aksiyonlar)
+            sure_per_aksiyon = max(int(kalan_sure / max(aksiyon_sayisi, 1)), 3)
+
+            # Hazırlık: exclusive-free görev listesi (gerekirse kullanılacak)
+            gorevler_noexcl = [
+                SolverGorev(
+                    id=g.id, ad=g.ad, slot_idx=g.slot_idx,
+                    base_name=g.base_name, exclusive=False,
+                    ayri_bina=g.ayri_bina
+                ) for g in gorevler
+            ]
+
+            # Kümülatif gevşetme durumu
+            aktif_gorevler = gorevler  # Başlangıçta orijinal görevler
+            aktif_kurallar = kurallar  # Başlangıçta orijinal kurallar
+            aktif_havuzlar = gorev_havuzlari
+            aktif_ara_gun = ara_gun
+
+            # Her aksiyonu sırayla dene
+            for aksiyon_info in aksiyonlar:
+                if sonuc.basarili:
+                    break
+
+                aksiyon = aksiyon_info['aksiyon']
+                tani_mesajlari.append(
+                    f"Gevsetme denemesi: {aksiyon} (puan: {aksiyon_info['puan']})"
+                )
+
+                if aksiyon == 'ara_gun_azalt':
+                    # Ara günü kademeli azalt
+                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                        if dene_ara_gun == aktif_ara_gun and aktif_ara_gun == ara_gun:
+                            continue  # İlk denemede zaten denendi
+                        solver = NobetSolver(
+                            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                            personeller=personeller, gorevler=aktif_gorevler,
+                            kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
+                            kisitlama_istisnalari=kisitlama_istisnalari,
+                            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                            ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        )
+                        sonuc = solver.coz()
+                        if sonuc.basarili:
+                            kullanilan_ara_gun = dene_ara_gun
+                            gevsetme_bilgisi['ara_gun_gevsetildi'] = True
+                            tani_mesajlari.append(
+                                f"Ara gun {ara_gun}->{dene_ara_gun} gevsetilerek cozum bulundu"
+                            )
+                            break
+                    aktif_ara_gun = 0  # Sonraki aksiyonlarda ara gün=0 kullan
+
+                elif aksiyon == 'exclusive_gevset':
+                    aktif_gorevler = gorevler_noexcl
+                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                        solver = NobetSolver(
+                            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                            personeller=personeller, gorevler=aktif_gorevler,
+                            kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
+                            kisitlama_istisnalari=kisitlama_istisnalari,
+                            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                            ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        )
+                        sonuc = solver.coz()
+                        if sonuc.basarili:
+                            kullanilan_ara_gun = dene_ara_gun
+                            gevsetme_bilgisi['exclusive_gevsetildi'] = True
+                            tani_mesajlari.append(
+                                "Exclusive kisitlar gevsetilerek cozum bulundu"
+                            )
+                            break
+
+                elif aksiyon == 'ayri_gevset':
+                    # Ayrı kurallarını kaldır (birlikte korunur)
+                    aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'ayri']
+                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                        solver = NobetSolver(
+                            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                            personeller=personeller, gorevler=aktif_gorevler,
+                            kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
+                            kisitlama_istisnalari=kisitlama_istisnalari,
+                            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                            ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        )
+                        sonuc = solver.coz()
+                        if sonuc.basarili:
+                            kullanilan_ara_gun = dene_ara_gun
+                            gevsetme_bilgisi['ayri_gevsetildi'] = True
+                            tani_mesajlari.append(
+                                "Ayri tutma kurallari kaldirildiktan sonra cozum bulundu"
+                            )
+                            break
+
+                elif aksiyon == 'birlikte_kaldir':
+                    aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'birlikte']
+                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                        solver = NobetSolver(
+                            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                            personeller=personeller, gorevler=aktif_gorevler,
+                            kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
+                            kisitlama_istisnalari=kisitlama_istisnalari,
+                            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                            ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        )
+                        sonuc = solver.coz()
+                        if sonuc.basarili:
+                            kullanilan_ara_gun = dene_ara_gun
+                            gevsetme_bilgisi['birlikte_kaldirildi'] = True
+                            tani_mesajlari.append(
+                                "Birlikte kurallari kaldirildiktan sonra cozum bulundu"
+                            )
+                            break
+
+                elif aksiyon == 'tum_soft_kaldir':
+                    aktif_kurallar = []
+                    aktif_havuzlar = {}
+                    for dene_ara_gun in range(min(1, aktif_ara_gun), -1, -1):
+                        solver = NobetSolver(
+                            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                            personeller=personeller, gorevler=gorevler_noexcl,
+                            kurallar=[], gorev_havuzlari={},
+                            kisitlama_istisnalari=kisitlama_istisnalari,
+                            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                            ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        )
+                        sonuc = solver.coz()
+                        if sonuc.basarili:
+                            kullanilan_ara_gun = dene_ara_gun
+                            gevsetme_bilgisi['tum_soft_kaldirildi'] = True
+                            tani_mesajlari.append(
+                                "Tum soft kisitlar kaldirildiktan sonra cozum bulundu"
+                            )
+                            break
+
+                elif aksiyon == 'greedy':
+                    tani_mesajlari.append("Greedy fallback baslatiliyor")
+                    greedy_sonuc = _greedy_fallback(
+                        personeller=personeller, gorevler=gorevler,
+                        gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                        kurallar=kurallar, hedefler=hedefler,
+                        ara_gun=min(1, ara_gun), yil=yil, ay=ay,
+                        resmi_tatiller=resmi_tatiller
+                    )
+                    if greedy_sonuc and greedy_sonuc.basarili:
+                        sonuc = greedy_sonuc
+                        gevsetme_bilgisi['greedy_fallback'] = True
+                        tani_mesajlari.append(
+                            "Greedy fallback ile cozum uretildi (kalite dusuk olabilir)"
+                        )
+                    else:
+                        tani_mesajlari.append("Greedy fallback da basarisiz oldu")
+
+        # Sonuç yoksa varsayılan hata
         if sonuc is None:
             sonuc = SolverSonuc(
                 basarili=False, atamalar=[],
                 istatistikler={'status': 'NO_SOLUTION', 'ara_gun': ara_gun},
-                sure_ms=0, mesaj="Çözüm üretilemedi - parametre hatası olabilir"
+                sure_ms=0, mesaj="Cozum uretilemedi - parametre hatasi olabilir"
             )
             kullanilan_ara_gun = ara_gun
 
-        if kullanilan_ara_gun != ara_gun and sonuc.basarili:
-            sonuc = SolverSonuc(
-                basarili=sonuc.basarili, atamalar=sonuc.atamalar,
-                istatistikler={**sonuc.istatistikler,
-                               'fallback_ara_gun': kullanilan_ara_gun,
-                               'istenen_ara_gun': ara_gun},
-                sure_ms=sonuc.sure_ms,
-                mesaj=f"{sonuc.mesaj} (ara_gun {ara_gun}->{kullanilan_ara_gun} gevsetildi)"
+        # Toplam süreyi güncelle
+        toplam_sure_ms = int((_time.time() - baslangic_toplam) * 1000)
+        sonuc = SolverSonuc(
+            basarili=sonuc.basarili, atamalar=sonuc.atamalar,
+            istatistikler={
+                **sonuc.istatistikler,
+                'tani_mesajlari': tani_mesajlari,
+                'gevsetme_bilgisi': gevsetme_bilgisi,
+                'teshis': teshis_bilgisi,
+                **(
+                    {'fallback_ara_gun': kullanilan_ara_gun, 'istenen_ara_gun': ara_gun}
+                    if kullanilan_ara_gun != ara_gun else {}
+                ),
+            },
+            sure_ms=toplam_sure_ms,
+            mesaj=(
+                f"{sonuc.mesaj} (ara_gun {ara_gun}->{kullanilan_ara_gun} gevsetildi)"
+                if kullanilan_ara_gun != ara_gun and sonuc.basarili
+                else sonuc.mesaj
             )
+        )
 
         # Çizelge formatına dönüştür
         cizelge = {}
@@ -359,7 +715,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
         hedef_debug = []
         for p in personeller:
-            h = hedefler.get(p.id, {})
+            h = hedefler.get(p.id) or hedefler.get(normalize_id(p.id)) or {}
             hedef_debug.append({
                 'id': p.id, 'ad': p.ad,
                 'hedef_toplam': h.get('hedef_toplam', 0),
@@ -367,10 +723,37 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 'mazeret_sayisi': len(p.mazeret_gunleri)
             })
 
+        # Kalite uyarıları oluştur
+        kalite_uyarilari = []
+        kalite_skoru = sonuc.istatistikler.get('kalite_skoru', {})
+        if kalite_skoru:
+            if kalite_skoru.get('denge_puani', 0) > 50:
+                kalite_uyarilari.append(
+                    f"Denge uyarisi: Nobet sayisi farki yuksek (%{kalite_skoru['denge_puani']}). "
+                    "Personeller arasi nobet sayisi dengesi bozuk."
+                )
+            if kalite_skoru.get('doluluk', 100) < 95:
+                kalite_uyarilari.append(
+                    f"Doluluk uyarisi: Slotlarin %{kalite_skoru['doluluk']}'i dolu. "
+                    "Bos kalan slotlar var."
+                )
+            if kalite_skoru.get('kural_uyumu', 100) < 80:
+                kalite_uyarilari.append(
+                    f"Hedef uyumu uyarisi: Hedeflerden sapma yuksek (%{kalite_skoru['kural_uyumu']} uyum). "
+                    "Personellerin hedeflerine ulasilamamis olabilir."
+                )
+            if kalite_skoru.get('saat_adaleti', 0) > 30:
+                kalite_uyarilari.append(
+                    f"Saat adaleti uyarisi: Saat dagilimi dengesiz (%{kalite_skoru['saat_adaleti']} sapma). "
+                    "Bazi personeller daha fazla saat calisiyor."
+                )
+
         return _json_response({
             "basari": sonuc.basarili, "mesaj": sonuc.mesaj, "sureMs": sonuc.sure_ms,
             "cizelge": cizelge, "atamalar": sonuc.atamalar,
             "istatistikler": sonuc.istatistikler,
+            "kaliteUyarilari": kalite_uyarilari,
+            "teshis": teshis_bilgisi,
             "gorevler": [g.ad for g in gorevler], "hedefDebug": hedef_debug
         })
 
