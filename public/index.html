@@ -451,9 +451,12 @@ ta<!DOCTYPE html>
       <div class="flex justify-between items-center mt-3">
         <h4 style="margin:0;">🗓️ Mazeret Takvimi</h4>
         <div class="flex gap-1">
-          <button class="btn btn-sm btn-success" onclick="document.getElementById('mazeret-excel').click()" 
+          <button class="btn btn-sm btn-success" onclick="document.getElementById('mazeret-excel').click()"
             title="Excel Formatı:&#10;• 1. sütun: Ad Soyad&#10;• 2-32. sütunlar: 1-31. günler&#10;&#10;Hücre Değerleri:&#10;• MZ veya M = Mazeret&#10;• Yİ veya Y = Yıllık İzin&#10;• Nİ veya NÖBET İZNİ = Nöbet İzni&#10;• 08:00-08:00 = Nöbet (görev seçimi sorulur)&#10;&#10;Renk:&#10;• Sarı arka plan (#FFC000) = Mazeret&#10;• Boş hücre = Müsait">
             <i class="fas fa-file-excel"></i> Mazeret Excel Yükle
+          </button>
+          <button class="btn btn-sm" style="background:#dc2626; color:#fff;" onclick="tumMazeretleriTemizle()" title="Tüm personelin mazeretlerini, yıllık izinlerini ve nöbet izinlerini sıfırlar">
+            <i class="fa-solid fa-trash-can"></i> Tümünü Temizle
           </button>
           <input type="file" id="mazeret-excel" hidden accept=".xlsx,.xls" onchange="mazeretExcelYukle(this)">
         </div>
@@ -2429,6 +2432,17 @@ function mazeretUygula(tur) {
   });
   
   selectedCells = [];
+  mazeretGridOlustur();
+  kaydetDebounced();
+}
+
+function tumMazeretleriTemizle() {
+  if (!confirm('Tüm personelin mazeretleri, yıllık izinleri ve nöbet izinleri silinecek. Devam?')) return;
+  personelListesi.forEach(p => {
+    p.mazeretler = [];
+    p.yillikIzinler = [];
+    p.nobetIzinleri = [];
+  });
   mazeretGridOlustur();
   kaydetDebounced();
 }
