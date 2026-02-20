@@ -3950,9 +3950,14 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
           }
         });
 
-        // Herkesi minimum kotaya eşitle
+        // Herkesi minimum kotaya eşitle ve fazlayı kapasiteye geri ver
         kisiler.forEach(p => {
           if (!p.gorevKotalari) p.gorevKotalari = {};
+          const mevcut = p.gorevKotalari[gorevAdi] || 0;
+          const fark = mevcut - minKota;
+          if (fark > 0) {
+            gorevKapasite[gorevAdi] += fark; // Düşürülen kotayı kapasiteye geri ekle
+          }
           p.gorevKotalari[gorevAdi] = minKota;
         });
 
@@ -4050,6 +4055,74 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
       }
     });
   });
+
+  // 5. KALAN KAPASİTEYİ DOLMAYAN KİŞİLERE DAĞIT (round-robin)
+  // ADIM 3'te birlikte eşitleme sonucu bazı kişilerin kotası düşmüş olabilir
+  // Bu adım kalan kapasiteyi toplam hedefine ulaşamamış kişilere dağıtır
+  let toplamKalan5 = ozelGorevler.reduce((s, g) => s + Math.max(0, gorevKapasite[g]), 0);
+  let guard5 = 0;
+
+  while (toplamKalan5 > 0 && guard5 < 50000) {
+    guard5++;
+
+    // Kapasitesi > 0 olan görevleri bul
+    const acikGorevler = ozelGorevler.filter(g => gorevKapasite[g] > 0);
+    if (acikGorevler.length === 0) break;
+
+    let herhangiAtandi5 = false;
+
+    for (const gorevAdi of acikGorevler) {
+      if (gorevKapasite[gorevAdi] <= 0) continue;
+
+      // Toplam kotası < toplam hedefi olan kişileri bul
+      const adaylar5 = personelListesi
+        .filter(p => {
+          // Kısıtlamalı ve tüm hedefi kısıtlı göreve gidiyorsa atla
+          const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id));
+          if (kisitlama) {
+            if (kisitlama.gunTipiDagilimi && kisitlama.gorevAdi !== gorevAdi) {
+              const dagitimToplam = GUN_TIPLERI.reduce((s, t) => s + (kisitlama.gunTipiDagilimi[t] || 0), 0);
+              const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
+              if (dagitimToplam >= toplamHedef) return false;
+            } else {
+              return false;
+            }
+          }
+
+          const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
+          if (toplamHedef === 0) return false;
+
+          const toplamKota = ozelGorevler.reduce((s, g) => s + (p.gorevKotalari?.[g] || 0), 0);
+          if (toplamKota >= toplamHedef) return false;
+
+          return true;
+        })
+        .sort((a, b) => {
+          // Toplam kotası az olanı öncelikle
+          const kotaA = ozelGorevler.reduce((s, g) => s + (a.gorevKotalari?.[g] || 0), 0);
+          const kotaB = ozelGorevler.reduce((s, g) => s + (b.gorevKotalari?.[g] || 0), 0);
+          if (kotaA !== kotaB) return kotaA - kotaB;
+
+          const gKotaA = a.gorevKotalari?.[gorevAdi] || 0;
+          const gKotaB = b.gorevKotalari?.[gorevAdi] || 0;
+          return gKotaA - gKotaB;
+        });
+
+      if (adaylar5.length > 0) {
+        if (!adaylar5[0].gorevKotalari) adaylar5[0].gorevKotalari = {};
+        adaylar5[0].gorevKotalari[gorevAdi] = (adaylar5[0].gorevKotalari[gorevAdi] || 0) + 1;
+        gorevKapasite[gorevAdi]--;
+        toplamKalan5--;
+        herhangiAtandi5 = true;
+        console.log(`[KOTA-ADIM5] Kalan kapasite dağıtımı: ${adaylar5[0].ad} → ${gorevAdi} (+1)`);
+      }
+    }
+
+    if (!herhangiAtandi5) {
+      console.warn(`[KOTA-ADIM5] Kalan kapasite dağıtılamadı, ${toplamKalan5} slot kaldı`);
+      break;
+    }
+  }
 
   // ÖZET RAPOR
   console.log('[KOTA] === DAĞITIM ÖZET RAPORU ===');
