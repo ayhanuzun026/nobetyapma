@@ -3805,12 +3805,13 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
       if (!p.gorevKotalari) p.gorevKotalari = {};
       const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
       const mevcutKota = p.gorevKotalari[gorevAdi] || 0;
+      const toplamMevcutKota = ozelGorevler.reduce((s, g) => s + (p.gorevKotalari?.[g] || 0), 0);
 
-      // Toplam hedefi aşmasın
+      // Toplam hedefi aşmasın (tüm görevlerdeki toplam kota)
       let eklenecek = kisiBasiKota + (kalanMod > 0 ? 1 : 0);
       if (kalanMod > 0) kalanMod--;
 
-      const maxEklenebilir = toplamHedef - mevcutKota;
+      const maxEklenebilir = toplamHedef - toplamMevcutKota;
       eklenecek = Math.min(eklenecek, Math.max(0, maxEklenebilir));
 
       p.gorevKotalari[gorevAdi] = mevcutKota + eklenecek;
@@ -4004,21 +4005,24 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
       if (toplamKota < aylikOrtalama && toplamKota < toplamHedef) {
         const eksik = Math.min(aylikOrtalama - toplamKota, toplamHedef - toplamKota);
 
-        // Eksik miktarı DİĞER görevlere dağıt (havuz görevinden değil)
-        const digerGorevler = ozelGorevler.filter(g => g !== gorevAdi);
+        // Eksik miktarı önce KENDİ havuz görevine, sonra diğer görevlere dağıt
+        const gorevSirasi = [gorevAdi, ...ozelGorevler.filter(g => g !== gorevAdi)];
         let kalanEksik = eksik;
 
-        for (const digerGorev of digerGorevler) {
+        for (const hedefGorev of gorevSirasi) {
           if (kalanEksik <= 0) break;
-          if (gorevKapasite[digerGorev] <= 0) {
-            console.warn(`[KOTA-ADIM4] ⚠️ ${digerGorev} kapasitesi dolu! Havuz tamamlama atlandı`);
+          if (gorevKapasite[hedefGorev] <= 0) {
+            if (hedefGorev !== gorevAdi) {
+              console.warn(`[KOTA-ADIM4] ⚠️ ${hedefGorev} kapasitesi dolu! Havuz tamamlama atlandı`);
+            }
             continue;
           }
           if (!personel.gorevKotalari) personel.gorevKotalari = {};
-          personel.gorevKotalari[digerGorev] = (personel.gorevKotalari[digerGorev] || 0) + 1;
-          gorevKapasite[digerGorev]--;
-          kalanEksik--;
-          console.log(`[KOTA-ADIM4] Havuz tamamlama: ${personel.ad} → ${digerGorev} (+1), kalan kapasite: ${gorevKapasite[digerGorev]}`);
+          const atanicak = Math.min(kalanEksik, gorevKapasite[hedefGorev]);
+          personel.gorevKotalari[hedefGorev] = (personel.gorevKotalari[hedefGorev] || 0) + atanicak;
+          gorevKapasite[hedefGorev] -= atanicak;
+          kalanEksik -= atanicak;
+          console.log(`[KOTA-ADIM4] Havuz tamamlama: ${personel.ad} → ${hedefGorev} (+${atanicak}), kalan kapasite: ${gorevKapasite[hedefGorev]}`);
         }
 
         if (eksik > 0) {
