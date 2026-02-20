@@ -3821,50 +3821,63 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
     console.log(`Havuz dağıtımı: ${gorevAdi} → ${havuzUyeleri.map(p => p.ad).join(', ')} (kalan: ${gorevKapasite[gorevAdi]})`);
   });
 
-  // 2. KISITLAMASIZ KİŞİLERE DENGELİ DAĞIT
-  ozelGorevler.forEach(gorevAdi => {
-    let kalan = gorevKapasite[gorevAdi];
-    let guard = 0;
+  // 2. KISITLAMASIZ KİŞİLERE DENGELİ DAĞIT (round-robin)
+  // Görevleri tek tek değil, round-robin ile dağıt: en az dolan görev önce
+  let toplamKalan = ozelGorevler.reduce((s, g) => s + gorevKapasite[g], 0);
+  let guard2 = 0;
 
-    while (kalan > 0 && guard < 10000) {
-      guard++;
+  while (toplamKalan > 0 && guard2 < 50000) {
+    guard2++;
 
-      // Uygun adayları bul (kısıtlamalı kişileri hariç tut)
+    // En az doluluk oranına sahip görevi seç (kalan kapasitesi > 0 olanlardan)
+    const dolulukSirali = ozelGorevler
+      .filter(g => gorevKapasite[g] > 0)
+      .sort((a, b) => {
+        // Doluluk oranı: atanan / toplam_kapasite (düşük olan önce)
+        const kapA = gorevKapasiteAyar[a]?.toplam > 0 ? gorevKapasiteAyar[a].toplam : gunSayisi * gorevSutunSayisi(a);
+        const kapB = gorevKapasiteAyar[b]?.toplam > 0 ? gorevKapasiteAyar[b].toplam : gunSayisi * gorevSutunSayisi(b);
+        const atananA = kapA - gorevKapasite[a];
+        const atananB = kapB - gorevKapasite[b];
+        const oranA = atananA / kapA;
+        const oranB = atananB / kapB;
+        return oranA - oranB; // En az dolan önce
+      });
+
+    if (dolulukSirali.length === 0) break;
+
+    let herhangiAtandi = false;
+
+    for (const gorevAdi of dolulukSirali) {
+      if (gorevKapasite[gorevAdi] <= 0) continue;
+
+      // Uygun adayları bul
       const adaylar = personelListesi
         .filter(p => {
-          // Kısıtlamalı mı? (başka göreve kısıtlı ise bu göreve atanamaz)
+          // Kısıtlamalı mı?
           const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id));
           if (kisitlama) {
-            // gunTipiDagilimi varsa ve kalan hedefi varsa, diğer görevlere atanabilir
             if (kisitlama.gunTipiDagilimi && kisitlama.gorevAdi !== gorevAdi) {
               const dagitimToplam = GUN_TIPLERI.reduce((s, t) => s + (kisitlama.gunTipiDagilimi[t] || 0), 0);
               const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
-              if (dagitimToplam < toplamHedef) {
-                // Kalan hedef var, diğer görevlere atanabilir — devam et
-              } else {
-                return false;
-              }
+              if (dagitimToplam >= toplamHedef) return false;
             } else {
-              return false; // Tüm hedefi kısıtlı göreve gidiyor
+              return false;
             }
           }
 
-          // Toplam hedefi var mı?
           const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
           if (toplamHedef === 0) return false;
 
-          // Bu görev için kotası toplam hedefinden az mı?
           const mevcutKota = p.gorevKotalari?.[gorevAdi] || 0;
           if (mevcutKota >= toplamHedef) return false;
 
-          // Tüm görevlerin toplam kotası toplam hedefi aşmasın
           const toplamKota = ozelGorevler.reduce((s, g) => s + (p.gorevKotalari?.[g] || 0), 0);
           if (toplamKota >= toplamHedef) return false;
 
           return true;
         })
         .sort((a, b) => {
-          // Havuz üyesi önceliği: havuz üyesi olan kişileri öne al
+          // Havuz üyesi önceliği
           const aHavuz = (gorevHavuzlari[gorevAdi] || []).some(id => String(id) === String(a.id)) ? 0 : 1;
           const bHavuz = (gorevHavuzlari[gorevAdi] || []).some(id => String(id) === String(b.id)) ? 0 : 1;
           if (aHavuz !== bHavuz) return aHavuz - bHavuz;
@@ -3885,16 +3898,22 @@ function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
           return gecmisA - gecmisB;
         });
 
-      if (adaylar.length === 0) {
-        console.warn(`[KOTA-ADIM2] ${gorevAdi}: ${kalan} slot dağıtılamadı - uygun aday kalmadı!`);
-        break;
+      if (adaylar.length > 0) {
+        if (!adaylar[0].gorevKotalari) adaylar[0].gorevKotalari = {};
+        adaylar[0].gorevKotalari[gorevAdi] = (adaylar[0].gorevKotalari[gorevAdi] || 0) + 1;
+        gorevKapasite[gorevAdi]--;
+        toplamKalan--;
+        herhangiAtandi = true;
       }
-
-      if (!adaylar[0].gorevKotalari) adaylar[0].gorevKotalari = {};
-      adaylar[0].gorevKotalari[gorevAdi] = (adaylar[0].gorevKotalari[gorevAdi] || 0) + 1;
-      kalan--;
-      gorevKapasite[gorevAdi]--;
     }
+
+    if (!herhangiAtandi) {
+      console.warn(`[KOTA-ADIM2] Round-robin: Hiçbir göreve aday bulunamadı, ${toplamKalan} slot kaldı`);
+      break;
+    }
+  }
+
+  ozelGorevler.forEach(gorevAdi => {
     console.log(`[KOTA-ADIM2] ${gorevAdi}: dağıtım tamamlandı, kalan kapasite: ${gorevKapasite[gorevAdi]}`);
   });
 
