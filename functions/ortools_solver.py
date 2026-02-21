@@ -1,4 +1,4 @@
-﻿"""
+"""
 OR-Tools CP-SAT Nobet Cozucu v4.2
 Gorev kotalari + Gun tipi kotalari dahil
 """
@@ -839,37 +839,39 @@ class NobetSolver:
                 })
 
             if role in exclusive_gorevler and p.kisitli_gorev != role:
-                conflicts.append({
-                    "code": "EXCLUSIVE_IHLALI",
-                    "mesaj": f"{p.ad} exclusive goreve manuel atanmis",
-                    "personel_id": pid,
-                    "personel_ad": p.ad,
-                    "gun": m.gun,
-                    "gorev": role
-                })
-
-            if role in self.gorev_havuzlari and pid not in self.gorev_havuzlari[role]:
-                # Bug fix: kısıtlı kişiler veya taşma görevi olan kişiler havuz dışı sayılmaz
-                if p.kisitli_gorev != role and (not p.tasma_gorevi or p.tasma_gorevi != role):
+                # YENI KURAL: Eger bu kisiye bu gorev icin hedef kota verilmisse exclusive bloklamasini gec
+                hedef = self.hedefler.get(pid, {})
+                gorev_kotalari = hedef.get('gorev_kotalari', {})
+                if gorev_kotalari.get(role, 0) == 0:
                     conflicts.append({
-                        "code": "HAVUZ_IHLALI",
-                        "mesaj": f"{p.ad} gorev havuzu disinda manuel atanmis",
+                        "code": "EXCLUSIVE_IHLALI",
+                        "mesaj": f"{p.ad} exclusive goreve manuel atanmis",
                         "personel_id": pid,
                         "personel_ad": p.ad,
                         "gun": m.gun,
                         "gorev": role
                     })
 
+            if role in self.gorev_havuzlari and pid not in self.gorev_havuzlari[role]:
+                # Bug fix: kısıtlı kişiler veya taşma görevi olan kişiler havuz dışı sayılmaz
+                if p.kisitli_gorev != role and (not p.tasma_gorevi or p.tasma_gorevi != role):
+                    # YENI KURAL: Eger bu kisiye bu gorev icin hedef kota verilmisse havuz bloklamasini gec
+                    hedef = self.hedefler.get(pid, {})
+                    gorev_kotalari = hedef.get('gorev_kotalari', {})
+                    if gorev_kotalari.get(role, 0) == 0:
+                        conflicts.append({
+                            "code": "HAVUZ_IHLALI",
+                            "mesaj": f"{p.ad} gorev havuzu disinda manuel atanmis",
+                            "personel_id": pid,
+                            "personel_ad": p.ad,
+                            "gun": m.gun,
+                            "gorev": role
+                        })
+
             if m.slot_idx in ayri_bina_slotlar and pid in birlikte_uye_ids:
                 if (pid, m.gun) not in self.birlikte_istisna_set:
-                    conflicts.append({
-                        "code": "AYRI_BINA_BIRLIKTE",
-                        "mesaj": f"{p.ad} birlikte kuralinda olmasina ragmen ayri bina slotuna manuel atanmis",
-                        "personel_id": pid,
-                        "personel_ad": p.ad,
-                        "gun": m.gun,
-                        "slot_idx": m.slot_idx
-                    })
+                    # YENI KURAL: Manuel atamalarda birlikte uyesi ayri binaya atanirsa otomatik istisna kabul et
+                    self.birlikte_istisna_set.add((pid, m.gun))
 
         for (pid, gun), cnt in per_person_day.items():
             if cnt > 1:
@@ -899,16 +901,8 @@ class NobetSolver:
                 g1, g2 = gunler[i], gunler[i + 1]
                 if g2 - g1 <= self.ara_gun:
                     if (pid, g1, g2) not in self.aragun_istisna_set:
-                        p = self.personeller.get(pid)
-                        conflicts.append({
-                            "code": "ARA_GUN_IHLALI",
-                            "mesaj": f"{p.ad if p else pid} manuel atamalari ara gun kisitini ihlal ediyor",
-                            "personel_id": pid,
-                            "personel_ad": p.ad if p else "",
-                            "gun1": g1,
-                            "gun2": g2,
-                            "ara_gun": self.ara_gun
-                        })
+                        # YENI KURAL: Manuel atamalarda ara gun ihlali otomatik olarak kullanicinin onayi sayilsin
+                        self.aragun_istisna_set.add((pid, g1, g2))
 
         # Ayrı kuralı: aynı gün iki kişi de manuel atanmış mı?
         daily_manual_people = {}
@@ -974,11 +968,7 @@ class NobetSolver:
 
         # H8: Exclusive görevler (havuzsuz) - taşma görevi olan kişi de girebilir
         if role in exclusive_roles and p.kisitli_gorev != role and p.tasma_gorevi != role:
-            # YENİ KURAL (Senkronize): Hedefi varsa girmesine izin ver
-            hedef = self.hedefler.get(p.id, {})
-            gorev_kotalari = hedef.get('gorev_kotalari', {})
-            if gorev_kotalari.get(role, 0) == 0:
-                return False
+            return False
 
         # H10: Görev havuzu
         allowed_ids = self.gorev_havuzlari.get(role)
@@ -986,11 +976,7 @@ class NobetSolver:
             # Bug fix: kısıtlı veya taşma görevi olan kişiler havuz dışı sayılmaz
             if not (p.kisitli_gorev and p.kisitli_gorev == role):
                 if not (p.tasma_gorevi and p.tasma_gorevi == role):
-                    # YENİ KURAL (Senkronize): Hedefi varsa havuza girmesine izin ver
-                    hedef = self.hedefler.get(p.id, {})
-                    gorev_kotalari = hedef.get('gorev_kotalari', {})
-                    if gorev_kotalari.get(role, 0) == 0:
-                        return False
+                    return False
 
         # H9: Ayrı bina slotu + birlikte üyesi
         if getattr(self.gorevler[slot_idx], 'ayri_bina', False) and pid in birlikte_uye_ids:
@@ -1405,10 +1391,11 @@ class NobetSolver:
         for p in self.personel_listesi:
             for g1 in range(1, self.gun_sayisi + 1):
                 for g2 in range(g1 + 1, min(g1 + self.ara_gun + 1, self.gun_sayisi + 1)):
-                    model.Add(
-                        sum(x[p.id, g1, s] for s in range(self.slot_sayisi)) +
-                        sum(x[p.id, g2, s] for s in range(self.slot_sayisi)) <= 1
-                    )
+                    if (p.id, g1, g2) not in self.aragun_istisna_set:
+                        model.Add(
+                            sum(x[p.id, g1, s] for s in range(self.slot_sayisi)) +
+                            sum(x[p.id, g2, s] for s in range(self.slot_sayisi)) <= 1
+                        )
         
         # H5. Ayri tutma
         for kural in self.kurallar:
@@ -1424,10 +1411,19 @@ class NobetSolver:
                     for g in range(1, self.gun_sayisi + 1):
                         for i, p1_id in enumerate(valid_ids):
                             for p2_id in valid_ids[i+1:]:
-                                model.Add(
-                                    sum(x[p1_id, g, s] for s in range(self.slot_sayisi)) +
-                                    sum(x[p2_id, g, s] for s in range(self.slot_sayisi)) <= 1
-                                )
+                                # Kural esnetme: Eger iki kisi de bu gune manuel atanmissa kurali ekleme (kullanici onayi)
+                                m_p1 = any(m.gun == g and find_matching_id(m.personel_id, self.personeller.keys()) == p1_id for m in self.manuel_atamalar)
+                                m_p2 = any(m.gun == g and find_matching_id(m.personel_id, self.personeller.keys()) == p2_id for m in self.manuel_atamalar)
+                                if m_p1 and m_p2:
+                                    continue
+                                # H5 Guncelleme: Ayni gun BAKIYORUZ ama
+                                # sadece AYNI GOREV (Bina/Rol) icin kisitliyoruz.
+                                # Farkli gorevlere atanabilirler.
+                                for base_name, slot_list in self.role_slots.items():
+                                    model.Add(
+                                        sum(x[p1_id, g, s] for s in slot_list) +
+                                        sum(x[p2_id, g, s] for s in slot_list) <= 1
+                                    )
         
         # H6. Manuel atamalar
         for m in self.manuel_atamalar:
@@ -1474,17 +1470,10 @@ class NobetSolver:
         # Kısıtlı olmayan kişiler exclusive slotlara gidemez
         # Veya farklı bir göreve kısıtlı kişiler de exclusive slotlara gidemez
         # Taşma görevi olarak bu göreve atanmış kişiler de girebilir
-        # YENİ KURAL: Eğer frontend üzerinden o görev için açıkça quota hedefi girilmişse (manuel düzeltme) izin ver
         for p in self.personel_listesi:
             for exclusive_gorev in exclusive_gorevler:
                 # Bu kişi bu exclusive göreve kısıtlı mı veya taşma görevi mi?
                 if p.kisitli_gorev != exclusive_gorev and p.tasma_gorevi != exclusive_gorev:
-                    # Manuel hedefi var mı?
-                    hedef = self.hedefler.get(p.id, {})
-                    gorev_kotalari = hedef.get('gorev_kotalari', {})
-                    if gorev_kotalari.get(exclusive_gorev, 0) > 0:
-                        continue  # Hedef verilmişse bloklama
-                        
                     # Hayır - bu exclusive göreve gidemez
                     exclusive_slotlar = self.role_slots.get(exclusive_gorev, [])
                     for g in range(1, self.gun_sayisi + 1):
@@ -1492,7 +1481,8 @@ class NobetSolver:
                             model.Add(x[p.id, g, s] == 0)
 
         # H9. Ayrı bina slotlarına birlikte kuralı üyeleri atanmasın
-        #     (istisna olan kişi+gün çiftleri hariç)
+        #     YENI KURAL: Tamamen yasaklamak yerine MAX 1 KERE gidebilirler.
+        #     Böylece ayrı binalar sapsarı kalmaz, gerektiğinde 1 kez görevlendirilebilirler.
         ayri_bina_slotlar = [
             s for s, gorev in enumerate(self.gorevler)
             if getattr(gorev, 'ayri_bina', False)
@@ -1508,11 +1498,18 @@ class NobetSolver:
                         birlikte_uye_ids.add(matched_pid)
 
             for pid in birlikte_uye_ids:
+                # Kisinin tüm ay boyunca ayrı binada tutabileceği maksimum nöbet sayısı
+                # İstisna günleri varsa orası zaten manuel geçilmiştir
+                toplam_ayri_bina_atamasi = []
                 for g in range(1, self.gun_sayisi + 1):
                     if (pid, g) in self.birlikte_istisna_set:
-                        continue  # İstisna olan gün — hard constraint ekleme
+                        continue  # İstisna olan gün hesaplamadan hariç tutulur (limitsizdir)
                     for s in ayri_bina_slotlar:
-                        model.Add(x[pid, g, s] == 0)
+                        toplam_ayri_bina_atamasi.append(x[pid, g, s])
+                
+                # Birlikte olan bu üye, ayri binalarda ayda EN FAZLA 1 nöbet tutabilir.
+                if toplam_ayri_bina_atamasi:
+                    model.Add(sum(toplam_ayri_bina_atamasi) <= 1)
 
         # H10. Non-exclusive görev havuzu varsa sadece o havuzdan seçim yap
         for role, allowed_ids in self.gorev_havuzlari.items():
@@ -1525,13 +1522,6 @@ class NobetSolver:
                 # Bug fix: kısıtlı veya taşma görevi olan kişiler havuz dışı sayılmaz
                 if p.kisitli_gorev == role or p.tasma_gorevi == role:
                     continue
-                
-                # YENİ KURAL: Eğer frontend üzerinden açıkça hedef verilmişse havuza girmiş say
-                hedef = self.hedefler.get(p.id, {})
-                gorev_kotalari = hedef.get('gorev_kotalari', {})
-                if gorev_kotalari.get(role, 0) > 0:
-                    continue
-
                 for g in range(1, self.gun_sayisi + 1):
                     for s in role_slotlari:
                         model.Add(x[p.id, g, s] == 0)

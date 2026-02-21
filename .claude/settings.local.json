@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git pull:*)",
+      "Bash(python -c:*)",
+      "Bash(git log:*)",
+      "Bash(del \"C:\\\\Users\\\\AyhaNihal\\\\Desktop\\\\nobetyapma\\\\nobetyapma\\\\plan.md\")",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: akilli teshis tabanli INFEASIBLE gevsetme sistemi\n\nSabit 5-seviyeli gevsetme stratejisi yerine, _diagnose_infeasible\\(\\)\nmetodu INFEASIBLE kok nedenini analiz edip en etkili gevsetme sirasini\notomatik belirliyor. Kumulatif gevsetme, birlikte/ayri kural analizi,\nexclusive darbogaz tespiti ve greedy fallback iceriyor.\n\nCo-Authored-By: Claude Opus 4.6 \\(1M context\\) <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(firebase deploy:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: mazeret takviminde tumunu temizle butonu ekle\n\nCo-Authored-By: Claude Opus 4.6 \\(1M context\\) <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git commit:*)",
+      "Bash(git fetch:*)",
+      "Bash(grep:*)"
+    ]
+  }
+}
