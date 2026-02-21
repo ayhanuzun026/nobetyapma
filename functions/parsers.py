@@ -565,6 +565,49 @@ def parse_kisitlama_istisnalari(data: Dict, personeller,
     return istisnalar
 
 
+def parse_birlikte_istisnalari(data: Dict, personeller) -> List[Dict]:
+    """Birlikte kurali + ayri bina istisnalarini parse et."""
+    istisnalar = []
+    seen = set()
+    for raw in data.get("birlikteIstisnalari", []):
+        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True)
+        gun = _safe_int(raw.get("gun"), 0)
+        if pid is None or gun < 1:
+            continue
+        key = (pid, gun)
+        if key in seen:
+            continue
+        seen.add(key)
+        istisnalar.append({
+            "personel_id": pid,
+            "gun": gun,
+        })
+    return istisnalar
+
+
+def parse_aragun_istisnalari(data: Dict, personeller) -> List[Dict]:
+    """Ara gun istisnalarini parse et."""
+    istisnalar = []
+    seen = set()
+    for raw in data.get("araGunIstisnalari", []):
+        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True)
+        gun1 = _safe_int(raw.get("gun1"), 0)
+        gun2 = _safe_int(raw.get("gun2"), 0)
+        if pid is None or gun1 < 1 or gun2 < 1:
+            continue
+        g1, g2 = min(gun1, gun2), max(gun1, gun2)
+        key = (pid, g1, g2)
+        if key in seen:
+            continue
+        seen.add(key)
+        istisnalar.append({
+            "personel_id": pid,
+            "gun1": g1,
+            "gun2": g2,
+        })
+    return istisnalar
+
+
 # ============================================
 # YARDIMCI (İÇ)
 # ============================================

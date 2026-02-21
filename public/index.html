@@ -170,7 +170,7 @@ ta<!DOCTYPE html>
     .kilit-btn { background: none; border: 1px solid #cbd5e1; border-radius: 6px; padding: 2px 7px; cursor: pointer; font-size: 14px; transition: all 0.15s; }
     .kilit-btn:hover { background: #eef2ff; border-color: #6366f1; }
     .kilit-btn.aktif { background: #4f46e5; border-color: #4f46e5; color: #fff; }
-    
+
     /* Devir Icon */
     .devir-icon { 
       color: var(--warning); 
@@ -744,6 +744,10 @@ let gorevKisitlamalari = []; // { personelId, gorevAdi, exclusive?, gunTipiDagil
 let gorevHavuzlari = {}; // { gorevAdi: [personelId1, personelId2, ...] } — görev bazlı yedek havuz
 let gorevKapasiteAyar = {}; // { gorevAdi: { toplam: X, hici: X, prs: X, cum: X, cmt: X, pzr: X } }
 let kisitlamaIstisnalari = []; // { personelId, kisitliGorev, istisnaGorev, gun, onayTarihi }
+let birlikteIstisnalari = [];  // { personelId, gun, slotIdx, gorevAdi, onayTarihi }
+let araGunIstisnalari = [];    // { personelId, gun1, gun2, onayTarihi }
+// Hedef Kilitleme: {personelId: {hici: N, prs: N, cum: N, cmt: N, pzr: N}}
+let kilitliHedefler = {};
 let kisitlamaExclusive = false; // true = kısıtlamalı kişiler kendi aralarında döner
 let selectedCells = [];
 let isMouseDown = false;
@@ -771,9 +775,6 @@ const GUN_TIPI_ALTERNATIFLERI = {
   pzr: ['cum', 'cmt'], // Pzr (16s) -> Cum (16s) -> Cmt (24s)
   cmt: ['pzr', 'cum']  // Cmt (24s) -> Pzr (16s) -> Cum (16s)
 };
-
-// Hedef Kilitleme: {personelId: {hici: N, prs: N, cum: N, cmt: N, pzr: N}}
-let kilitliHedefler = {};
 
 // WE/WD yardımcı fonksiyonları
 function isWEGun(tip) { return WE_TIPLERI.includes(tip); }
@@ -1764,6 +1765,72 @@ function manuelAtamaEkle() {
     if (!mazeretOnay) return;
   }
 
+  // BİRLİKTE + AYRI BİNA KONTROLÜ
+  const birlikteUyeSetLocal = new Set(
+    kurallar
+      .filter(k => k.tur === 'birlikte')
+      .flatMap(k => (k.kisiler || []).map(String))
+  );
+  const ayriBinaSlotlarLocal = new Set(
+    gorevler.map((g, idx) => ({ g, idx })).filter(x => x.g.ayriBina === true).map(x => x.idx)
+  );
+  if (birlikteUyeSetLocal.has(String(personel.id)) && ayriBinaSlotlarLocal.has(gorevIdx)) {
+    const birlikteOnay = confirm(
+      `⚠️ Birlikte Kuralı + Ayrı Bina Çelişkisi!\n\n` +
+      `${personel.ad} birlikte kuralı üyesi,\n` +
+      `ancak "${gorev.ad}" ayrı bina slotuna atanıyor.\n\n` +
+      `Bu atama istisna olarak kaydedilecek.\n` +
+      `Devam etmek istiyor musunuz?`
+    );
+    if (!birlikteOnay) return;
+
+    birlikteIstisnalari = [...birlikteIstisnalari, {
+      personelId: personel.id,
+      gun: gun,
+      slotIdx: gorevIdx,
+      gorevAdi: gorev.ad,
+      onayTarihi: new Date().toISOString()
+    }];
+  }
+
+  // ARA GÜN KONTROLÜ
+  const araGunVal = parseInt(document.getElementById('inp-aragun').value);
+  if (!isNaN(araGunVal) && araGunVal > 0) {
+    const kisiManuelGunler = manuelAtamalar
+      .filter(m => String(m.personelId) === String(personel.id))
+      .map(m => parseInt(m.gun, 10))
+      .filter(g => g >= 1);
+    const araGunIhlalleri = kisiManuelGunler.filter(g => Math.abs(g - gun) <= araGunVal && g !== gun);
+    if (araGunIhlalleri.length > 0) {
+      const ihlalGunler = araGunIhlalleri.sort((a, b) => a - b).join(', ');
+      const araGunOnay = confirm(
+        `⚠️ Ara Gün İhlali!\n\n` +
+        `${personel.ad} için ${gun}. gün atama yapılıyor,\n` +
+        `ancak ${ihlalGunler}. günlerde de manuel atama var.\n` +
+        `(Ara gün kuralı: ${araGunVal})\n\n` +
+        `Bu atama istisna olarak kaydedilecek.\n` +
+        `Devam etmek istiyor musunuz?`
+      );
+      if (!araGunOnay) return;
+
+      araGunIhlalleri.forEach(g => {
+        const g1 = Math.min(g, gun);
+        const g2 = Math.max(g, gun);
+        const zatenVar = araGunIstisnalari.some(ist =>
+          String(ist.personelId) === String(personel.id) && ist.gun1 === g1 && ist.gun2 === g2
+        );
+        if (!zatenVar) {
+          araGunIstisnalari = [...araGunIstisnalari, {
+            personelId: personel.id,
+            gun1: g1,
+            gun2: g2,
+            onayTarihi: new Date().toISOString()
+          }];
+        }
+      });
+    }
+  }
+
   // BUG FIX (A): gorevIdx yerine gorevId kullan (sıralama değişse bile doğru görev bulunur)
   // Aynı gün + görev için zaten atama var mı?
   const mevcutAtama = manuelAtamalar.find(m => m.gun === gun && m.gorevId === gorev.id);
@@ -1797,6 +1864,15 @@ function manuelAtamaSil(idx) {
       !(String(ist.personelId) === String(silinen.personelId) &&
         ist.istisnaGorev === silinen.gorevAdi &&
         ist.gun === silinen.gun)
+    );
+    birlikteIstisnalari = birlikteIstisnalari.filter(ist =>
+      !(String(ist.personelId) === String(silinen.personelId) &&
+        ist.gun === silinen.gun)
+    );
+    const silinenGun = parseInt(silinen.gun, 10);
+    araGunIstisnalari = araGunIstisnalari.filter(ist =>
+      !(String(ist.personelId) === String(silinen.personelId) &&
+        (ist.gun1 === silinenGun || ist.gun2 === silinenGun))
     );
   }
 
@@ -5615,6 +5691,17 @@ function ortoolsOnKontrolYap(gunSayisi, araGun) {
     )
   );
 
+  const birlikteIstisnaSet = new Set(
+    (birlikteIstisnalari || []).map(ist =>
+      `${String(ist.personelId)}|${parseInt(ist.gun, 10)}`
+    )
+  );
+  const araGunIstisnaSet = new Set(
+    (araGunIstisnalari || []).map(ist =>
+      `${String(ist.personelId)}|${Math.min(ist.gun1, ist.gun2)}|${Math.max(ist.gun1, ist.gun2)}`
+    )
+  );
+
   const ayriPairs = kurallar
     .filter(k => k.tur === 'ayri')
     .map(k => [String(k.p1), String(k.p2)]);
@@ -5681,11 +5768,22 @@ function ortoolsOnKontrolYap(gunSayisi, araGun) {
     }
 
     if (roleAllowedMap[role] && !roleAllowedMap[role].has(pid)) {
-      kritik.push(`[M${idx}] ${p.ad}: gorev havuzu disinda manuel atama (${role})`);
+      // Bug fix: kısıtlı kişiler veya taşma görevi olan kişiler havuz dışı sayılmaz
+      const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === pid);
+      const kisitliRole = kisitlama ? normalizeGorevAdi(kisitlama.gorevAdi) : null;
+      const tasmaRole = kisitlama?.tasmaGorevi ? normalizeGorevAdi(kisitlama.tasmaGorevi) : null;
+      if (kisitliRole !== role && tasmaRole !== role) {
+        kritik.push(`[M${idx}] ${p.ad}: gorev havuzu disinda manuel atama (${role})`);
+      }
     }
 
     if (ayriBinaSlotlar.has(slotIdx) && birlikteUyeSet.has(pid)) {
-      kritik.push(`[M${idx}] ${p.ad}: birlikte kurali uyesi ama ayri bina slotuna atanmis (${gun}. gun)`);
+      const birlikteKey = `${pid}|${gun}`;
+      if (birlikteIstisnaSet.has(birlikteKey)) {
+        uyari.push(`[M${idx}] ${p.ad}: birlikte kurali uyesi ama ayri bina slotuna atanmis (${gun}. gun) [istisna onaylanmis]`);
+      } else {
+        kritik.push(`[M${idx}] ${p.ad}: birlikte kurali uyesi ama ayri bina slotuna atanmis (${gun}. gun)`);
+      }
     }
   });
 
@@ -5717,7 +5815,14 @@ function ortoolsOnKontrolYap(gunSayisi, araGun) {
     for (let i = 0; i < gunler.length - 1; i++) {
       if (gunler[i + 1] - gunler[i] <= araGun) {
         const p = personelListesi.find(x => String(x.id) === pid);
-        kritik.push(`${p?.ad || pid}: ara gun ihlali (${gunler[i]}-${gunler[i + 1]}, araGun=${araGun})`);
+        const g1 = gunler[i];
+        const g2 = gunler[i + 1];
+        const araGunKey = `${pid}|${g1}|${g2}`;
+        if (araGunIstisnaSet.has(araGunKey)) {
+          uyari.push(`${p?.ad || pid}: ara gun ihlali (${g1}-${g2}, araGun=${araGun}) [istisna onaylanmis]`);
+        } else {
+          kritik.push(`${p?.ad || pid}: ara gun ihlali (${g1}-${g2}, araGun=${araGun})`);
+        }
       }
     }
   });
@@ -5741,6 +5846,12 @@ function ortoolsOnKontrolYap(gunSayisi, araGun) {
 
   if (kisitlamaIstisnalari.length > 0) {
     uyari.push(`Kisitlama istisnasi aktif: ${kisitlamaIstisnalari.length} adet`);
+  }
+  if (birlikteIstisnalari.length > 0) {
+    uyari.push(`Birlikte+ayri bina istisnasi aktif: ${birlikteIstisnalari.length} adet`);
+  }
+  if (araGunIstisnalari.length > 0) {
+    uyari.push(`Ara gun istisnasi aktif: ${araGunIstisnalari.length} adet`);
   }
 
   return { kritik, uyari };
@@ -6093,6 +6204,19 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
     gun: ist.gun,
     onayTarihi: ist.onayTarihi
   }));
+  const birlikteIstisnalariData = (birlikteIstisnalari || []).map(ist => ({
+    personelId: ist.personelId,
+    gun: ist.gun,
+    slotIdx: ist.slotIdx,
+    gorevAdi: ist.gorevAdi,
+    onayTarihi: ist.onayTarihi
+  }));
+  const araGunIstisnalariData = (araGunIstisnalari || []).map(ist => ({
+    personelId: ist.personelId,
+    gun1: ist.gun1,
+    gun2: ist.gun2,
+    onayTarihi: ist.onayTarihi
+  }));
 
   const requestData = {
     yil,
@@ -6107,6 +6231,8 @@ async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
     gorevKisitlamalari: gorevKisitlamalariData,
     gorevHavuzlari: gorevHavuzlari,
     kisitlamaIstisnalari: kisitlamaIstisnalariData,
+    birlikteIstisnalari: birlikteIstisnalariData,
+    araGunIstisnalari: araGunIstisnalariData,
     kisitlamaExclusive: kisitlamaExclusive,
     resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
   };
@@ -7343,6 +7469,9 @@ function kaydet() {
     gorevKisitlamalari,
     gorevHavuzlari,
     kisitlamaIstisnalari,
+    birlikteIstisnalari,
+    araGunIstisnalari,
+    kilitliHedefler,
     kisitlamaExclusive,
     gorevKapasiteAyar,
     devirListesi,
@@ -7412,6 +7541,9 @@ function yukle() {
       });
       kisitlamaExclusive = data.kisitlamaExclusive || false;
       kisitlamaIstisnalari = data.kisitlamaIstisnalari || [];
+      birlikteIstisnalari = data.birlikteIstisnalari || [];
+      araGunIstisnalari = data.araGunIstisnalari || [];
+      kilitliHedefler = data.kilitliHedefler || {};
       gorevKapasiteAyar = data.gorevKapasiteAyar || {};
       devirListesi = data.devirListesi || [];
       
@@ -7549,6 +7681,9 @@ function oncekiAydanCek() {
     resmiTatiller = [];
     manuelAtamalar = [];
     kisitlamaIstisnalari = [];
+    birlikteIstisnalari = [];
+    araGunIstisnalari = [];
+    kilitliHedefler = {};
     devirListesi = [];
 
     // Genel ayarları çek (saat değerleri vb.) ama yıl/ay değiştirme

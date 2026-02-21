@@ -31,6 +31,7 @@ from parsers import (
     parse_kurallar, parse_birlikte_kurallar,
     parse_gorev_kisitlamalari, parse_manuel_atamalar, parse_gorev_havuzlari,
     parse_kisitlama_istisnalari,
+    parse_birlikte_istisnalari, parse_aragun_istisnalari,
 )
 
 initialize_app()
@@ -236,6 +237,14 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
 
         saat_degerleri = data.get("saatDegerleri", None)
 
+        # Kilitli hedefler: {personelId: {hici: N, prs: N, cum: N, cmt: N, pzr: N}}
+        kilitli_hedefler_raw = data.get("kilitliHedefler", {})
+        kilitli_hedefler = {}
+        for k, v in kilitli_hedefler_raw.items():
+            kilitli_hedefler[normalize_id(k)] = {
+                tip: int(v.get(tip, 0)) for tip in ["hici", "prs", "cum", "cmt", "pzr"]
+            }
+
         personeller = parse_solver_personeller_hedef(data)
 
         duplicate_ids = _find_duplicate_personel_ids(personeller)
@@ -253,7 +262,8 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             birlikte_kurallar=birlikte_kurallar,
             gorev_kisitlamalari=gorev_kisitlamalari,
             manuel_atamalar=manuel_atamalar,
-            ara_gun=ara_gun, saat_degerleri=saat_degerleri
+            ara_gun=ara_gun, saat_degerleri=saat_degerleri,
+            kilitli_hedefler=kilitli_hedefler
         )
         sonuc = hesaplayici.hesapla()
 
@@ -410,6 +420,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
         gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
         kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
+        birlikte_istisnalari = parse_birlikte_istisnalari(data, personeller)
+        aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
         kurallar = parse_kurallar(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
 
@@ -481,6 +493,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             personeller=personeller, gorevler=gorevler,
             kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
             kisitlama_istisnalari=kisitlama_istisnalari,
+            birlikte_istisnalari=birlikte_istisnalari,
+            aragun_istisnalari=aragun_istisnalari,
             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
             ara_gun=ara_gun, max_sure_saniye=sure_ilk
         )
@@ -551,6 +565,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                             personeller=personeller, gorevler=aktif_gorevler,
                             kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
                             kisitlama_istisnalari=kisitlama_istisnalari,
+                            birlikte_istisnalari=birlikte_istisnalari,
+                            aragun_istisnalari=aragun_istisnalari,
                             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                             ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
                         )
@@ -572,6 +588,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                             personeller=personeller, gorevler=aktif_gorevler,
                             kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
                             kisitlama_istisnalari=kisitlama_istisnalari,
+                            birlikte_istisnalari=birlikte_istisnalari,
+                            aragun_istisnalari=aragun_istisnalari,
                             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                             ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
                         )
@@ -593,6 +611,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                             personeller=personeller, gorevler=aktif_gorevler,
                             kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
                             kisitlama_istisnalari=kisitlama_istisnalari,
+                            birlikte_istisnalari=birlikte_istisnalari,
+                            aragun_istisnalari=aragun_istisnalari,
                             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                             ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
                         )
@@ -613,6 +633,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                             personeller=personeller, gorevler=aktif_gorevler,
                             kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
                             kisitlama_istisnalari=kisitlama_istisnalari,
+                            birlikte_istisnalari=birlikte_istisnalari,
+                            aragun_istisnalari=aragun_istisnalari,
                             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                             ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
                         )
@@ -634,6 +656,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                             personeller=personeller, gorevler=gorevler_noexcl,
                             kurallar=[], gorev_havuzlari={},
                             kisitlama_istisnalari=kisitlama_istisnalari,
+                            birlikte_istisnalari=birlikte_istisnalari,
+                            aragun_istisnalari=aragun_istisnalari,
                             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                             ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
                         )

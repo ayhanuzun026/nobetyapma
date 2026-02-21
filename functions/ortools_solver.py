@@ -122,7 +122,8 @@ class HedefHesaplayici:
                  birlikte_kurallar: List[SolverKural] = None,
                  gorev_kisitlamalari: Dict[int, str] = None,
                  manuel_atamalar: List[SolverAtama] = None,
-                 ara_gun: int = 2, saat_degerleri: Dict[str, int] = None):
+                 ara_gun: int = 2, saat_degerleri: Dict[str, int] = None,
+                 kilitli_hedefler: Dict[int, Dict[str, int]] = None):
         self.gun_sayisi = gun_sayisi
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
@@ -134,6 +135,7 @@ class HedefHesaplayici:
         self.ara_gun = ara_gun
         self.saat = saat_degerleri or SAAT_DEGERLERI
         self.slot_sayisi = len(gorevler) if gorevler else 6
+        self.kilitli_hedefler = kilitli_hedefler or {}
         
         self.tip_sayilari = {t: 0 for t in GUN_TIPLERI}
         for g, tip in gun_tipleri.items():
@@ -353,9 +355,29 @@ class HedefHesaplayici:
             if matched_id is not None:
                 manuel_sayac[matched_id][tip] += 1
         
-        # Başlangıç hedefleri
+        # Başlangıç hedefleri + kilitli hedef uygulaması
+        kilitli_ids = set()
+        kilitli_toplam_slot = 0  # Kilitli kişilerin kapladığı toplam slot
         for p in self.personel_listesi:
-            p.hedef_tipler = {tip: manuel_sayac[p.id][tip] for tip in GUN_TIPLERI}
+            pid = p.id
+            matched_kilitli = find_matching_id(pid, self.kilitli_hedefler.keys())
+            if matched_kilitli is not None:
+                # Kilitli kişi: hedefi frontend'den gelen sabit değere ayarla
+                kilitli = self.kilitli_hedefler[matched_kilitli]
+                p.hedef_tipler = {tip: kilitli.get(tip, 0) for tip in GUN_TIPLERI}
+                kilitli_ids.add(pid)
+                kilitli_toplam_slot += sum(p.hedef_tipler.values())
+            else:
+                p.hedef_tipler = {tip: manuel_sayac[pid][tip] for tip in GUN_TIPLERI}
+
+        # Kilitli kişiler çıkarıldıktan sonra kalan slotlar üzerinden ortalamayı yeniden hesapla
+        kilitsiz_personel = [p for p in self.personel_listesi if p.id not in kilitli_ids]
+        kalan_slot = self.toplam_slot - kilitli_toplam_slot
+        n_kilitsiz = len(kilitsiz_personel)
+        if n_kilitsiz > 0:
+            avg_count_float = kalan_slot / n_kilitsiz
+            avg_count_floor = int(avg_count_float)
+            HARD_CAP = avg_count_floor + 2
         
         # --- 2. OR-TOOLS MODELİ ---
         cp = _get_cp_model()
@@ -371,50 +393,65 @@ class HedefHesaplayici:
         
         for p in self.personel_listesi:
             pid = p.id
-            
+            is_kilitli = pid in kilitli_ids
+
             # Kişinin kapasitesi
             max_kapasite = sum(p.musait_tipler.get(tip, 0) for tip in GUN_TIPLERI)
-            
+
             # Görev kısıtlaması varsa kapasiteyi sınırla
             matched_kisitli = find_matching_id(pid, kisitli_kapasite.keys())
             if matched_kisitli is not None:
                 max_kapasite = min(max_kapasite, kisitli_kapasite[matched_kisitli])
-            
+
+            if is_kilitli:
+                # KİLİTLİ KİŞİ: Sabit değer (Hard Constraint)
+                kilitli_val = p.hedef_tipler
+                kilitli_total = sum(kilitli_val.values())
+                for tip in GUN_TIPLERI:
+                    val = kilitli_val.get(tip, 0)
+                    h[pid, tip] = model.NewIntVar(val, val, f'h_{pid}_{tip}_LOCKED')
+                t[pid] = model.NewIntVar(kilitli_total, kilitli_total, f't_{pid}_LOCKED')
+                model.Add(sum(h[pid, tip] for tip in GUN_TIPLERI) == t[pid])
+                total_h_hours[pid] = sum(h[pid, tip] * self.saat[tip] for tip in GUN_TIPLERI)
+                total_h_we[pid] = sum(h[pid, tip] for tip in we_tipleri)
+                # Kilitli kişiye ceza uygulanmaz - continue
+                continue
+
             # Manuel atama sayısı
             manuel_total = sum(manuel_sayac[pid].values())
-            
+
             # Gün tipi değişkenleri
             for tip in GUN_TIPLERI:
                 manuel_count = manuel_sayac[pid][tip]
                 musait_sayisi = p.musait_tipler.get(tip, 0)
-                
+
                 if manuel_count > musait_sayisi:
                     return HedefSonuc(False, [], [], {}, {}, f"Manuel atama kapasiteyi aşıyor: {p.ad} / {tip}")
-                
+
                 h[pid, tip] = model.NewIntVar(manuel_count, musait_sayisi, f'h_{pid}_{tip}')
-            
+
             # Toplam hedef (HARD_CAP sınırlı)
             upper_bound = min(max_kapasite, HARD_CAP)
             t[pid] = model.NewIntVar(manuel_total, upper_bound, f't_{pid}')
-            
+
             # Toplam nöbet sayısı eşitliği
             model.Add(sum(h[pid, tip] for tip in GUN_TIPLERI) == t[pid])
-            
+
             # Saat ve WE toplamları
             total_h_hours[pid] = sum(h[pid, tip] * self.saat[tip] for tip in GUN_TIPLERI)
             total_h_we[pid] = sum(h[pid, tip] for tip in we_tipleri)
-            
+
             # --- 3. CEZA MEKANİZMALARI ---
-            
+
             # A) SAYI DENGESİ (KELEPÇE) - ÖNCELİK 1
             mazeret_orani = len(p.mazeret_gunleri) / self.gun_sayisi if self.gun_sayisi > 0 else 0
             cok_mazeretli = mazeret_orani > 0.4
-            
+
             if cok_mazeretli:
                 target_limit = avg_count_floor  # Mazeretli: taban hedef
             else:
                 target_limit = avg_count_floor + 1  # Normal: tavan hedef
-            
+
             # Fazlalık (Slack) değişkeni
             excess = model.NewIntVar(0, 5, f'excess_{pid}')
             model.Add(t[pid] <= target_limit + excess)
@@ -593,6 +630,8 @@ class NobetSolver:
                  kurallar: List[SolverKural] = None,
                  gorev_havuzlari: Dict[str, Set[int]] = None,
                  kisitlama_istisnalari: List[Dict] = None,
+                 birlikte_istisnalari: List[Dict] = None,
+                 aragun_istisnalari: List[Dict] = None,
                  manuel_atamalar: List[SolverAtama] = None,
                  hedefler: Dict[int, Dict] = None,
                  ara_gun: int = 2, max_sure_saniye: int = 300):
@@ -651,6 +690,26 @@ class NobetSolver:
         self.kisitlama_istisna_debug["gecerli_sayi"] = sum(
             len(v) for v in self.kisitlama_istisna_map.values()
         )
+
+        # Birlikte istisnalari: (personel_id, gun) set
+        self.birlikte_istisna_set = set()
+        for raw in (birlikte_istisnalari or []):
+            raw_pid = raw.get("personel_id")
+            gun = int(raw.get("gun", 0) or 0)
+            matched_id = find_matching_id(raw_pid, self.personeller.keys())
+            if matched_id is not None and 1 <= gun <= self.gun_sayisi:
+                self.birlikte_istisna_set.add((matched_id, gun))
+
+        # Ara gun istisnalari: (personel_id, gun1, gun2) set
+        self.aragun_istisna_set = set()
+        for raw in (aragun_istisnalari or []):
+            raw_pid = raw.get("personel_id")
+            gun1 = int(raw.get("gun1", 0) or 0)
+            gun2 = int(raw.get("gun2", 0) or 0)
+            matched_id = find_matching_id(raw_pid, self.personeller.keys())
+            if matched_id is not None and gun1 >= 1 and gun2 >= 1:
+                g1, g2 = min(gun1, gun2), max(gun1, gun2)
+                self.aragun_istisna_set.add((matched_id, g1, g2))
         
         # Slot kıtlık ağırlığı: Az slotlu görevler daha önemli
         # max_slot / slot_sayisi formülü ile hesapla
@@ -790,24 +849,27 @@ class NobetSolver:
                 })
 
             if role in self.gorev_havuzlari and pid not in self.gorev_havuzlari[role]:
-                conflicts.append({
-                    "code": "HAVUZ_IHLALI",
-                    "mesaj": f"{p.ad} gorev havuzu disinda manuel atanmis",
-                    "personel_id": pid,
-                    "personel_ad": p.ad,
-                    "gun": m.gun,
-                    "gorev": role
-                })
+                # Bug fix: kısıtlı kişiler veya taşma görevi olan kişiler havuz dışı sayılmaz
+                if p.kisitli_gorev != role and (not p.tasma_gorevi or p.tasma_gorevi != role):
+                    conflicts.append({
+                        "code": "HAVUZ_IHLALI",
+                        "mesaj": f"{p.ad} gorev havuzu disinda manuel atanmis",
+                        "personel_id": pid,
+                        "personel_ad": p.ad,
+                        "gun": m.gun,
+                        "gorev": role
+                    })
 
             if m.slot_idx in ayri_bina_slotlar and pid in birlikte_uye_ids:
-                conflicts.append({
-                    "code": "AYRI_BINA_BIRLIKTE",
-                    "mesaj": f"{p.ad} birlikte kuralinda olmasina ragmen ayri bina slotuna manuel atanmis",
-                    "personel_id": pid,
-                    "personel_ad": p.ad,
-                    "gun": m.gun,
-                    "slot_idx": m.slot_idx
-                })
+                if (pid, m.gun) not in self.birlikte_istisna_set:
+                    conflicts.append({
+                        "code": "AYRI_BINA_BIRLIKTE",
+                        "mesaj": f"{p.ad} birlikte kuralinda olmasina ragmen ayri bina slotuna manuel atanmis",
+                        "personel_id": pid,
+                        "personel_ad": p.ad,
+                        "gun": m.gun,
+                        "slot_idx": m.slot_idx
+                    })
 
         for (pid, gun), cnt in per_person_day.items():
             if cnt > 1:
@@ -836,16 +898,17 @@ class NobetSolver:
             for i in range(len(gunler) - 1):
                 g1, g2 = gunler[i], gunler[i + 1]
                 if g2 - g1 <= self.ara_gun:
-                    p = self.personeller.get(pid)
-                    conflicts.append({
-                        "code": "ARA_GUN_IHLALI",
-                        "mesaj": f"{p.ad if p else pid} manuel atamalari ara gun kisitini ihlal ediyor",
-                        "personel_id": pid,
-                        "personel_ad": p.ad if p else "",
-                        "gun1": g1,
-                        "gun2": g2,
-                        "ara_gun": self.ara_gun
-                    })
+                    if (pid, g1, g2) not in self.aragun_istisna_set:
+                        p = self.personeller.get(pid)
+                        conflicts.append({
+                            "code": "ARA_GUN_IHLALI",
+                            "mesaj": f"{p.ad if p else pid} manuel atamalari ara gun kisitini ihlal ediyor",
+                            "personel_id": pid,
+                            "personel_ad": p.ad if p else "",
+                            "gun1": g1,
+                            "gun2": g2,
+                            "ara_gun": self.ara_gun
+                        })
 
         # Ayrı kuralı: aynı gün iki kişi de manuel atanmış mı?
         daily_manual_people = {}
@@ -916,11 +979,16 @@ class NobetSolver:
         # H10: Görev havuzu
         allowed_ids = self.gorev_havuzlari.get(role)
         if allowed_ids is not None and pid not in allowed_ids:
-            return False
+            # Bug fix: kısıtlı veya taşma görevi olan kişiler havuz dışı sayılmaz
+            if not (p.kisitli_gorev and p.kisitli_gorev == role):
+                if not (p.tasma_gorevi and p.tasma_gorevi == role):
+                    return False
 
         # H9: Ayrı bina slotu + birlikte üyesi
         if getattr(self.gorevler[slot_idx], 'ayri_bina', False) and pid in birlikte_uye_ids:
-            return False
+            # Birlikte istisnası varsa izin ver
+            if (pid, gun) not in self.birlikte_istisna_set:
+                return False
 
         return True
 
@@ -1409,6 +1477,7 @@ class NobetSolver:
                             model.Add(x[p.id, g, s] == 0)
 
         # H9. Ayrı bina slotlarına birlikte kuralı üyeleri atanmasın
+        #     (istisna olan kişi+gün çiftleri hariç)
         ayri_bina_slotlar = [
             s for s, gorev in enumerate(self.gorevler)
             if getattr(gorev, 'ayri_bina', False)
@@ -1425,6 +1494,8 @@ class NobetSolver:
 
             for pid in birlikte_uye_ids:
                 for g in range(1, self.gun_sayisi + 1):
+                    if (pid, g) in self.birlikte_istisna_set:
+                        continue  # İstisna olan gün — hard constraint ekleme
                     for s in ayri_bina_slotlar:
                         model.Add(x[pid, g, s] == 0)
 
@@ -1435,6 +1506,9 @@ class NobetSolver:
                 continue
             for p in self.personel_listesi:
                 if p.id in allowed_ids:
+                    continue
+                # Bug fix: kısıtlı veya taşma görevi olan kişiler havuz dışı sayılmaz
+                if p.kisitli_gorev == role or p.tasma_gorevi == role:
                     continue
                 for g in range(1, self.gun_sayisi + 1):
                     for s in role_slotlari:
