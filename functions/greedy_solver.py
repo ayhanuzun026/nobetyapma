@@ -139,9 +139,14 @@ class NobetYoneticisi:
                         pass  # Taşma görevine atanabilir
                     else:
                         # Havuz üyesi ise (exclusive=false) diğer görevlere de atanabilir
-                        is_exclusive = kisit.get('exclusive', True)
+                        is_exclusive = kisit.get('exclusive', False)  # Varsayılan False (OR-Tools ile tutarlı)
                         havuz_ids = kisit.get('havuzIds', [])
-                        if not is_exclusive or len(havuz_ids) > 0:
+                        # Hedef kotası varsa izin ver (OR-Tools H8/H10 senkronize)
+                        gorev_base = gorev.base_name if gorev.base_name else gorev.ad
+                        kota = p.kalan_roller.get(gorev_base, 0) if hasattr(p, 'kalan_roller') else 0
+                        if kota > 0:
+                            pass  # Hedef verilmişse engelleme
+                        elif not is_exclusive or len(havuz_ids) > 0:
                             # Havuz varsa veya exclusive değilse, kısıtlama yumuşak
                             pass
                         else:

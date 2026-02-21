@@ -974,7 +974,11 @@ class NobetSolver:
 
         # H8: Exclusive görevler (havuzsuz) - taşma görevi olan kişi de girebilir
         if role in exclusive_roles and p.kisitli_gorev != role and p.tasma_gorevi != role:
-            return False
+            # YENİ KURAL (Senkronize): Hedefi varsa girmesine izin ver
+            hedef = self.hedefler.get(p.id, {})
+            gorev_kotalari = hedef.get('gorev_kotalari', {})
+            if gorev_kotalari.get(role, 0) == 0:
+                return False
 
         # H10: Görev havuzu
         allowed_ids = self.gorev_havuzlari.get(role)
@@ -982,7 +986,11 @@ class NobetSolver:
             # Bug fix: kısıtlı veya taşma görevi olan kişiler havuz dışı sayılmaz
             if not (p.kisitli_gorev and p.kisitli_gorev == role):
                 if not (p.tasma_gorevi and p.tasma_gorevi == role):
-                    return False
+                    # YENİ KURAL (Senkronize): Hedefi varsa havuza girmesine izin ver
+                    hedef = self.hedefler.get(p.id, {})
+                    gorev_kotalari = hedef.get('gorev_kotalari', {})
+                    if gorev_kotalari.get(role, 0) == 0:
+                        return False
 
         # H9: Ayrı bina slotu + birlikte üyesi
         if getattr(self.gorevler[slot_idx], 'ayri_bina', False) and pid in birlikte_uye_ids:
@@ -1466,10 +1474,17 @@ class NobetSolver:
         # Kısıtlı olmayan kişiler exclusive slotlara gidemez
         # Veya farklı bir göreve kısıtlı kişiler de exclusive slotlara gidemez
         # Taşma görevi olarak bu göreve atanmış kişiler de girebilir
+        # YENİ KURAL: Eğer frontend üzerinden o görev için açıkça quota hedefi girilmişse (manuel düzeltme) izin ver
         for p in self.personel_listesi:
             for exclusive_gorev in exclusive_gorevler:
                 # Bu kişi bu exclusive göreve kısıtlı mı veya taşma görevi mi?
                 if p.kisitli_gorev != exclusive_gorev and p.tasma_gorevi != exclusive_gorev:
+                    # Manuel hedefi var mı?
+                    hedef = self.hedefler.get(p.id, {})
+                    gorev_kotalari = hedef.get('gorev_kotalari', {})
+                    if gorev_kotalari.get(exclusive_gorev, 0) > 0:
+                        continue  # Hedef verilmişse bloklama
+                        
                     # Hayır - bu exclusive göreve gidemez
                     exclusive_slotlar = self.role_slots.get(exclusive_gorev, [])
                     for g in range(1, self.gun_sayisi + 1):
@@ -1510,6 +1525,13 @@ class NobetSolver:
                 # Bug fix: kısıtlı veya taşma görevi olan kişiler havuz dışı sayılmaz
                 if p.kisitli_gorev == role or p.tasma_gorevi == role:
                     continue
+                
+                # YENİ KURAL: Eğer frontend üzerinden açıkça hedef verilmişse havuza girmiş say
+                hedef = self.hedefler.get(p.id, {})
+                gorev_kotalari = hedef.get('gorev_kotalari', {})
+                if gorev_kotalari.get(role, 0) > 0:
+                    continue
+
                 for g in range(1, self.gun_sayisi + 1):
                     for s in role_slotlari:
                         model.Add(x[p.id, g, s] == 0)

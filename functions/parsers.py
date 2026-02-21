@@ -488,11 +488,12 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
 
     gorev_havuz_kayitlari = {}
     for k_data in gorev_kisitlamalari_raw:
-        if k_data.get("exclusive", False):
-            continue
+        # Exclusive kayıtları artık ATLAMA - havuz bilgisi varsa işle
+        # (Eski davranış: exclusive kayıtları tamamen atlıyordu,
+        #  bu da exclusive görevler için havuz oluşmasını engelliyordu)
 
         role = _normalize_gorev_adi(k_data.get("gorevAdi"))
-        if not role or role in exclusive_role_adlari:
+        if not role:
             continue
 
         kayit = gorev_havuz_kayitlari.setdefault(role, {
