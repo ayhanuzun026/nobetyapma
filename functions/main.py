@@ -421,20 +421,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
         if frontend_hedefleri_var:
             hedefler = {}
-            toplam_slot = gun_sayisi * len(gorevler)
-            kisi_sayisi = len(personeller)
-            kisi_basi_hedef = toplam_slot // kisi_sayisi if kisi_sayisi > 0 else 0
-            kalan = toplam_slot % kisi_sayisi if kisi_sayisi > 0 else 0
-
-            for idx, p in enumerate(personeller):
-                if p.hedef_tipler and sum(p.hedef_tipler.values()) > 0:
-                    hedef_toplam = sum(p.hedef_tipler.values())
-                else:
-                    musait_gun = gun_sayisi - len(p.mazeret_gunleri)
-                    hedef_toplam = min(kisi_basi_hedef + (1 if idx < kalan else 0), musait_gun)
-
+            for p in personeller:
                 hedefler[p.id] = {
-                    'hedef_toplam': hedef_toplam,
+                    'hedef_toplam': sum(p.hedef_tipler.values()) if p.hedef_tipler else 0,
                     'hedef_tipler': p.hedef_tipler or {},
                     'gorev_kotalari': p.gorev_kotalari or {}
                 }
@@ -454,7 +443,6 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             hedefler = {}
             for h in hesap_sonuc.hedefler:
                 pid = normalize_id(h.get('id'))
-                # HedefHesaplayici hedef_tipler'i ayrı alanlar olarak döner
                 hedef_tipler = h.get('hedef_tipler', {})
                 if not hedef_tipler:
                     hedef_tipler = {
@@ -555,7 +543,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
                 if aksiyon == 'ara_gun_azalt':
                     # Ara günü kademeli azalt
-                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                    for dene_ara_gun in range(aktif_ara_gun, 0, -1):
                         if dene_ara_gun == aktif_ara_gun and aktif_ara_gun == ara_gun:
                             continue  # İlk denemede zaten denendi
                         solver = NobetSolver(
@@ -578,7 +566,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
                 elif aksiyon == 'exclusive_gevset':
                     aktif_gorevler = gorevler_noexcl
-                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                    for dene_ara_gun in range(aktif_ara_gun, 0, -1):
                         solver = NobetSolver(
                             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                             personeller=personeller, gorevler=aktif_gorevler,
@@ -599,7 +587,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 elif aksiyon == 'ayri_gevset':
                     # Ayrı kurallarını kaldır (birlikte korunur)
                     aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'ayri']
-                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                    for dene_ara_gun in range(aktif_ara_gun, 0, -1):
                         solver = NobetSolver(
                             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                             personeller=personeller, gorevler=aktif_gorevler,
@@ -619,7 +607,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
                 elif aksiyon == 'birlikte_kaldir':
                     aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'birlikte']
-                    for dene_ara_gun in range(aktif_ara_gun, -1, -1):
+                    for dene_ara_gun in range(aktif_ara_gun, 0, -1):
                         solver = NobetSolver(
                             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                             personeller=personeller, gorevler=aktif_gorevler,
@@ -640,7 +628,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 elif aksiyon == 'tum_soft_kaldir':
                     aktif_kurallar = []
                     aktif_havuzlar = {}
-                    for dene_ara_gun in range(min(1, aktif_ara_gun), -1, -1):
+                    for dene_ara_gun in range(max(1, aktif_ara_gun), 0, -1):
                         solver = NobetSolver(
                             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                             personeller=personeller, gorevler=gorevler_noexcl,

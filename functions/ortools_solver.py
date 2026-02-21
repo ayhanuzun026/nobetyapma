@@ -37,6 +37,7 @@ class SolverPersonel:
     ad: str
     mazeret_gunleri: Set[int] = field(default_factory=set)
     kisitli_gorev: Optional[str] = None
+    tasma_gorevi: Optional[str] = None
     hedef_tipler: Dict[str, int] = field(default_factory=dict)
     gorev_kotalari: Dict[str, int] = field(default_factory=dict)
     musait_gunler: Set[int] = field(default_factory=set)
@@ -326,10 +327,19 @@ class HedefHesaplayici:
         total_we_slots = sum(self.tip_slotlari[tip] for tip in we_tipleri)
         total_wd_slots = sum(self.tip_slotlari[tip] for tip in wd_tipleri)
         
-        # Görev kısıtlamalı kişilerin kapasite sınırları
+        # Görev kısıtlamalı kişilerin kapasite sınırları (taşma görevi dahil)
         kisitli_kapasite = {}
-        for pid, gorev_adi in self.gorev_kisitlamalari.items():
-            slot_sayisi = sum(1 for g in self.gorevler if g.base_name == gorev_adi or g.ad == gorev_adi)
+        for pid, kisit_bilgi in self.gorev_kisitlamalari.items():
+            # Yeni format: dict, eski format: str (geriye uyumluluk)
+            if isinstance(kisit_bilgi, dict):
+                ana_gorev = kisit_bilgi.get("gorevAdi", "")
+                tasma = kisit_bilgi.get("tasmaGorevi")
+            else:
+                ana_gorev = kisit_bilgi
+                tasma = None
+            slot_sayisi = sum(1 for g in self.gorevler if g.base_name == ana_gorev or g.ad == ana_gorev)
+            if tasma:
+                slot_sayisi += sum(1 for g in self.gorevler if g.base_name == tasma or g.ad == tasma)
             if slot_sayisi > 0:
                 kisitli_kapasite[pid] = slot_sayisi * self.gun_sayisi
         
@@ -536,14 +546,21 @@ class HedefHesaplayici:
         
         # Görev kısıtlama bilgilerini hazırla
         kisitlama_bilgi = []
-        for pid, gorev_adi in self.gorev_kisitlamalari.items():
+        for pid, kisit_bilgi in self.gorev_kisitlamalari.items():
+            if isinstance(kisit_bilgi, dict):
+                ana_gorev = kisit_bilgi.get("gorevAdi", "")
+                tasma = kisit_bilgi.get("tasmaGorevi")
+            else:
+                ana_gorev = kisit_bilgi
+                tasma = None
             matched_id = find_matching_id(pid, self.personeller.keys())
             if matched_id is not None:
                 p = self.personeller[matched_id]
                 kisitlama_bilgi.append({
                     'personel_id': pid,
                     'personel_ad': p.ad,
-                    'gorev_adi': gorev_adi
+                    'gorev_adi': ana_gorev,
+                    'tasma_gorevi': tasma
                 })
         
         istatistikler = {
@@ -750,7 +767,8 @@ class NobetSolver:
                 })
 
             allowed_exception_roles = self.kisitlama_istisna_map.get((pid, m.gun), set())
-            if p.kisitli_gorev and role != p.kisitli_gorev and role not in allowed_exception_roles:
+            tasma_ok = p.tasma_gorevi and role == p.tasma_gorevi
+            if p.kisitli_gorev and role != p.kisitli_gorev and not tasma_ok and role not in allowed_exception_roles:
                 conflicts.append({
                     "code": "KISITLAMA_IHLALI",
                     "mesaj": f"{p.ad} kisitli gorevi disinda manuel atama almis",
@@ -886,12 +904,13 @@ class NobetSolver:
         role = self._role_name_by_slot(slot_idx)
         allowed_exception_roles = self.kisitlama_istisna_map.get((pid, gun), set())
 
-        # H7: Kısıtlı görev kuralı
+        # H7: Kısıtlı görev kuralı (taşma görevi de izinli)
         if p.kisitli_gorev and role != p.kisitli_gorev and role not in allowed_exception_roles:
-            return False
+            if not (p.tasma_gorevi and role == p.tasma_gorevi):
+                return False
 
-        # H8: Exclusive görevler (havuzsuz)
-        if role in exclusive_roles and p.kisitli_gorev != role:
+        # H8: Exclusive görevler (havuzsuz) - taşma görevi olan kişi de girebilir
+        if role in exclusive_roles and p.kisitli_gorev != role and p.tasma_gorevi != role:
             return False
 
         # H10: Görev havuzu
@@ -1035,7 +1054,7 @@ class NobetSolver:
                 for role in exclusive_roles:
                     kisitli_kisiler = [
                         p for p in self.personel_listesi
-                        if p.kisitli_gorev == role
+                        if p.kisitli_gorev == role or p.tasma_gorevi == role
                     ]
                     role_slot_count = len(self.role_slots.get(role, []))
                     talep = self.gun_sayisi * role_slot_count
@@ -1341,16 +1360,24 @@ class NobetSolver:
                 if 1 <= m.gun <= self.gun_sayisi:
                     model.Add(x[matched_pid, m.gun, m.slot_idx] == 1)
         
-        # H7. Kisitli gorev - kısıtlı kişi sadece kendi görevine gidebilir
+        # H7. Kisitli gorev - kısıtlı kişi sadece kendi görevine (+ taşma görevine) gidebilir
         for p in self.personel_listesi:
             if p.kisitli_gorev:
                 # Önce base_name ile dene, sonra ad ile dene (frontend her iki formatı gönderebilir)
-                izinli_slotlar = self.role_slots.get(p.kisitli_gorev, [])
+                izinli_slotlar = list(self.role_slots.get(p.kisitli_gorev, []))
                 if not izinli_slotlar:
                     # Slot adıyla da dene: "AMELIYATHANE #1" -> slot index'i bul
                     for s, gorev in enumerate(self.gorevler):
                         if gorev.ad == p.kisitli_gorev or gorev.base_name == p.kisitli_gorev:
                             izinli_slotlar.append(s)
+                # Taşma görevi varsa onun slotlarını da izinli yap
+                if p.tasma_gorevi:
+                    tasma_slotlar = list(self.role_slots.get(p.tasma_gorevi, []))
+                    if not tasma_slotlar:
+                        for s, gorev in enumerate(self.gorevler):
+                            if gorev.ad == p.tasma_gorevi or gorev.base_name == p.tasma_gorevi:
+                                tasma_slotlar.append(s)
+                    izinli_slotlar = list(set(izinli_slotlar + tasma_slotlar))
                 for g in range(1, self.gun_sayisi + 1):
                     allowed_exception_roles = self.kisitlama_istisna_map.get((p.id, g), set())
                     for s in range(self.slot_sayisi):
@@ -1370,10 +1397,11 @@ class NobetSolver:
         
         # Kısıtlı olmayan kişiler exclusive slotlara gidemez
         # Veya farklı bir göreve kısıtlı kişiler de exclusive slotlara gidemez
+        # Taşma görevi olarak bu göreve atanmış kişiler de girebilir
         for p in self.personel_listesi:
             for exclusive_gorev in exclusive_gorevler:
-                # Bu kişi bu exclusive göreve kısıtlı mı?
-                if p.kisitli_gorev != exclusive_gorev:
+                # Bu kişi bu exclusive göreve kısıtlı mı veya taşma görevi mi?
+                if p.kisitli_gorev != exclusive_gorev and p.tasma_gorevi != exclusive_gorev:
                     # Hayır - bu exclusive göreve gidemez
                     exclusive_slotlar = self.role_slots.get(exclusive_gorev, [])
                     for g in range(1, self.gun_sayisi + 1):
@@ -1663,11 +1691,15 @@ class NobetSolver:
             kisitli_debug = []
             for p in self.personel_listesi:
                 if p.kisitli_gorev:
-                    izinli = self.role_slots.get(p.kisitli_gorev, [])
+                    izinli = list(self.role_slots.get(p.kisitli_gorev, []))
+                    if p.tasma_gorevi:
+                        tasma_slotlar = list(self.role_slots.get(p.tasma_gorevi, []))
+                        izinli = list(set(izinli + tasma_slotlar))
                     kisitli_debug.append({
                         'personel_id': p.id,
                         'personel_ad': p.ad,
                         'kisitli_gorev': p.kisitli_gorev,
+                        'tasma_gorevi': p.tasma_gorevi,
                         'izinli_slotlar': izinli,
                         'gerceklesen_gorevler': kisi_sayac[p.id]['gorevler']
                     })

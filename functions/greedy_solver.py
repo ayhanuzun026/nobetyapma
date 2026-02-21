@@ -132,15 +132,20 @@ class NobetYoneticisi:
         for kisit in self.gorev_kisitlamalari:
             if ids_match(kisit.get('personelId'), p.id):
                 kisit_gorev = kisit.get('gorevAdi')
+                tasma_gorev = kisit.get('tasmaGorevi')
                 if kisit_gorev != gorev.ad and kisit_gorev != gorev.base_name:
-                    # Havuz üyesi ise (exclusive=false) diğer görevlere de atanabilir
-                    is_exclusive = kisit.get('exclusive', True)
-                    havuz_ids = kisit.get('havuzIds', [])
-                    if not is_exclusive or len(havuz_ids) > 0:
-                        # Havuz varsa veya exclusive değilse, kısıtlama yumuşak
-                        pass
+                    # Taşma görevi kontrolü
+                    if tasma_gorev and (tasma_gorev == gorev.ad or tasma_gorev == gorev.base_name):
+                        pass  # Taşma görevine atanabilir
                     else:
-                        return False
+                        # Havuz üyesi ise (exclusive=false) diğer görevlere de atanabilir
+                        is_exclusive = kisit.get('exclusive', True)
+                        havuz_ids = kisit.get('havuzIds', [])
+                        if not is_exclusive or len(havuz_ids) > 0:
+                            # Havuz varsa veya exclusive değilse, kısıtlama yumuşak
+                            pass
+                        else:
+                            return False
 
         if gorev.ayri_bina and p.ad in self.birlikte_uye_adlari:
             return False

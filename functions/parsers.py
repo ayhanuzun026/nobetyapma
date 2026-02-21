@@ -291,6 +291,7 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
 
         # Görev kısıtlaması
         kisitli_gorev = None
+        tasma_gorevi = None
         for k in data.get("gorevKisitlamalari", []):
             k_pid = k.get("personelId")
             k_pid_matches = ids_match(k_pid, pid)
@@ -300,6 +301,9 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
             if k_pid_matches:
                 raw_gorev_adi = k.get("gorevAdi")
                 kisitli_gorev = _normalize_gorev_adi(raw_gorev_adi)
+                raw_tasma = k.get("tasmaGorevi")
+                if raw_tasma:
+                    tasma_gorevi = _normalize_gorev_adi(raw_tasma)
                 break
 
         # Gün tipi hedefleri
@@ -329,6 +333,7 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
             ad=p_data.get("ad"),
             mazeret_gunleri=mazeretler,
             kisitli_gorev=kisitli_gorev,
+            tasma_gorevi=tasma_gorevi,
             hedef_tipler=hedef_tipler,
             gorev_kotalari=gorev_kotalari,
             yillik_gerceklesen=yillik_gerceklesen
@@ -393,14 +398,17 @@ def parse_birlikte_kurallar(data: Dict, personeller) -> List[SolverKural]:
     return birlikte_kurallar
 
 
-def parse_gorev_kisitlamalari(data: Dict, personeller) -> Dict[int, str]:
-    """Görev kısıtlamalarını dict formatında parse et {personel_id: gorev_adi}"""
+def parse_gorev_kisitlamalari(data: Dict, personeller) -> Dict[int, dict]:
+    """Görev kısıtlamalarını dict formatında parse et {personel_id: {gorevAdi, tasmaGorevi}}"""
     gorev_kisitlamalari = {}
     for k_data in data.get("gorevKisitlamalari", []):
         pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
         gorev_adi = k_data.get("gorevAdi")
         if pid is not None and gorev_adi:
-            gorev_kisitlamalari[pid] = gorev_adi
+            gorev_kisitlamalari[pid] = {
+                "gorevAdi": gorev_adi,
+                "tasmaGorevi": k_data.get("tasmaGorevi")
+            }
     return gorev_kisitlamalari
 
 

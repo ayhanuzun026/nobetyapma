@@ -103,6 +103,38 @@ ta<!DOCTYPE html>
     .cal-yillik { background: #ef4444 !important; color: #fff; font-weight: 800; }
     .cal-nobetizni { background: #f97316 !important; color: #fff; font-weight: 800; }
     .cal-sabit { background: #22c55e !important; color: #fff; font-weight: 800; }
+
+    /* Mazeret Özet Panel */
+    .mazeret-ozet-panel { background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 10px; padding: 14px 18px; color: #e2e8f0; font-size: 12px; margin-top: 12px; }
+    .mazeret-ozet-panel .ozet-baslik { font-weight: 800; font-size: 14px; color: #f8fafc; margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+    .mazeret-ozet-panel .ozet-stat { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    .mazeret-ozet-panel .ozet-chip { background: #334155; padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 600; display: inline-flex; align-items: center; gap: 4px; }
+    .mazeret-ozet-panel .ozet-chip.mz { border-left: 3px solid #fbbf24; }
+    .mazeret-ozet-panel .ozet-chip.yi { border-left: 3px solid #ef4444; }
+    .mazeret-ozet-panel .ozet-chip.ni { border-left: 3px solid #f97316; }
+    .mazeret-ozet-panel .ozet-cakisma { background: #7f1d1d55; border: 1px solid #dc262644; border-radius: 6px; padding: 8px 12px; margin-top: 8px; }
+    .mazeret-ozet-panel .ozet-cakisma-item { color: #fca5a5; font-size: 11px; padding: 2px 0; }
+
+    /* Stale Data Uyarısı */
+    .stale-data-uyari { background: #78350f; border: 1px solid #f59e0b; border-radius: 10px; padding: 12px 16px; margin-bottom: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+    .stale-data-uyari .uyari-text { color: #fef3c7; font-weight: 700; font-size: 13px; }
+    .stale-data-uyari .uyari-detail { color: #fcd34d; font-size: 11px; }
+
+    /* Isı Haritası */
+    .heat-map-container { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+    .heat-cell { width: 22px; height: 22px; border-radius: 3px; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 700; color: #fff; cursor: default; }
+    .heat-cell.heat-0 { background: #064e3b; color: #86efac; }
+    .heat-cell.heat-1 { background: #065f46; color: #86efac; }
+    .heat-cell.heat-2 { background: #78350f; color: #fbbf24; }
+    .heat-cell.heat-3 { background: #92400e; color: #fbbf24; }
+    .heat-cell.heat-4 { background: #7f1d1d; color: #fca5a5; }
+
+    /* Birlikte Nöbet Bilgi Kutusu */
+    .birlikte-bilgi-kutu { background: #dbeafe; border-left: 4px solid #3b82f6; border-radius: 0 8px 8px 0; padding: 12px 16px; margin-top: 12px; }
+    .birlikte-bilgi-kutu .baslik { font-weight: 800; color: #1e40af; margin-bottom: 8px; font-size: 13px; }
+    .birlikte-bilgi-kutu .grup { background: #eff6ff; border-radius: 6px; padding: 8px 12px; margin-bottom: 6px; font-size: 12px; }
+    .birlikte-bilgi-kutu .grup .isimler { font-weight: 700; color: #1e40af; }
+    .birlikte-bilgi-kutu .grup .detay { font-size: 11px; color: #3b82f6; margin-top: 2px; }
     
     /* Footer */
     .footer { padding: 15px 25px; background: #f8fafc; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; }
@@ -482,6 +514,7 @@ ta<!DOCTYPE html>
         </button>
       </div>
       <div id="mazeret-grid" class="cal-grid"></div>
+      <div id="mazeret-ozet"></div>
     </div>
 
     <!-- STEP 5: Hedefler -->
@@ -520,6 +553,7 @@ ta<!DOCTYPE html>
               <th rowspan="2">Toplam</th>
               <th rowspan="2">Saat</th>
               <th id="ozel-gorev-header" colspan="0"></th>
+              <th rowspan="2" title="Mazeret+Yıllık İzin+Nöbet İzni">Mzr</th>
               <th rowspan="2">Durum</th>
             </tr>
             <tr>
@@ -709,6 +743,7 @@ let hesaplananListe = null;
 let atananlar = {}; // Step 6 önizleme için (hesaplananListe.atanan ile senkron)
 let devirListesi = [];
 let personelIdCounter = 0;
+let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
 
 // Saat değerleri
 const SAAT_DEGER = { hici: 8, prs: 8, cum: 16, cmt: 24, pzr: 16 };
@@ -1703,6 +1738,21 @@ function manuelAtamaEkle() {
     gorevKisitlamaListesiGuncelle();
   }
 
+  // MAZERET ÇAKIŞMA KONTROLÜ
+  const mazeretliGun = personel.mazeretler?.includes(gun) ||
+                       personel.yillikIzinler?.includes(gun) ||
+                       personel.nobetIzinleri?.includes(gun);
+  if (mazeretliGun) {
+    const izinTuru = personel.yillikIzinler?.includes(gun) ? 'Yillik Izin' :
+                     personel.nobetIzinleri?.includes(gun) ? 'Nobet Izni' : 'Mazeret';
+    const mazeretOnay = confirm(
+      `⚠️ Mazeret Çakışması!\n\n` +
+      `${personel.ad} için ${gun}. gün "${izinTuru}" kayıtlı.\n\n` +
+      `Yine de bu güne nöbet atamak istiyor musunuz?`
+    );
+    if (!mazeretOnay) return;
+  }
+
   // BUG FIX (A): gorevIdx yerine gorevId kullan (sıralama değişse bile doğru görev bulunur)
   // Aynı gün + görev için zaten atama var mı?
   const mevcutAtama = manuelAtamalar.find(m => m.gun === gun && m.gorevId === gorev.id);
@@ -1720,8 +1770,9 @@ function manuelAtamaEkle() {
   
   // Input temizle
   document.getElementById('manuel-gun').value = '';
-  
+
   manuelAtamaListesiGuncelle();
+  mazeretOzetGuncelle();
   kaydetDebounced();
 }
 
@@ -1740,6 +1791,7 @@ function manuelAtamaSil(idx) {
 
   manuelAtamaListesiGuncelle();
   gorevKisitlamaListesiGuncelle();
+  mazeretOzetGuncelle();
   kaydetDebounced();
 }
 
@@ -2182,8 +2234,9 @@ function mazeretExcelYukle(input) {
       
       input.value = '';
       mazeretGridOlustur();
+      mazeretDegisti = true;
       kaydetDebounced();
-      
+
       // Nöbet atamaları için modal göster
       if (nobetler.length > 0) {
         nobetAtamaSor(nobetler, yuklenen);
@@ -2395,6 +2448,7 @@ function mazeretGridOlustur() {
   });
   
   document.body.onmouseup = () => isMouseDown = false;
+  mazeretOzetGuncelle();
 }
 
 function cellSec(pid, gun, start) {
@@ -2433,6 +2487,7 @@ function mazeretUygula(tur) {
   
   selectedCells = [];
   mazeretGridOlustur();
+  mazeretDegisti = true;
   kaydetDebounced();
 }
 
@@ -2444,7 +2499,78 @@ function tumMazeretleriTemizle() {
     p.nobetIzinleri = [];
   });
   mazeretGridOlustur();
+  mazeretDegisti = true;
   kaydetDebounced();
+}
+
+// ============================================
+// MAZERET ÖZET PANELİ (Step 4)
+// ============================================
+function mazeretOzetGuncelle() {
+  const container = document.getElementById('mazeret-ozet');
+  if (!container) return;
+  if (personelListesi.length === 0) { container.innerHTML = ''; return; }
+
+  let toplamMZ = 0, toplamYI = 0, toplamNI = 0;
+  let mazeretliKisiSayisi = 0;
+  const kisiDetaylari = [];
+
+  personelListesi.forEach(p => {
+    const mz = p.mazeretler?.length || 0;
+    const yi = p.yillikIzinler?.length || 0;
+    const ni = p.nobetIzinleri?.length || 0;
+    toplamMZ += mz;
+    toplamYI += yi;
+    toplamNI += ni;
+    const toplam = mz + yi + ni;
+    if (toplam > 0) {
+      mazeretliKisiSayisi++;
+      kisiDetaylari.push({ ad: p.ad, mz, yi, ni, toplam });
+    }
+  });
+
+  const toplamIzin = toplamMZ + toplamYI + toplamNI;
+
+  // Manuel atama çakışma kontrolü
+  const cakismalar = [];
+  manuelAtamalar.forEach(m => {
+    const p = personelListesi.find(x => String(x.id) === String(m.personelId));
+    if (!p) return;
+    const mazeretli = p.mazeretler?.includes(m.gun);
+    const yillikli = p.yillikIzinler?.includes(m.gun);
+    const nobetIzinli = p.nobetIzinleri?.includes(m.gun);
+    if (mazeretli || yillikli || nobetIzinli) {
+      const izinTuru = yillikli ? 'Yillik Izin' : nobetIzinli ? 'Nobet Izni' : 'Mazeret';
+      cakismalar.push({ ad: p.ad, gun: m.gun, izinTuru, gorev: m.gorevAdi });
+    }
+  });
+
+  // En çok mazeretli ilk 3
+  const enCokMazeretli = [...kisiDetaylari].sort((a, b) => b.toplam - a.toplam).slice(0, 3);
+
+  let html = `<div class="mazeret-ozet-panel">
+    <div class="ozet-baslik">&#128203; Mazeret Ozeti</div>
+    <div class="ozet-stat">
+      <span class="ozet-chip">Toplam: <strong>${toplamIzin}</strong> izin gunu</span>
+      <span class="ozet-chip mz">MZ: <strong>${toplamMZ}</strong></span>
+      <span class="ozet-chip yi">Yi: <strong>${toplamYI}</strong></span>
+      <span class="ozet-chip ni">Ni: <strong>${toplamNI}</strong></span>
+      <span class="ozet-chip">Personel: <strong>${mazeretliKisiSayisi}/${personelListesi.length}</strong> kisinin mazereti var</span>
+    </div>`;
+
+  if (enCokMazeretli.length > 0) {
+    html += `<div style="font-size:11px; color:#94a3b8; margin-bottom:4px;">En cok mazeretli: ${enCokMazeretli.map(k => `<strong style="color:#e2e8f0;">${k.ad}</strong> (${k.toplam} gun)`).join(', ')}</div>`;
+  }
+
+  if (cakismalar.length > 0) {
+    html += `<div class="ozet-cakisma">
+      <div style="font-weight:700; color:#fca5a5; margin-bottom:4px;">&#9888; Manuel Atama Cakismalari: ${cakismalar.length} uyari</div>
+      ${cakismalar.map(c => `<div class="ozet-cakisma-item">&#8226; ${c.ad}: ${c.gun}. gun ${c.izinTuru.toLowerCase()} ama nobet atanmis (${c.gorev})</div>`).join('')}
+    </div>`;
+  }
+
+  html += '</div>';
+  container.innerHTML = html;
 }
 
 // ============================================
@@ -2538,6 +2664,7 @@ async function hedefleriHesaplaOrtoolsAsync() {
       if (result.istatistikler) {
         const ist = result.istatistikler;
         console.log(`[HEDEF] İstatistik: toplam_slot=${ist.toplam_slot}, personel=${ist.personel_sayisi}, birlikte_grup=${ist.birlikte_kural_sayisi || 0}`);
+        window.ortoolsIstatistikler = result.istatistikler;
       }
       
       // OR-Tools sonuçlarını personel hedeflerine uygula
@@ -2669,6 +2796,7 @@ async function hedefleriHesapla() {
     alert('Hedef hesaplama sırasında hata oluştu: ' + error.message);
   } finally {
     hedefHesaplamaAktif = false;
+    mazeretDegisti = false;
   }
 }
 
@@ -4179,7 +4307,22 @@ function hedefTablosuGuncelle() {
   // Manuel atama uyarısı
   const uyarilarDiv = document.getElementById('hedef-uyarilar');
   let uyariHtml = '';
-  
+
+  // STALE DATA UYARISI
+  if (mazeretDegisti) {
+    uyariHtml += `
+      <div class="stale-data-uyari">
+        <div>
+          <div class="uyari-text">&#9888; Mazeretler degisti!</div>
+          <div class="uyari-detail">Step 4'te mazeret degisikligi yapildi. Hedefleri yeniden hesaplayarak guncelleyin.</div>
+        </div>
+        <button class="btn btn-warning btn-sm" onclick="hedefleriHesapla()">
+          <i class="fa-solid fa-calculator"></i> Yeniden Hesapla
+        </button>
+      </div>
+    `;
+  }
+
   if (manuelAtamalar.length > 0) {
     uyariHtml += `
       <div class="rule-box" style="background:#dbeafe; border-left:4px solid #2563eb;">
@@ -4218,8 +4361,70 @@ function hedefTablosuGuncelle() {
     `;
   }
   
+  // Birlikte nöbet bilgisi kutusu
+  const birlikteKurallar = kurallar.filter(k => k.tur === 'birlikte');
+  if (birlikteKurallar.length > 0) {
+    let birlikteHtml = '<div class="birlikte-bilgi-kutu"><div class="baslik">&#129309; Birlikte Nobet Plani</div>';
+
+    // OR-Tools istatistiklerinden birlikte grup bilgisini al
+    const istBirlikteGruplar = window.ortoolsIstatistikler?.birlikte_gruplar || [];
+
+    birlikteKurallar.forEach((kural, kIdx) => {
+      const uyeAdlari = (kural.personelIds || []).map(id => {
+        const p = personelListesi.find(x => String(x.id) === String(id));
+        return p ? p.ad : '?';
+      }).filter(a => a !== '?');
+      if (uyeAdlari.length < 2) return;
+
+      // Birlikte günleri bul (OR-Tools sonuçlarından veya personel verilerinden)
+      let birlikteGunler = [];
+      const ilkUye = personelListesi.find(x => String(x.id) === String(kural.personelIds[0]));
+      if (ilkUye && ilkUye.birlikteGunler && ilkUye.birlikteGunler.length > 0) {
+        birlikteGunler = ilkUye.birlikteGunler;
+      }
+
+      // OR-Tools istatistiklerinden ortak kapasite bilgisini bul
+      let ortakKapasite = null;
+      const istGrup = istBirlikteGruplar.find(g =>
+        g.kisiler && uyeAdlari.every(ad => g.kisiler.includes(ad))
+      );
+      if (istGrup && istGrup.ortak_kapasite) {
+        ortakKapasite = istGrup.ortak_kapasite;
+      }
+
+      // Her uyenin hedefinden birlikte gun sayisini hesapla
+      // Birlikte gruptaki herkesin toplam hedeflerinin minimumu = birlikte tutacaklari gun sayisi
+      const uyeHedefleri = (kural.personelIds || []).map(id => {
+        const p = personelListesi.find(x => String(x.id) === String(id));
+        if (!p || !p.hedef) return 0;
+        return GUN_TIPLERI.reduce((s, t) => s + p.hedef[t], 0);
+      }).filter(h => h > 0);
+      const minHedef = uyeHedefleri.length > 0 ? Math.min(...uyeHedefleri) : 0;
+
+      let detayHtml = '';
+      if (birlikteGunler.length > 0) {
+        detayHtml = `<strong>${birlikteGunler.length}</strong> nobet birlikte tutacak | Gunler: ${birlikteGunler.join(', ')}`;
+      } else if (ortakKapasite) {
+        const ortakToplam = Object.values(ortakKapasite).reduce((s, v) => s + v, 0);
+        detayHtml = `Ortak kapasite: <strong>${ortakToplam}</strong> gun (H.Ici:${ortakKapasite.hici || 0}, Prs:${ortakKapasite.prs || 0}, Cum:${ortakKapasite.cum || 0}, Cmt:${ortakKapasite.cmt || 0}, Pzr:${ortakKapasite.pzr || 0})`;
+        if (minHedef > 0) detayHtml += ` | Her biri en az <strong>${minHedef}</strong> nobet tutacak`;
+      } else if (minHedef > 0) {
+        detayHtml = `Her biri en az <strong>${minHedef}</strong> nobet tutacak (spesifik gunler cozum sonrasi belirlenir)`;
+      } else {
+        detayHtml = 'Hedef hesaplandiktan sonra birlikte gunler gorunecek';
+      }
+
+      birlikteHtml += `<div class="grup">
+        <div class="isimler">${uyeAdlari.join(' + ')}</div>
+        <div class="detay">${detayHtml}</div>
+      </div>`;
+    });
+    birlikteHtml += '</div>';
+    uyariHtml += birlikteHtml;
+  }
+
   uyarilarDiv.innerHTML = uyariHtml;
-  
+
   // Tablo
   const tbody = document.getElementById('hedef-tbody');
   const tfoot = document.getElementById('hedef-tfoot');
@@ -4252,15 +4457,20 @@ function hedefTablosuGuncelle() {
     // Manuel atama ikonu
     const manuelSayisi = p.manuelAtamaSayisi || 0;
     const manuelHtml = manuelSayisi > 0 ? `<span style="color:#2563eb; margin-left:4px;" title="${manuelSayisi} manuel atama">📌</span>` : '';
-    
+
     // WE/WD badge
     const weWdHtml = `<span class="badge badge-info" style="font-size:9px; padding:2px 4px;" title="WE(Cum+Cmt+Pzr)=${weAtanan}, WD(Pzt-Per)=${wdAtanan}">WE:${weAtanan} WD:${wdAtanan}</span>`;
-    
+
     // Yıllık toplam badge (az tutanlar vurgulanır)
     const yillikClass = yillikToplam < 20 ? 'badge-warn' : 'badge-info';
     const yillikHtml = `<span class="badge ${yillikClass}" style="font-size:10px; padding:2px 6px;" title="Yıllık toplam nöbet">📊 ${yillikToplam}</span>`;
-    
+
+    // Mazeret sayısı
+    const mazeretSayisi = (p.mazeretler?.length || 0) + (p.yillikIzinler?.length || 0) + (p.nobetIzinleri?.length || 0);
+    const mazeretClass = mazeretSayisi > 5 ? 'color:#ef4444; font-weight:800;' : mazeretSayisi > 0 ? 'color:#f59e0b; font-weight:700;' : 'color:#94a3b8;';
+
     const tr = document.createElement('tr');
+    if (mazeretDegisti) tr.style.background = '#fefce822';
     tr.innerHTML = `
       <td style="font-weight:700;">
         ${p.ad || '(isimsiz)'}${manuelHtml}
@@ -4273,18 +4483,21 @@ function hedefTablosuGuncelle() {
       `).join('')}
       <td><strong>${toplam}</strong></td>
       <td>${saat}s</td>
+      <td style="${mazeretClass} text-align:center; font-size:12px;" title="MZ:${p.mazeretler?.length || 0} Yi:${p.yillikIzinler?.length || 0} Ni:${p.nobetIzinleri?.length || 0}">${mazeretSayisi}</td>
       <td><span class="badge ${durumClass}">${durum}</span></td>
     `;
     tbody.appendChild(tr);
   });
   
   // Footer
+  const toplamMazeretSayisi = personelListesi.reduce((s, p) => s + (p.mazeretler?.length || 0) + (p.yillikIzinler?.length || 0) + (p.nobetIzinleri?.length || 0), 0);
   tfoot.innerHTML = `
     <tr style="background:#f1f5f9; font-weight:700;">
       <td>TOPLAM</td>
       ${GUN_TIPLERI.map(t => `<td>${atananToplam[t]}</td>`).join('')}
       <td><strong>${atananToplam.toplam}</strong></td>
       <td>${GUN_TIPLERI.reduce((s, t) => s + atananToplam[t] * getSaatDeger(t), 0)}s</td>
+      <td style="color:#64748b;">${toplamMazeretSayisi}</td>
       <td></td>
     </tr>
   `;
@@ -4498,6 +4711,112 @@ function hazirlikAnaliziGoster(kapasite, atananToplam, gunSayisi) {
           </div>
         </div>
       </div>
+  `;
+
+  // ── 3a. STALE DATA UYARISI ──
+  if (mazeretDegisti) {
+    html += `
+      <div style="background:#92400e55; border:1px solid #f59e0b; border-radius:8px; padding:12px; margin-bottom:12px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+        <div>
+          <div style="font-weight:700; color:#fef3c7; font-size:13px;">&#9888; Mazeretler degisti!</div>
+          <div style="font-size:11px; color:#fcd34d;">Step 4'te mazeret degisikligi yapildi. Hedefleri yeniden hesaplayarak guncelleyin.</div>
+        </div>
+        <button onclick="hedefleriHesapla()" style="background:#f59e0b; color:#000; border:none; padding:6px 14px; border-radius:6px; font-weight:700; font-size:12px; cursor:pointer;">
+          &#128260; Yeniden Hesapla
+        </button>
+      </div>
+    `;
+  }
+
+  // ── 3b. MAZERET ÖZET TABLOSU ──
+  const mazeretliPersoneller = personelAnalizleri.filter(p => p.mazeretSayisi > 0);
+  if (mazeretliPersoneller.length > 0) {
+    const topMZ = personelAnalizleri.reduce((s, p) => s + (p.mazeretler?.length || 0), 0);
+    const topYI = personelAnalizleri.reduce((s, p) => s + (p.yillikIzinler?.length || 0), 0);
+    const topNI = personelAnalizleri.reduce((s, p) => s + (p.nobetIzinleri?.length || 0), 0);
+    html += `
+      <div style="background:#1e293b; border-radius:8px; padding:12px; margin-bottom:12px;">
+        <div style="font-weight:700; color:#f8fafc; margin-bottom:8px;">&#128203; Mazeret Ozeti</div>
+        <table style="width:100%; border-collapse:collapse; font-size:11px;">
+          <thead>
+            <tr style="color:#94a3b8; border-bottom:1px solid #334155;">
+              <th style="padding:5px; text-align:left;">Personel</th>
+              <th style="padding:5px; text-align:center; color:#fbbf24;">MZ</th>
+              <th style="padding:5px; text-align:center; color:#ef4444;">Yi</th>
+              <th style="padding:5px; text-align:center; color:#f97316;">Ni</th>
+              <th style="padding:5px; text-align:center;">Top</th>
+              <th style="padding:5px; text-align:center;">Musait</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${mazeretliPersoneller.sort((a, b) => b.mazeretSayisi - a.mazeretSayisi).map(p => {
+              const mz = p.mazeretler?.length || 0;
+              const yi = p.yillikIzinler?.length || 0;
+              const ni = p.nobetIzinleri?.length || 0;
+              const musait = gunSayisi - p.mazeretSayisi;
+              return `
+                <tr style="border-bottom:1px solid #1e293b55;">
+                  <td style="padding:4px 5px; color:#e2e8f0; font-weight:600;">${p.ad}</td>
+                  <td style="padding:4px 5px; text-align:center; color:#fbbf24;">${mz || '-'}</td>
+                  <td style="padding:4px 5px; text-align:center; color:#ef4444;">${yi || '-'}</td>
+                  <td style="padding:4px 5px; text-align:center; color:#f97316;">${ni || '-'}</td>
+                  <td style="padding:4px 5px; text-align:center; color:#e2e8f0; font-weight:700;">${p.mazeretSayisi}</td>
+                  <td style="padding:4px 5px; text-align:center; color:#86efac;">${musait}</td>
+                </tr>
+              `;
+            }).join('')}
+            <tr style="border-top:1px solid #475569; font-weight:700;">
+              <td style="padding:5px; color:#f8fafc;">TOPLAM</td>
+              <td style="padding:5px; text-align:center; color:#fbbf24;">${topMZ}</td>
+              <td style="padding:5px; text-align:center; color:#ef4444;">${topYI}</td>
+              <td style="padding:5px; text-align:center; color:#f97316;">${topNI}</td>
+              <td style="padding:5px; text-align:center; color:#f8fafc;">${topMZ + topYI + topNI}</td>
+              <td style="padding:5px;"></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  // ── 3c. MANUEL ATAMA ÇAKIŞMA RAPORU ──
+  const manuelCakismalar = [];
+  manuelAtamalar.forEach(m => {
+    const p = personelListesi.find(x => String(x.id) === String(m.personelId));
+    if (!p) return;
+    if (p.mazeretler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Mazeret', gorev: m.gorevAdi });
+    else if (p.yillikIzinler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Yillik Izin', gorev: m.gorevAdi });
+    else if (p.nobetIzinleri?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Nobet Izni', gorev: m.gorevAdi });
+  });
+  if (manuelCakismalar.length > 0) {
+    html += `
+      <div style="background:#7f1d1d44; border:1px solid #dc262644; border-radius:8px; padding:12px; margin-bottom:12px;">
+        <div style="font-weight:700; color:#fca5a5; margin-bottom:6px;">&#9888; Manuel Atama Cakismalari (${manuelCakismalar.length})</div>
+        ${manuelCakismalar.map(c => `<div style="color:#fca5a5; padding:3px 0; font-size:12px;">&#8226; ${c.ad}: ${c.gun}. gun ${c.tur.toLowerCase()} + nobet atanmis (${c.gorev})</div>`).join('')}
+      </div>
+    `;
+  }
+
+  // ── 3d. GÜN BAZLI MAZERET ISI HARİTASI ──
+  html += `
+    <div style="background:#1e293b; border-radius:8px; padding:12px; margin-bottom:12px;">
+      <div style="font-weight:700; color:#f8fafc; margin-bottom:6px;">&#127777; Gun Bazli Mazeret Yogunlugu</div>
+      <div class="heat-map-container">
+        ${Array.from({length: gunSayisi}, (_, i) => i + 1).map(d => {
+          let mazeretCount = 0;
+          personelAnalizleri.forEach(p => {
+            if (p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d)) mazeretCount++;
+          });
+          const heatClass = mazeretCount >= 4 ? 'heat-4' : mazeretCount >= 3 ? 'heat-3' : mazeretCount >= 2 ? 'heat-2' : mazeretCount >= 1 ? 'heat-1' : 'heat-0';
+          return `<div class="heat-cell ${heatClass}" title="${d}. gun: ${mazeretCount} kisi mazeretli">${d}</div>`;
+        }).join('')}
+      </div>
+      <div style="display:flex; gap:10px; margin-top:6px; font-size:10px; color:#94a3b8;">
+        <span><span style="display:inline-block; width:10px; height:10px; background:#064e3b; border-radius:2px; vertical-align:middle;"></span> 0-1</span>
+        <span><span style="display:inline-block; width:10px; height:10px; background:#78350f; border-radius:2px; vertical-align:middle;"></span> 2-3</span>
+        <span><span style="display:inline-block; width:10px; height:10px; background:#7f1d1d; border-radius:2px; vertical-align:middle;"></span> 4+</span>
+      </div>
+    </div>
   `;
 
   // ── KRİTİK SORUNLAR ──
