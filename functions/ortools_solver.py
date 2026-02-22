@@ -978,11 +978,10 @@ class NobetSolver:
                 if not (p.tasma_gorevi and p.tasma_gorevi == role):
                     return False
 
-        # H9: Ayrı bina slotu + birlikte üyesi
-        if getattr(self.gorevler[slot_idx], 'ayri_bina', False) and pid in birlikte_uye_ids:
-            # Birlikte istisnası varsa izin ver
-            if (pid, gun) not in self.birlikte_istisna_set:
-                return False
+        # H9: Ayrı bina + birlikte üyesi → eliminasyon KALDIRILDI
+        # Birlikte üyeleri artık ayrı bina slotları için aday olabilir.
+        # Limit kontrolü H9 hard constraint'inde yapılır:
+        # ayri_bina_max = hedef - ceil(hedef/2)
 
         return True
 
@@ -1480,9 +1479,11 @@ class NobetSolver:
                         for s in exclusive_slotlar:
                             model.Add(x[p.id, g, s] == 0)
 
-        # H9. Ayrı bina slotlarına birlikte kuralı üyeleri atanmasın
-        #     YENI KURAL: Tamamen yasaklamak yerine MAX 1 KERE gidebilirler.
-        #     Böylece ayrı binalar sapsarı kalmaz, gerektiğinde 1 kez görevlendirilebilirler.
+        # H9. Ayrı bina slotları + birlikte kuralı üyeleri
+        #     YENİ FORMÜL: ceil(hedef/2) nöbet birlikte, geri kalanı serbest (ayrı binaya gidebilir)
+        #     3 nöbet → 2 birlikte, max 1 ayrı bina
+        #     4 nöbet → 2 birlikte, max 2 ayrı bina
+        #     5 nöbet → 3 birlikte, max 2 ayrı bina
         ayri_bina_slotlar = [
             s for s, gorev in enumerate(self.gorevler)
             if getattr(gorev, 'ayri_bina', False)
@@ -1498,18 +1499,25 @@ class NobetSolver:
                         birlikte_uye_ids.add(matched_pid)
 
             for pid in birlikte_uye_ids:
-                # Kisinin tüm ay boyunca ayrı binada tutabileceği maksimum nöbet sayısı
-                # İstisna günleri varsa orası zaten manuel geçilmiştir
+                # Kişinin hedef nöbet sayısını al
+                hedef = self.hedefler.get(pid, {})
+                hedef_toplam = hedef.get('hedef_toplam', 3)
+
+                # ceil(hedef/2) birlikte minimum, geri kalanı ayrı binaya gidebilir
+                birlikte_minimum = math.ceil(hedef_toplam / 2)
+                ayri_bina_max = hedef_toplam - birlikte_minimum
+                # En az 1 izin ver (tamamen sıfır olmasın)
+                ayri_bina_max = max(ayri_bina_max, 1)
+
                 toplam_ayri_bina_atamasi = []
                 for g in range(1, self.gun_sayisi + 1):
                     if (pid, g) in self.birlikte_istisna_set:
-                        continue  # İstisna olan gün hesaplamadan hariç tutulur (limitsizdir)
+                        continue  # İstisna olan gün hesaplamadan hariç tutulur
                     for s in ayri_bina_slotlar:
                         toplam_ayri_bina_atamasi.append(x[pid, g, s])
-                
-                # Birlikte olan bu üye, ayri binalarda ayda EN FAZLA 1 nöbet tutabilir.
+
                 if toplam_ayri_bina_atamasi:
-                    model.Add(sum(toplam_ayri_bina_atamasi) <= 1)
+                    model.Add(sum(toplam_ayri_bina_atamasi) <= ayri_bina_max)
 
         # H10. Non-exclusive görev havuzu varsa sadece o havuzdan seçim yap
         for role, allowed_ids in self.gorev_havuzlari.items():
