@@ -1522,7 +1522,7 @@ ta
       if (s === 2) gorevleriGuncelle();
       if (s === 3) { personelTablosuGuncelle(); ozetTablosuGuncelle(); }
       if (s === 4) { selectleriGuncelle(); mazeretGridOlustur(); }
-      if (s === 5) hedefleriHesapla();
+      if (s === 5) { hedefTablosuGuncelle(); ozelGorevSectionGuncelle(); }
       // Step 6: Sadece önizleme tablosunu güncelle, listeyi otomatik oluşturma
       if (s === 6) {
         // Eğer daha önce liste oluşturulmuşsa sadece tabloyu güncelle
@@ -2191,13 +2191,14 @@ ta
         }
       }
 
-      // Bilgi metni
+      // Bilgi metni — müsait gün sayısını öne çıkar
       const bilgiEl = document.getElementById('kisitlama-gt-bilgi');
       if (bilgiEl) {
-        const bilgiParcalari = GUN_TIPLERI
-          .filter(t => hedefler[t] > 0)
-          .map(t => `${hedefler[t]}x ${GUN_TIPI_LABEL[t]} (müsait: ${musaitGunler[t]} gün)`);
-        bilgiEl.innerHTML = `📋 <strong>${personel.ad}</strong> toplam hedef: ${toplamHedef} nöbet — ${bilgiParcalari.join(', ')}`;
+        const toplamMusait = GUN_TIPLERI.reduce((s, t) => s + musaitGunler[t], 0);
+        const musaitParcalari = GUN_TIPLERI
+          .filter(t => musaitGunler[t] > 0)
+          .map(t => `${GUN_TIPI_LABEL[t]}: ${musaitGunler[t]} gün`);
+        bilgiEl.innerHTML = `📋 <strong>${personel.ad}</strong> toplam müsait: <strong>${toplamMusait} gün</strong> — ${musaitParcalari.join(', ')}${toplamHedef > 0 ? ` (mevcut hedef: ${toplamHedef})` : ''}`;
       }
 
       // Gün tipi input'larını ön-doldur ve özet güncelle
@@ -2623,15 +2624,90 @@ ta
       });
 
       if (toplamGunTipi > 0) {
-        // Doğrulama: toplam <= kişinin toplam hedefi
-        const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (personel.hedef?.[t] || 0), 0);
-        if (toplamGunTipi > toplamHedef) {
-          return alert(`Gün tipi toplamı (${toplamGunTipi}) kişinin toplam hedefini (${toplamHedef}) aşamaz!`);
+        // Müsait gün sayısı kontrolü — sadece fiziksel üst sınır
+        const { yil, ay } = getYilAy();
+        const gunSayisi = getGunSayisi(yil, ay);
+        const musaitGunler = { hici: 0, prs: 0, cum: 0, cmt: 0, pzr: 0 };
+        let toplamMusait = 0;
+        for (let d = 1; d <= gunSayisi; d++) {
+          const mazeretli = personel.mazeretler?.includes(d) ||
+            personel.yillikIzinler?.includes(d) ||
+            personel.nobetIzinleri?.includes(d);
+          if (!mazeretli) {
+            const tip = getGunTipi(yil, ay, d);
+            musaitGunler[tip]++;
+            toplamMusait++;
+          }
         }
+
+        // Gün tipi bazında müsait günü aşan var mı kontrol et
+        const asanTipler = [];
+        GUN_TIPLERI.forEach(t => {
+          if (geciciDagilim[t] > musaitGunler[t]) {
+            asanTipler.push(`${GUN_TIPI_LABEL[t]}: ${geciciDagilim[t]} girdiniz ama ${musaitGunler[t]} gün müsait`);
+          }
+        });
+
+        if (toplamGunTipi > toplamMusait || asanTipler.length > 0) {
+          // Müsait günü aşıyor — popup uyarı göster, düzeltme imkanı ver
+          kisitlamaMusaitlikUyariPopup(personel, geciciDagilim, musaitGunler, toplamGunTipi, toplamMusait, asanTipler);
+          return;
+        }
+
         gunTipiDagilimi = { ...geciciDagilim };
       }
 
-      // Taşma görevini oku
+      // Kaydetme işlemini ortak fonksiyona taşıdık
+      gorevKisitlamasiKaydet(personel, gorevAdi, gunTipiDagilimi);
+    }
+
+    // Müsait gün aşımı uyarı popup'ı
+    function kisitlamaMusaitlikUyariPopup(personel, dagilim, musaitGunler, toplamGiris, toplamMusait, asanTipler) {
+      const modal = document.createElement('div');
+      modal.className = 'modal active';
+      modal.id = 'kisitlama-uyari-modal';
+
+      const detayHTML = asanTipler.length > 0
+        ? `<ul style="margin:8px 0; padding-left:20px;">${asanTipler.map(t => `<li style="color:#dc2626; margin:4px 0;">${t}</li>`).join('')}</ul>`
+        : '';
+
+      const toplamUyari = toplamGiris > toplamMusait
+        ? `<p style="color:#dc2626; font-weight:600; margin:8px 0;">Toplam giriş (${toplamGiris}) kişinin toplam müsait gün sayısını (${toplamMusait}) aşıyor!</p>`
+        : '';
+
+      const musaitOzet = GUN_TIPLERI
+        .map(t => `<span style="display:inline-block; background:#f0fdf4; border:1px solid #86efac; padding:3px 8px; border-radius:6px; margin:2px; font-size:12px;">
+          <strong>${GUN_TIPI_LABEL[t]}:</strong> ${musaitGunler[t]} gün</span>`)
+        .join('');
+
+      modal.innerHTML = `
+        <div class="modal-content" style="max-width:500px;">
+          <div class="modal-header" style="background:#fef2f2; border-bottom:2px solid #fca5a5;">
+            <h3 style="margin:0; color:#dc2626; font-size:16px;">⚠️ Müsait Gün Aşımı</h3>
+            <button onclick="document.getElementById('kisitlama-uyari-modal').remove()"
+              style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">✕</button>
+          </div>
+          <div class="modal-body">
+            <p style="margin-bottom:10px;"><strong>${personel.ad}</strong> için girdiğiniz değerler müsait gün sayısını aşıyor.</p>
+            ${toplamUyari}
+            ${detayHTML}
+            <div style="margin:12px 0;">
+              <p style="font-size:13px; color:#374151; font-weight:600; margin-bottom:6px;">Kişinin müsait günleri:</p>
+              <div style="display:flex; flex-wrap:wrap; gap:2px;">${musaitOzet}</div>
+            </div>
+            <p style="font-size:12px; color:#6b7280; margin-top:12px;">Lütfen gün tipi dağılımını müsait gün sayısına uygun şekilde düzeltiniz.</p>
+          </div>
+          <div style="padding:12px 20px; border-top:1px solid #e5e7eb; display:flex; justify-content:flex-end; gap:8px;">
+            <button class="btn btn-sm" style="background:#6b7280; color:#fff;"
+              onclick="document.getElementById('kisitlama-uyari-modal').remove()">Tamam, Düzelteceğim</button>
+          </div>
+        </div>`;
+
+      document.body.appendChild(modal);
+    }
+
+    // Kısıtlama kaydetme ortak fonksiyonu
+    function gorevKisitlamasiKaydet(personel, gorevAdi, gunTipiDagilimi) {
       const tasmaSelect = document.getElementById('kisitlama-tasma');
       const tasmaGorevi = tasmaSelect?.value || null;
 
@@ -2640,7 +2716,7 @@ ta
         gorevAdi: gorevAdi,
         exclusive: true,
         gunTipiDagilimi,
-        tasmaGorevi  // KVC dolu olunca bu göreve yaz (ör: "Mavi Kod")
+        tasmaGorevi
       }];
 
       // Gün tipi inputlarını temizle
@@ -3468,6 +3544,14 @@ ta
               return; // WE/WD, birlikte, kota da kilitli kalır
             }
 
+            // Kişi görev kısıtlamasında gün tipi dağılımı belirlenmiş mi kontrol et
+            const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id) && k.gunTipiDagilimi);
+            if (kisitlama) {
+              p.hedef = { ...kisitlama.gunTipiDagilimi };
+              console.log(`[KISITLAMA] ${p.ad} manuel gün tipi dağılımı korundu:`, p.hedef);
+              return;
+            }
+
             // Gün tipi hedeflerini doğrudan kullan (OR-Tools hesapladı)
             // Backend formatı: hedef_hici, hedef_prs, hedef_cum, hedef_cmt, hedef_pzr
             p.hedef = {
@@ -3660,6 +3744,8 @@ ta
           kisitlamaDagilimMap[String(k.personelId)] = k.gunTipiDagilimi || null;
           kisitlamaTasmaMap[String(k.personelId)] = k.tasmaGorevi || null;
         });
+        const birlikteKurallar = kurallar.filter(k => k.tur === 'birlikte');
+        const birlikteMap = {};
         birlikteKurallar.forEach(kural => {
           const kisiler = kural.kisiler || [];
           kisiler.forEach(id => {
@@ -4490,6 +4576,20 @@ ta
             console.log(`[KILIT-YEREL] ${p.ad} kilitli - hedef korundu:`, p.hedef);
             return;
           }
+
+          // Kişi görev kısıtlamasında gün tipi dağılımı belirlenmiş mi kontrol et
+          const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id) && k.gunTipiDagilimi);
+          if (kisitlama) {
+            p.hedef = { ...kisitlama.gunTipiDagilimi };
+            console.log(`[KISITLAMA-YEREL] ${p.ad} manuel gün tipi dağılımı korundu:`, p.hedef);
+            // WE/WD bilgilerini dağılımdan hesapla
+            p.weAtanan = (kisitlama.gunTipiDagilimi.cum || 0) + (kisitlama.gunTipiDagilimi.cmt || 0) + (kisitlama.gunTipiDagilimi.pzr || 0);
+            p.wdAtanan = (kisitlama.gunTipiDagilimi.hici || 0) + (kisitlama.gunTipiDagilimi.prs || 0);
+            p.hedefWE = p.weAtanan;
+            p.hedefWD = p.wdAtanan;
+            return;
+          }
+
           p.hedef = { ...simKisiAtama[p.id].tipSayilari };
 
           // WE/WD bilgilerini de kaydet

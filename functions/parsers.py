@@ -470,8 +470,12 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
 
 def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
                           personeller) -> Dict[str, Set[int]]:
-    """nobet_coz için non-exclusive görev havuzlarını parse et"""
-    gorev_kisitlamalari_raw = data.get("gorevKisitlamalari", [])
+    """nobet_coz için görev havuzlarını parse et.
+
+    Önce frontend'den gelen gorevHavuzlari objesini oku (yeni format).
+    Yoksa eski gorevKisitlamalari[].havuzIds formatını dene.
+    Her iki durumda da kısıtlı kişileri (exclusive) havuza dahil et.
+    """
 
     def _normalize_gorev_adi(raw_gorev_adi):
         if not raw_gorev_adi:
@@ -481,17 +485,47 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
                 return g.base_name if g.base_name else g.ad
         return raw_gorev_adi
 
-    exclusive_role_adlari = {
-        g.base_name if g.base_name else g.ad
-        for g in gorevler if g.exclusive
-    }
+    # Kısıtlı kişileri topla (exclusive atamalar)
+    gorev_kisitlamalari_raw = data.get("gorevKisitlamalari", [])
+    kisitlilar_by_role = {}  # { role: set(pid) }
+    for k_data in gorev_kisitlamalari_raw:
+        role = _normalize_gorev_adi(k_data.get("gorevAdi"))
+        if not role:
+            continue
+        kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
+        if kisit_pid is not None:
+            kisitlilar_by_role.setdefault(role, set()).add(kisit_pid)
 
+    # YENİ FORMAT: Frontend'den gelen gorevHavuzlari objesini oku
+    gorev_havuzlari_raw = data.get("gorevHavuzlari", {})
+    if gorev_havuzlari_raw and isinstance(gorev_havuzlari_raw, dict):
+        gorev_havuzlari = {}
+        for raw_role, ids in gorev_havuzlari_raw.items():
+            role = _normalize_gorev_adi(raw_role)
+            if not role or not ids:
+                continue
+            allowed_ids = set()
+            if isinstance(ids, list):
+                for raw_id in ids:
+                    pid = _resolve_personel_id(raw_id, personeller, require_existing=True)
+                    if pid is not None:
+                        allowed_ids.add(pid)
+            # Kısıtlı kişileri de ekle
+            if role in kisitlilar_by_role:
+                allowed_ids |= kisitlilar_by_role[role]
+            if allowed_ids:
+                gorev_havuzlari[role] = allowed_ids
+
+        # gorevHavuzlari'da olmayan ama kısıtlı kişisi olan görevler için de havuz oluştur
+        for role, kisitli_ids in kisitlilar_by_role.items():
+            if role not in gorev_havuzlari and kisitli_ids:
+                gorev_havuzlari[role] = kisitli_ids
+
+        return gorev_havuzlari
+
+    # ESKİ FORMAT: gorevKisitlamalari içindeki havuzIds (geriye uyumluluk)
     gorev_havuz_kayitlari = {}
     for k_data in gorev_kisitlamalari_raw:
-        # Exclusive kayıtları artık ATLAMA - havuz bilgisi varsa işle
-        # (Eski davranış: exclusive kayıtları tamamen atlıyordu,
-        #  bu da exclusive görevler için havuz oluşmasını engelliyordu)
-
         role = _normalize_gorev_adi(k_data.get("gorevAdi"))
         if not role:
             continue
