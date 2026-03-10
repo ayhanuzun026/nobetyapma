@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nöbet Robotu — Debug Admin</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyC7w00A_jYCCBrnDASD1RjoYHjyKsKeLBI",
+      authDomain: "nobetyap-29acf.firebaseapp.com",
+      projectId: "nobetyap-29acf",
+      storageBucket: "nobetyap-29acf.firebasestorage.app",
+      messagingSenderId: "208653465494",
+      appId: "1:208653465494:web:1b821ca6dc73cf27a10fb7"
+    };
+    try { if (!firebase.apps.length) firebase.initializeApp(firebaseConfig); } catch(e) {}
+  </script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', sans-serif; background: #f1f5f9; color: #334155; }
+    .topbar {
+      background: #1e293b; color: #fff; padding: 14px 24px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .topbar h1 { font-size: 18px; font-weight: 700; }
+    .topbar a { color: #94a3b8; text-decoration: none; font-size: 13px; }
+    .topbar a:hover { color: #fff; }
+
+    .container { max-width: 1400px; margin: 24px auto; padding: 0 16px; }
+
+    /* Filtreler */
+    .filters {
+      background: #fff; border-radius: 12px; padding: 16px 20px;
+      display: flex; gap: 12px; flex-wrap: wrap; align-items: flex-end;
+      box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 20px;
+    }
+    .filters label { font-size: 12px; font-weight: 600; color: #64748b; display: block; margin-bottom: 4px; }
+    .filters select, .filters input {
+      padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 8px;
+      font-size: 13px; background: #f8fafc;
+    }
+    .filters button {
+      padding: 8px 18px; background: #2563eb; color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .filters button:hover { background: #1d4ed8; }
+    .filters .btn-reset {
+      background: #e2e8f0; color: #475569;
+    }
+    .filters .btn-reset:hover { background: #cbd5e1; }
+
+    /* Liste tablosu */
+    .card {
+      background: #fff; border-radius: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08);
+      overflow: hidden;
+    }
+    .card-header {
+      padding: 16px 20px; border-bottom: 1px solid #f1f5f9;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .card-header h2 { font-size: 15px; font-weight: 700; }
+    #session-count { font-size: 13px; color: #64748b; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    thead th {
+      background: #f8fafc; padding: 10px 14px; text-align: left;
+      font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase;
+      letter-spacing: .5px; border-bottom: 1px solid #e2e8f0;
+    }
+    tbody tr { border-bottom: 1px solid #f1f5f9; }
+    tbody tr:hover { background: #f8fafc; cursor: pointer; }
+    tbody td { padding: 10px 14px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 4px;
+      padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 700;
+    }
+    .chip-basarili { background: #dcfce7; color: #16a34a; }
+    .chip-hata { background: #fee2e2; color: #dc2626; }
+    .chip-bitti { background: #fef9c3; color: #ca8a04; }
+    .chip-endpoint {
+      background: #eff6ff; color: #2563eb; font-size: 11px; font-weight: 600;
+      padding: 2px 8px; border-radius: 6px;
+    }
+    .btn-detay {
+      padding: 4px 12px; background: #eff6ff; color: #2563eb;
+      border: none; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;
+    }
+    .btn-detay:hover { background: #dbeafe; }
+
+    #loading { text-align: center; padding: 40px; color: #94a3b8; }
+
+    /* Modal */
+    .modal-overlay {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,.5); z-index: 1000; align-items: center; justify-content: center;
+    }
+    .modal-overlay.open { display: flex; }
+    .modal {
+      background: #fff; border-radius: 16px; width: 90%; max-width: 900px;
+      max-height: 90vh; display: flex; flex-direction: column;
+      box-shadow: 0 20px 60px rgba(0,0,0,.3);
+    }
+    .modal-header {
+      padding: 18px 24px; border-bottom: 1px solid #e2e8f0;
+      display: flex; justify-content: space-between; align-items: flex-start;
+    }
+    .modal-header h2 { font-size: 16px; font-weight: 700; }
+    .modal-header .meta { font-size: 12px; color: #64748b; margin-top: 4px; }
+    .btn-close {
+      background: none; border: none; cursor: pointer; font-size: 20px;
+      color: #94a3b8; padding: 0 4px;
+    }
+    .btn-close:hover { color: #334155; }
+
+    .modal-tabs {
+      display: flex; gap: 0; border-bottom: 1px solid #e2e8f0; padding: 0 24px;
+    }
+    .tab-btn {
+      padding: 10px 16px; border: none; background: none; cursor: pointer;
+      font-size: 13px; font-weight: 600; color: #64748b;
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .tab-btn.active { color: #2563eb; border-bottom-color: #2563eb; }
+
+    .modal-body { overflow-y: auto; padding: 20px 24px; flex: 1; }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+
+    .ozet-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: 12px; margin-bottom: 20px;
+    }
+    .ozet-card {
+      background: #f8fafc; border-radius: 10px; padding: 14px 16px;
+      border: 1px solid #e2e8f0;
+    }
+    .ozet-card .label { font-size: 11px; color: #64748b; font-weight: 600; text-transform: uppercase; }
+    .ozet-card .value { font-size: 20px; font-weight: 700; margin-top: 4px; color: #1e293b; }
+    .ozet-card .value.ok { color: #16a34a; }
+    .ozet-card .value.err { color: #dc2626; }
+
+    pre.json-view {
+      background: #0f172a; color: #e2e8f0; padding: 16px; border-radius: 10px;
+      font-size: 12px; overflow: auto; max-height: 500px; white-space: pre-wrap;
+      word-break: break-all; line-height: 1.6;
+    }
+    pre.log-view {
+      background: #0f172a; color: #86efac; padding: 16px; border-radius: 10px;
+      font-size: 11px; overflow: auto; max-height: 500px; white-space: pre-wrap;
+      word-break: break-all; line-height: 1.5; font-family: monospace;
+    }
+    .log-line-solver { color: #60a5fa; }
+    .log-line-hedef { color: #f9a8d4; }
+    .log-line-kota { color: #fbbf24; }
+    .log-line-kilit { color: #f87171; }
+    .log-line-greedy { color: #a78bfa; }
+    .log-line-teshis { color: #34d399; }
+
+    .modal-footer {
+      padding: 14px 24px; border-top: 1px solid #e2e8f0;
+      display: flex; gap: 10px; justify-content: flex-end;
+    }
+    .btn-copy {
+      padding: 8px 20px; background: #2563eb; color: #fff;
+      border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .btn-copy:hover { background: #1d4ed8; }
+    .btn-copy.copied { background: #16a34a; }
+
+    .empty-state {
+      text-align: center; padding: 60px 20px; color: #94a3b8;
+    }
+    .empty-state i { font-size: 48px; margin-bottom: 16px; display: block; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <h1><i class="fa-solid fa-bug" style="margin-right:8px"></i>Debug Log Admin</h1>
+  <a href="/"><i class="fa-solid fa-arrow-left" style="margin-right:4px"></i>Ana Sayfa</a>
+</div>
+
+<div class="container">
+
+  <!-- Filtreler -->
+  <div class="filters">
+    <div>
+      <label>Endpoint</label>
+      <select id="f-endpoint">
+        <option value="">Tümü</option>
+        <option value="nobet_coz">nobet_coz</option>
+        <option value="nobet_hedef_hesapla">nobet_hedef_hesapla</option>
+        <option value="nobet_dagit">nobet_dagit</option>
+        <option value="nobet_kapasite">nobet_kapasite</option>
+      </select>
+    </div>
+    <div>
+      <label>Durum</label>
+      <select id="f-durum">
+        <option value="">Tümü</option>
+        <option value="basarili">Başarılı</option>
+        <option value="hata">Hata</option>
+        <option value="bitti">Bitti</option>
+      </select>
+    </div>
+    <div>
+      <label>Son N kayıt</label>
+      <select id="f-limit">
+        <option value="20">20</option>
+        <option value="50">50</option>
+        <option value="100">100</option>
+      </select>
+    </div>
+    <button onclick="yukle()"><i class="fa-solid fa-rotate-right"></i> Yükle</button>
+    <button class="btn-reset" onclick="resetFiltreler()">Sıfırla</button>
+  </div>
+
+  <!-- Liste -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Debug Oturumları</h2>
+      <span id="session-count">—</span>
+    </div>
+    <div id="loading"><i class="fa-solid fa-spinner fa-spin"></i> Yükleniyor...</div>
+    <div id="table-wrap" style="display:none">
+      <table>
+        <thead>
+          <tr>
+            <th>Tarih / Saat</th>
+            <th>Endpoint</th>
+            <th>Durum</th>
+            <th>Süre</th>
+            <th>Personel</th>
+            <th>Atama</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="session-tbody"></tbody>
+      </table>
+      <div id="empty-state" class="empty-state" style="display:none">
+        <i class="fa-solid fa-inbox"></i>
+        Kayıt bulunamadı
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Detay Modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <h2 id="modal-title">Oturum Detayı</h2>
+        <div class="meta" id="modal-meta"></div>
+      </div>
+      <button class="btn-close" onclick="modalKapat()"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="modal-tabs">
+      <button class="tab-btn active" onclick="tabAc('ozet', this)">Özet</button>
+      <button class="tab-btn" onclick="tabAc('girdi', this)">Girdi</button>
+      <button class="tab-btn" onclick="tabAc('cikti', this)">Çıktı</button>
+      <button class="tab-btn" onclick="tabAc('logs', this)">Console Logları</button>
+    </div>
+    <div class="modal-body">
+      <div class="tab-pane active" id="tab-ozet">
+        <div class="ozet-grid" id="ozet-grid"></div>
+        <div id="hata-detay-wrap" style="display:none; margin-top:16px;">
+          <div style="font-weight:600; color:#dc2626; margin-bottom:8px;">Hata Detayı</div>
+          <pre class="json-view" id="hata-detay-text"></pre>
+        </div>
+      </div>
+      <div class="tab-pane" id="tab-girdi">
+        <pre class="json-view" id="girdi-json">Yükleniyor...</pre>
+      </div>
+      <div class="tab-pane" id="tab-cikti">
+        <pre class="json-view" id="cikti-json">Yükleniyor...</pre>
+      </div>
+      <div class="tab-pane" id="tab-logs">
+        <pre class="log-view" id="log-text">Log yok</pre>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-copy" id="copy-btn" onclick="claudeKopyala()">
+        <i class="fa-solid fa-copy"></i> Claude'a Kopyala
+      </button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const db = firebase.firestore();
+  let sessions = [];
+  let aktifSession = null;
+
+  async function yukle() {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('table-wrap').style.display = 'none';
+
+    const endpoint = document.getElementById('f-endpoint').value;
+    const durum = document.getElementById('f-durum').value;
+    const limit = parseInt(document.getElementById('f-limit').value) || 20;
+
+    try {
+      let q = db.collection('debug_sessions').orderBy('timestamp', 'desc').limit(limit);
+      if (endpoint) q = q.where('endpoint', '==', endpoint);
+      if (durum) q = q.where('durum', '==', durum);
+
+      const snap = await q.get();
+      sessions = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      renderTable();
+    } catch (e) {
+      console.error('Yükleme hatası:', e);
+      alert('Veriler yüklenemedi: ' + e.message);
+    } finally {
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('table-wrap').style.display = 'block';
+    }
+  }
+
+  function renderTable() {
+    const tbody = document.getElementById('session-tbody');
+    document.getElementById('session-count').textContent = `${sessions.length} kayıt`;
+
+    if (sessions.length === 0) {
+      tbody.innerHTML = '';
+      document.getElementById('empty-state').style.display = 'block';
+      return;
+    }
+    document.getElementById('empty-state').style.display = 'none';
+
+    tbody.innerHTML = sessions.map((s, i) => {
+      const ts = s.timestamp?.toDate?.() || new Date(s.timestamp);
+      const tarih = ts.toLocaleDateString('tr-TR');
+      const saat = ts.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const chipClass = s.durum === 'basarili' ? 'chip-basarili' : s.durum === 'hata' ? 'chip-hata' : 'chip-bitti';
+      const sure = s.sure_ms ? (s.sure_ms >= 1000 ? (s.sure_ms/1000).toFixed(1) + 's' : s.sure_ms + 'ms') : '—';
+      const personel = s.ozet?.personel_sayisi ?? s.girdi_ozet?.personel_sayisi ?? '—';
+      const atama = s.ozet?.atama_sayisi ?? s.cikti_ozet?.atama_sayisi ?? '—';
+      return `<tr onclick="detayAc(${i})">
+        <td>${tarih} ${saat}</td>
+        <td><span class="chip-endpoint">${s.endpoint || '—'}</span></td>
+        <td><span class="chip ${chipClass}">${s.durum || '—'}</span></td>
+        <td>${sure}</td>
+        <td>${personel}</td>
+        <td>${atama}</td>
+        <td><button class="btn-detay" onclick="event.stopPropagation();detayAc(${i})"><i class="fa-solid fa-magnifying-glass"></i> Detay</button></td>
+      </tr>`;
+    }).join('');
+  }
+
+  async function detayAc(i) {
+    aktifSession = sessions[i];
+    const s = aktifSession;
+    const ts = s.timestamp?.toDate?.() || new Date(s.timestamp);
+
+    document.getElementById('modal-title').textContent = `${s.endpoint} — ${s.durum}`;
+    document.getElementById('modal-meta').textContent =
+      `${ts.toLocaleString('tr-TR')} | ${s.sure_ms ? s.sure_ms + 'ms' : 'süre bilinmiyor'} | ID: ${s.id}`;
+
+    // Özet
+    const ozet = s.ozet || {};
+    const girdiOzet = s.girdi_ozet || {};
+    const ciktiOzet = s.cikti_ozet || {};
+    const grid = document.getElementById('ozet-grid');
+    grid.innerHTML = [
+      { label: 'Yıl/Ay', value: (ozet.yil && ozet.ay) ? `${ozet.yil}/${String(ozet.ay).padStart(2,'0')}` : '—' },
+      { label: 'Durum', value: s.durum || '—', cls: s.durum === 'basarili' ? 'ok' : s.durum === 'hata' ? 'err' : '' },
+      { label: 'Süre', value: s.sure_ms ? s.sure_ms + ' ms' : '—' },
+      { label: 'Personel', value: ozet.personel_sayisi ?? girdiOzet.personel_sayisi ?? '—' },
+      { label: 'Atama', value: ozet.atama_sayisi ?? ciktiOzet.atama_sayisi ?? '—' },
+      { label: 'Görev', value: girdiOzet.gorev_sayisi ?? '—' },
+      { label: 'Ara Gün', value: girdiOzet.ara_gun ?? '—' },
+      { label: 'Frontend Log', value: (s.frontend_loglar?.length ?? 0) + ' satır' },
+    ].map(c => `
+      <div class="ozet-card">
+        <div class="label">${c.label}</div>
+        <div class="value ${c.cls || ''}">${c.value}</div>
+      </div>`).join('');
+
+    // Hata detayı
+    if (s.hata_detay) {
+      document.getElementById('hata-detay-wrap').style.display = 'block';
+      document.getElementById('hata-detay-text').textContent = s.hata_detay;
+    } else {
+      document.getElementById('hata-detay-wrap').style.display = 'none';
+    }
+
+    // Girdi JSON
+    let girdiData = s.girdi_tam;
+    if (!girdiData && s.girdi_buyuk) {
+      girdiData = await loadSubcollection(s.id, 'girdi');
+    }
+    document.getElementById('girdi-json').textContent = girdiData
+      ? JSON.stringify(girdiData, null, 2) : '(büyük payload — alt koleksiyonda)';
+
+    // Çıktı JSON
+    let ciktiData = s.cikti_tam;
+    if (!ciktiData && s.cikti_buyuk) {
+      ciktiData = await loadSubcollection(s.id, 'cikti');
+    }
+    document.getElementById('cikti-json').textContent = ciktiData
+      ? JSON.stringify(ciktiData, null, 2) : s.ozet?.hata_mesaji || '(veri yok)';
+
+    // Console logları
+    const logs = s.frontend_loglar || [];
+    if (logs.length > 0) {
+      const logEl = document.getElementById('log-text');
+      logEl.innerHTML = logs.map(line => {
+        let cls = '';
+        if (line.includes('[SOLVER]')) cls = 'log-line-solver';
+        else if (line.includes('[HEDEF]')) cls = 'log-line-hedef';
+        else if (line.includes('[KOTA]')) cls = 'log-line-kota';
+        else if (line.includes('[KILIT]')) cls = 'log-line-kilit';
+        else if (line.includes('[GREEDY]')) cls = 'log-line-greedy';
+        else if (line.includes('[TESHIS]')) cls = 'log-line-teshis';
+        const esc = line.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return cls ? `<span class="${cls}">${esc}</span>` : esc;
+      }).join('\n');
+    } else {
+      document.getElementById('log-text').textContent = '(Frontend log yok)';
+    }
+
+    // İlk tab aktif
+    tabAc('ozet', document.querySelector('.tab-btn'));
+    document.getElementById('modal-overlay').classList.add('open');
+  }
+
+  async function loadSubcollection(sessionId, type) {
+    try {
+      const snap = await db.collection('debug_sessions').doc(sessionId)
+        .collection('payload').where('type', '==', type).orderBy('part_index').get();
+      if (snap.empty) return null;
+      const combined = snap.docs.map(d => d.data().data).join('');
+      return JSON.parse(combined);
+    } catch (e) {
+      console.error('Sub-collection yükleme hatası:', e);
+      return null;
+    }
+  }
+
+  function modalKapat() {
+    document.getElementById('modal-overlay').classList.remove('open');
+    aktifSession = null;
+  }
+
+  function tabAc(name, btn) {
+    document.querySelectorAll('.tab-pane').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    if (btn) btn.classList.add('active');
+  }
+
+  async function claudeKopyala() {
+    if (!aktifSession) return;
+    const s = aktifSession;
+    const ts = s.timestamp?.toDate?.() || new Date(s.timestamp);
+    const ozet = s.ozet || {};
+    const girdiOzet = s.girdi_ozet || {};
+
+    const logs = (s.frontend_loglar || []).slice(0, 100).join('\n');
+
+    const metin = `# Debug Oturumu — ${s.endpoint}
+
+## Özet
+- **Tarih**: ${ts.toLocaleString('tr-TR')}
+- **Durum**: ${s.durum}
+- **Süre**: ${s.sure_ms ?? '?'} ms
+- **Yıl/Ay**: ${ozet.yil ?? '?'}/${ozet.ay ?? '?'}
+- **Personel Sayısı**: ${ozet.personel_sayisi ?? girdiOzet.personel_sayisi ?? '?'}
+- **Atama Sayısı**: ${ozet.atama_sayisi ?? '?'}
+- **Görev Sayısı**: ${girdiOzet.gorev_sayisi ?? '?'}
+- **Ara Gün**: ${girdiOzet.ara_gun ?? '?'}
+
+## Hata Mesajı
+${s.ozet?.hata_mesaji || s.hata_detay || '(hata yok)'}
+
+## Console Logları (son 100 satır)
+\`\`\`
+${logs || '(log yok)'}
+\`\`\`
+
+## Oturum ID
+${s.id}`;
+
+    try {
+      await navigator.clipboard.writeText(metin);
+      const btn = document.getElementById('copy-btn');
+      btn.innerHTML = '<i class="fa-solid fa-check"></i> Kopyalandı!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        btn.innerHTML = '<i class="fa-solid fa-copy"></i> Claude\'a Kopyala';
+        btn.classList.remove('copied');
+      }, 2500);
+    } catch (e) {
+      alert('Kopyalama başarısız: ' + e.message);
+    }
+  }
+
+  function resetFiltreler() {
+    document.getElementById('f-endpoint').value = '';
+    document.getElementById('f-durum').value = '';
+    document.getElementById('f-limit').value = '20';
+    yukle();
+  }
+
+  // Modal dışına tıklayınca kapat
+  document.getElementById('modal-overlay').addEventListener('click', function(e) {
+    if (e.target === this) modalKapat();
+  });
+
+  // Sayfa yüklendiğinde otomatik yükle
+  yukle();
+</script>
+</body>
+</html>

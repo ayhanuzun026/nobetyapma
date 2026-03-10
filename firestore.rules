@@ -1,0 +1,27 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // debug_sessions: yalnızca Cloud Functions (admin SDK) yazabilir,
+    // okuma şimdilik açık (geliştirme aşaması — sonra kısıtlanacak)
+    match /debug_sessions/{sessionId} {
+      allow read: if true;
+      allow write: if false;
+
+      match /payload/{part} {
+        allow read: if true;
+        allow write: if false;
+      }
+    }
+
+    // debug_frontend_logs: JS'den doğrudan yazılır
+    match /debug_frontend_logs/{docId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Diğer koleksiyonlar
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

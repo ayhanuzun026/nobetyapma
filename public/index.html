@@ -1310,6 +1310,11 @@ ta
         </div>
       </div>
 
+      <div id="solver-teshis" class="rule-box mt-3" style="display:none; background:#fff7ed; border-left:4px solid #ea580c;">
+        <h4>⚠️ OR-Tools Teşhis</h4>
+        <div id="solver-teshis-icerik"></div>
+      </div>
+
       <!-- Eksik Atama Listesi -->
       <div id="devir-listesi" class="rule-box mt-3" style="display:none; background:#fef3c7;">
         <h4>⚠️ Eksik Atamalar</h4>
@@ -1416,6 +1421,7 @@ ta
     let hesaplananListe = null;
     let atananlar = {}; // Step 6 önizleme için (hesaplananListe.atanan ile senkron)
     let devirListesi = [];
+    let solverSorunRaporu = null;
     let personelIdCounter = 0;
     let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
 
@@ -1608,6 +1614,7 @@ ta
 
       // Devir listesini temizle
       devirListesi = [];
+      solverSorunRaporu = null;
 
       // UI'ları güncelle
       hedefTablosuGuncelle();
@@ -1621,6 +1628,7 @@ ta
       document.getElementById('stat-toplam').textContent = '0';
       document.getElementById('stat-doluluk').textContent = '%0';
       document.getElementById('stat-devir').textContent = '0';
+      solverTeshisGuncelle();
 
       // Kaydet
       kaydetDebounced();
@@ -3326,6 +3334,7 @@ ta
       mazeretGridOlustur();
       mazeretDegisti = true;
       kaydetDebounced();
+      _logFrontendEvent('mazeret_degisim', { tur, sayac: selectedCells.length });
     }
 
     function tumMazeretleriTemizle() {
@@ -6432,6 +6441,56 @@ ta
     const BACKEND_URL_ORTOOLS = 'https://us-central1-nobetyap-29acf.cloudfunctions.net/nobet_coz';
     const BACKEND_URL_KAPASITE = 'https://us-central1-nobetyap-29acf.cloudfunctions.net/nobet_kapasite';
     const BACKEND_URL_HEDEF = 'https://us-central1-nobetyap-29acf.cloudfunctions.net/nobet_hedef_hesapla';
+    const BACKEND_URL_DEBUG_EVENT = 'https://us-central1-nobetyap-29acf.cloudfunctions.net/debug_event_log';
+
+    // ============================================
+    // CONSOLE INTERCEPTOR — Debug log buffer
+    // ============================================
+    const _DEBUG_LOG_PREFIXES = ['[HEDEF]', '[SOLVER]', '[KOTA]', '[KILIT]', '[GREEDY]', '[TESHIS]'];
+    const _DEBUG_LOG_MAX = 600;
+    const _debugLogBuffer = [];
+    const _origConsoleLog = console.log.bind(console);
+    const _origConsoleWarn = console.warn.bind(console);
+    const _origConsoleError = console.error.bind(console);
+
+    function _interceptConsole(level, args) {
+      const msg = args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+      const hasPrefix = _DEBUG_LOG_PREFIXES.some(p => msg.includes(p));
+      if (hasPrefix) {
+        const line = `[${level.toUpperCase()}] ${new Date().toISOString()} ${msg}`;
+        _debugLogBuffer.push(line);
+        if (_debugLogBuffer.length > _DEBUG_LOG_MAX) _debugLogBuffer.shift();
+      }
+    }
+
+    console.log = function(...args) { _interceptConsole('log', args); _origConsoleLog(...args); };
+    console.warn = function(...args) { _interceptConsole('warn', args); _origConsoleWarn(...args); };
+    console.error = function(...args) { _interceptConsole('error', args); _origConsoleError(...args); };
+
+    function _getAndClearLogs() {
+      const logs = [..._debugLogBuffer];
+      _debugLogBuffer.length = 0;
+      return logs;
+    }
+
+    function _pushLogsToFirestore(logs) {
+      if (!logs || logs.length === 0) return;
+      try {
+        const db = firebase.firestore();
+        db.collection('debug_frontend_logs').add({
+          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
+          logs: logs.slice(0, 500),
+        }).catch(() => {});
+      } catch(e) {}
+    }
+
+    function _logFrontendEvent(tip, detay) {
+      fetch(BACKEND_URL_DEBUG_EVENT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tip, detay }),
+      }).catch(() => {});
+    }
 
     // OR-Tools her zaman aktif (daha iyi sonuç veriyor)
     const ortoolsAktif = true;
@@ -6672,6 +6731,115 @@ ta
       }
     }
 
+    function solverTavsiyeleriUret(rapor) {
+      const tavsiyeler = [];
+      const status = rapor?.status || '';
+      const teshis = rapor?.teshis || {};
+      const feas = rapor?.feasibilityDebug || {};
+
+      if (status === 'MANUAL_CONFLICT') {
+        tavsiyeler.push('Manuel atamaları kontrol edin; aynı gün çift atama, mazeret günü ataması veya görev kısıtı ihlali olabilir.');
+      }
+      if (teshis.kok_neden === 'ara_gun_azalt') {
+        tavsiyeler.push('Ara gün kuralı fazla sıkı olabilir; ara gün değerini düşürmeyi veya istisna eklemeyi değerlendirin.');
+      }
+      if (teshis.kok_neden === 'ayri_gevset') {
+        tavsiyeler.push('Ayrı tutma veya ayrı bina kısıtları kapasiteyi daraltıyor olabilir; ilgili görev ve grup kombinasyonlarını gözden geçirin.');
+      }
+      if (teshis.kok_neden === 'birlikte_kaldir') {
+        tavsiyeler.push('Birlikte kuralları ortak müsait gün bulamıyor olabilir; mazeretleri veya birlikte grupları sadeleştirin.');
+      }
+      if ((feas.slot_day_zero_candidate_count || 0) > 0) {
+        tavsiyeler.push('Bazı gün ve slot kombinasyonlarında hiç aday yok; görev havuzlarını genişletin veya çakışan kısıtları azaltın.');
+      }
+      if ((feas.role_ara_gun_capacity_issues || []).length > 0) {
+        tavsiyeler.push('Belirli görevlerde ara gün altındaki üst kapasite talebi karşılanamıyor; role daha fazla kişi ekleyin ya da rol hedeflerini azaltın.');
+      }
+      if (!tavsiyeler.length) {
+        tavsiyeler.push('Manuel atamalar, görev kısıtları, birlikte/ayrı kuralları ve mazeret yoğunluğu birlikte çözümsüzlük yaratıyor olabilir. Son eklenen kuralları gözden geçirin.');
+      }
+      return tavsiyeler;
+    }
+
+    function solverSorunRaporuHazirla(result, requestData) {
+      const ist = result?.istatistikler || {};
+      const feas = ist.feasibility_debug || {};
+      return {
+        status: ist.status || 'BILINMIYOR',
+        mesaj: result?.mesaj || result?.error || 'Çözüm bulunamadı',
+        sureMs: result?.sureMs || 0,
+        araGun: ist.ara_gun ?? requestData?.araGun,
+        teshis: result?.teshis || {},
+        manualConflicts: ist.manual_conflicts || [],
+        feasibilityDebug: feas,
+        zeroPreview: feas.slot_day_zero_candidate_preview || [],
+        roleIssues: feas.role_ara_gun_capacity_issues || [],
+      };
+    }
+
+    function solverTeshisGuncelle() {
+      const panel = document.getElementById('solver-teshis');
+      const icerik = document.getElementById('solver-teshis-icerik');
+      if (!panel || !icerik) return;
+
+      if (!solverSorunRaporu) {
+        panel.style.display = 'none';
+        icerik.innerHTML = '';
+        return;
+      }
+
+      const rapor = solverSorunRaporu;
+      const tavsiyeler = solverTavsiyeleriUret(rapor);
+      const manualConflicts = rapor.manualConflicts.slice(0, 8);
+      const zeroPreview = rapor.zeroPreview.slice(0, 8);
+      const roleIssues = rapor.roleIssues.slice(0, 8);
+
+      panel.style.display = 'block';
+      icerik.innerHTML = `
+        <div class="help" style="margin-bottom:10px; color:#9a3412;">
+          OR-Tools bu veri setiyle çözüm üretemedi. Aşağıdaki özet, hangi kısıtların planı tıkadığını gösterir.
+        </div>
+        <div class="flex gap-2 flex-wrap" style="margin-bottom:12px;">
+          <span class="badge badge-bad">Durum: ${escapeHtml(String(rapor.status))}</span>
+          <span class="badge badge-warn">Ara Gün: ${escapeHtml(String(rapor.araGun ?? '-'))}</span>
+          <span class="badge badge-info">Süre: ${escapeHtml(String(rapor.sureMs || 0))} ms</span>
+        </div>
+        <div class="rule-box" style="background:#fff; margin-bottom:12px;">
+          <strong>Özet</strong>
+          <div class="help" style="margin-top:6px;">${escapeHtml(String(rapor.mesaj || 'Çözüm bulunamadı'))}</div>
+          ${rapor.teshis?.kok_neden ? `<div class="help" style="margin-top:6px;"><strong>Kök neden:</strong> ${escapeHtml(String(rapor.teshis.kok_neden))}</div>` : ''}
+          ${rapor.teshis?.kok_neden_aciklama ? `<div class="help" style="margin-top:4px;">${escapeHtml(String(rapor.teshis.kok_neden_aciklama))}</div>` : ''}
+        </div>
+        ${manualConflicts.length ? `
+          <div class="rule-box" style="background:#fff; margin-bottom:12px;">
+            <strong>Manuel Atama Çakışmaları (${rapor.manualConflicts.length})</strong>
+            <div style="margin-top:8px; max-height:180px; overflow:auto;">
+              ${manualConflicts.map(x => `<div class="badge badge-bad" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(x.mesaj || x.code || 'Çakışma'))}</div>`).join('')}
+            </div>
+          </div>` : ''}
+        ${zeroPreview.length ? `
+          <div class="rule-box" style="background:#fff; margin-bottom:12px;">
+            <strong>Aday Bulunamayan Slot/Günler (${rapor.feasibilityDebug.slot_day_zero_candidate_count || zeroPreview.length})</strong>
+            <div style="margin-top:8px; max-height:200px; overflow:auto;">
+              ${zeroPreview.map(x => `<div class="badge badge-warn" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(x.gun))}. gün → ${escapeHtml(String(x.gorev || x.slot_idx || 'Slot'))} | aday: ${escapeHtml(String(x.candidate_count ?? 0))}</div>`).join('')}
+            </div>
+          </div>` : ''}
+        ${roleIssues.length ? `
+          <div class="rule-box" style="background:#fff; margin-bottom:12px;">
+            <strong>Rol / Ara Gün Kapasite Sorunları (${rapor.roleIssues.length})</strong>
+            <div style="margin-top:8px; max-height:200px; overflow:auto;">
+              ${roleIssues.map(x => `<div class="badge badge-info" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(x.gorev))}: talep ${escapeHtml(String(x.talep))}, üst kapasite ${escapeHtml(String(x.ara_gun_ust_kapasite))}, eksik ${escapeHtml(String(x.eksik))}</div>`).join('')}
+            </div>
+          </div>` : ''}
+        <div class="rule-box" style="background:#fff;">
+          <strong>Önerilen Düzeltmeler</strong>
+          <div style="margin-top:8px;">
+            ${tavsiyeler.map(x => `<div class="badge badge-ok" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(x))}</div>`).join('')}
+          </div>
+        </div>
+      `;
+    }
+
     // OR-Tools ile hedef hesapla
     async function hedefHesaplaOrtools() {
       const { yil, ay } = getYilAy();
@@ -6857,6 +7025,21 @@ ta
         if (onKontrol.kritik.length > 0 || onKontrol.uyari.length > 0) {
           console.group('[SOLVER][ONKONTROL]');
           if (onKontrol.kritik.length > 0) {
+            solverSorunRaporu = {
+              status: 'PRECHECK_BLOCKED',
+              mesaj: `Ön kontrolde ${onKontrol.kritik.length} kritik çakışma bulundu`,
+              sureMs: 0,
+              araGun,
+              teshis: {
+                kok_neden: 'on_kontrol_kritik',
+                kok_neden_aciklama: onKontrol.kritik[0] || 'Kritik ön kontrol bulgusu var'
+              },
+              manualConflicts: onKontrol.kritik.map(m => ({ mesaj: m, code: 'PRECHECK' })),
+              feasibilityDebug: {},
+              zeroPreview: [],
+              roleIssues: []
+            };
+            solverTeshisGuncelle();
             console.error(`Kritik bulgu: ${onKontrol.kritik.length}`);
             onKontrol.kritik.forEach((m, i) => console.error(`K${i + 1}: ${m}`));
           }
@@ -6891,6 +7074,23 @@ ta
 
       } catch (error) {
         console.error('Backend hatası:', error);
+        if (!solverSorunRaporu) {
+          solverSorunRaporu = {
+            status: 'FRONTEND_ERROR',
+            mesaj: error?.message || 'Bilinmeyen arayüz hatası',
+            sureMs: 0,
+            araGun,
+            teshis: {
+              kok_neden: 'arayuz_veya_istek_hatasi',
+              kok_neden_aciklama: 'İşlem, yapılandırılmış bir solver sonucu dönmeden kesildi.'
+            },
+            manualConflicts: [],
+            feasibilityDebug: {},
+            zeroPreview: [],
+            roleIssues: []
+          };
+        }
+        solverTeshisGuncelle();
         alert('Nöbet dağıtımı sırasında hata oluştu: ' + error.message + '\n\nOtomatik greedy/yerel fallback kapalı. Lütfen kısıtları gözden geçirip tekrar deneyin.');
       } finally {
         btnListeOlustur.innerHTML = originalText;
@@ -6900,6 +7100,8 @@ ta
 
     // OR-Tools ile liste oluştur
     async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
+      solverSorunRaporu = null;
+      solverTeshisGuncelle();
       const ozelGorevler = getOzelGorevler();
 
       // Görev listesi - baseName önemli!
@@ -7033,13 +7235,16 @@ ta
       }
 
       if (!result.basari) {
+        solverSorunRaporu = solverSorunRaporuHazirla(result, requestData);
+        solverTeshisGuncelle();
+
         // Çözüm bulunamadı - ara gün 1 ile tekrar denenebilir mi?
         const istatistikler = result.istatistikler || {};
         if (istatistikler.status === 'INFEASIBLE' && istatistikler.ara_gun_1_dene && araGun > 1) {
           const cevap = confirm(
             `⚠️ OR-Tools çözüm bulamadı (ara gün: ${araGun})\n\n` +
             `Ara gün kuralını 1'e düşürerek tekrar denemek ister misiniz?\n\n` +
-            `(Hayır derseniz yerel algoritma ile devam edilecek)`
+            `(Hayır derseniz işlem durur ve tanı raporu ekranda kalır)`
           );
 
           if (cevap) {
@@ -7071,6 +7276,8 @@ ta
       }
 
       // Sonuçları işle
+      solverSorunRaporu = null;
+      solverTeshisGuncelle();
       console.log('isleOrtoolsSonucu çağrılıyor...');
       hesaplananListe = isleOrtoolsSonucu(result, gunSayisi);
       console.log('hesaplananListe:', hesaplananListe);
@@ -7103,6 +7310,9 @@ ta
           }
         });
       }
+
+      // Tüm işlem bitti — logları Firestore'a gönder (fire-and-forget)
+      _pushLogsToFirestore(_getAndClearLogs());
     }
 
     // OR-Tools sonucunu işle

@@ -1,12 +1,13 @@
 """
 Nöbet Yapma — Firebase Cloud Functions giriş noktası.
-4 endpoint: nobet_dagit, nobet_kapasite, nobet_hedef_hesapla, nobet_coz
+5 endpoint: nobet_dagit, nobet_kapasite, nobet_hedef_hesapla, nobet_coz, debug_event_log
 """
 
 from firebase_functions import https_fn
 from firebase_admin import initialize_app, storage
 from datetime import datetime, timedelta
 import logging
+import time
 
 from utils import (
     _safe_int, get_days_in_month,
@@ -21,6 +22,7 @@ from hedef_hesaplayici import HedefHesaplayici
 from kapasite import kapasite_hesapla
 from http_helpers import _cors_preflight, _json_response, _error_response
 from solve_strategy import solve_with_diagnostics
+from firestore_logger import log_session
 from parsers import (
     build_takvim, build_gun_tipleri,
     parse_gorev_tanimlari, parse_greedy_personeller, parse_greedy_manuel_atamalar,
@@ -46,6 +48,8 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
 
+    t0 = time.time()
+    data = None
     try:
         data = req.get_json(silent=True)
         if not data:
@@ -116,13 +120,20 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         )
         signed_url = blob.generate_signed_url(version="v4", expiration=timedelta(hours=1), method="GET")
 
-        return _json_response({
+        cikti = {
             "basari": True, "excelUrl": signed_url, "cizelge": sonuc_cizelge,
             "kisiOzet": kisi_ozet, "eksikAtamalar": eksik_atamalar,
             "gorevler": [g.ad for g in yonetici.gorevler]
-        })
+        }
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_dagit", data, cikti, sure_ms,
+                    frontend_loglar=data.get("frontendLoglar"))
+        return _json_response(cikti)
 
     except Exception as e:
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_dagit", data or {}, None, sure_ms, hata=e,
+                    frontend_loglar=(data or {}).get("frontendLoglar"))
         return _error_response(e, "nobet_dagit")
 
 
@@ -135,6 +146,8 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
 
+    t0 = time.time()
+    data = None
     try:
         data = req.get_json(silent=True)
         if not data:
@@ -165,9 +178,16 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
             personeller=personeller, slot_sayisi=slot_sayisi
         )
 
-        return _json_response({"basari": True, **sonuc})
+        cikti = {"basari": True, **sonuc}
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_kapasite", data, cikti, sure_ms,
+                    frontend_loglar=data.get("frontendLoglar"))
+        return _json_response(cikti)
 
     except Exception as e:
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_kapasite", data or {}, None, sure_ms, hata=e,
+                    frontend_loglar=(data or {}).get("frontendLoglar"))
         return _error_response(e, "nobet_kapasite")
 
 
@@ -180,6 +200,8 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
 
+    t0 = time.time()
+    data = None
     try:
         data = req.get_json(silent=True)
         if not data:
@@ -228,14 +250,21 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
         )
         sonuc = hesaplayici.hesapla()
 
-        return _json_response({
+        cikti = {
             "basari": sonuc.basarili, "hedefler": sonuc.hedefler,
             "birlikteAtamalar": sonuc.birlikte_atamalar,
             "gorevKotalari": sonuc.gorev_kotalari,
             "istatistikler": sonuc.istatistikler, "mesaj": sonuc.mesaj
-        })
+        }
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_hedef_hesapla", data, cikti, sure_ms,
+                    frontend_loglar=data.get("frontendLoglar"))
+        return _json_response(cikti)
 
     except Exception as e:
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_hedef_hesapla", data or {}, None, sure_ms, hata=e,
+                    frontend_loglar=(data or {}).get("frontendLoglar"))
         return _error_response(e, "nobet_hedef_hesapla")
 
 
@@ -248,6 +277,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
 
+    t0 = time.time()
+    data = None
     try:
         data = req.get_json(silent=True)
         if not data:
@@ -332,6 +363,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 hesap_sonuc = hesaplayici.hesapla()
             except Exception as hedef_err:
                 logger.exception("Hedef hesaplama basarisiz: %s", hedef_err)
+                sure_ms = int((time.time() - t0) * 1000)
+                log_session("nobet_coz", data, None, sure_ms, hata=hedef_err,
+                            frontend_loglar=data.get("frontendLoglar"))
                 return _json_response({
                     "error": f"Hedef hesaplama sırasında hata oluştu: {str(hedef_err)[:200]}",
                     "error_type": "HedefHesaplamaHatasi"
@@ -416,14 +450,55 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                     "Bazi personeller daha fazla saat calisiyor."
                 )
 
-        return _json_response({
+        cikti = {
             "basari": sonuc.basarili, "mesaj": sonuc.mesaj, "sureMs": sonuc.sure_ms,
             "cizelge": cizelge, "atamalar": sonuc.atamalar,
             "istatistikler": sonuc.istatistikler,
             "kaliteUyarilari": kalite_uyarilari,
             "teshis": teshis_bilgisi,
             "gorevler": [g.ad for g in gorevler], "hedefDebug": hedef_debug
-        })
+        }
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_coz", data, cikti, sure_ms,
+                    frontend_loglar=data.get("frontendLoglar"))
+        return _json_response(cikti)
 
     except Exception as e:
+        sure_ms = int((time.time() - t0) * 1000)
+        log_session("nobet_coz", data or {}, None, sure_ms, hata=e,
+                    frontend_loglar=(data or {}).get("frontendLoglar"))
         return _error_response(e, "nobet_coz")
+
+
+# ============================================
+# ENDPOINT: debug_event_log
+# ============================================
+
+@https_fn.on_request(min_instances=0, max_instances=5, timeout_sec=10, memory=256)
+def debug_event_log(req: https_fn.Request) -> https_fn.Response:
+    if req.method == 'OPTIONS':
+        return _cors_preflight()
+
+    try:
+        data = req.get_json(silent=True)
+        if not data:
+            return _json_response({"ok": False, "error": "Veri yok"}, status=400)
+
+        from firebase_admin import firestore as fs
+        db = fs.client()
+        from datetime import timezone
+        ts = datetime.now(timezone.utc)
+
+        db.collection("debug_events").add({
+            "timestamp": ts,
+            "tip": data.get("tip", "bilinmiyor"),
+            "personelId": data.get("personelId"),
+            "gun": data.get("gun"),
+            "detay": data.get("detay"),
+        })
+
+        return _json_response({"ok": True})
+
+    except Exception as e:
+        logger.warning("debug_event_log hatasi: %s", e)
+        return _json_response({"ok": False, "error": str(e)[:200]}, status=500)

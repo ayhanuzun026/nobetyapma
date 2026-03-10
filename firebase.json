@@ -38,6 +38,10 @@
         "function": "nobet_dagit"
       },
       {
+        "source": "/debug_event_log",
+        "function": "debug_event_log"
+      },
+      {
         "source": "**",
         "destination": "/index.html"
       }
@@ -45,5 +49,8 @@
   },
   "storage": {
     "rules": "storage.rules"
+  },
+  "firestore": {
+    "rules": "firestore.rules"
   }
 }
