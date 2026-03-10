@@ -155,7 +155,25 @@ def _extract_mazeret_gunleri(personel_data: Dict) -> Set[int]:
     return mazeretler
 
 
-def _resolve_personel_id(raw_ref, personeller, require_existing=True):
+def build_personel_lookup(personeller) -> Dict:
+    """Personel listesinden ad->id ve normalized_id->id lookup tablosu oluştur.
+    Aynı personel listesi ile çok sayıda _resolve_personel_id çağrısı yapılacaksa
+    bu fonksiyonla önceden cache oluşturup parametre olarak verin."""
+    ad_map = {}
+    id_map = {}
+    for p in personeller:
+        ad = getattr(p, "ad", None)
+        pid = getattr(p, "id", None)
+        if ad and ad not in ad_map:
+            ad_map[ad] = pid
+        if pid is not None:
+            norm = normalize_id(pid)
+            if norm not in id_map:
+                id_map[norm] = pid
+    return {"ad_map": ad_map, "id_map": id_map}
+
+
+def _resolve_personel_id(raw_ref, personeller, require_existing=True, _cache=None):
     if raw_ref is None:
         return None
 
@@ -163,14 +181,27 @@ def _resolve_personel_id(raw_ref, personeller, require_existing=True):
         ref = raw_ref.strip()
         if not ref:
             return None
-        for p in personeller:
-            if getattr(p, "ad", None) == ref:
-                return getattr(p, "id", None)
+        # Cache varsa O(1) ad lookup
+        if _cache:
+            found = _cache["ad_map"].get(ref)
+            if found is not None:
+                return found
+        else:
+            for p in personeller:
+                if getattr(p, "ad", None) == ref:
+                    return getattr(p, "id", None)
         raw_ref = ref
 
     normalized = normalize_id(raw_ref)
     if not require_existing:
         return normalized
+
+    # Cache varsa O(1) id lookup
+    if _cache:
+        found = _cache["id_map"].get(normalized)
+        if found is not None:
+            return found
+        return None
 
     for p in personeller:
         if ids_match(getattr(p, "id", None), normalized):

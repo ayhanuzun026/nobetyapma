@@ -7,10 +7,10 @@ from typing import List, Dict, Set
 from utils import (
     _safe_int, get_days_in_month, gun_adi_bul, gun_tipi_hesapla,
     _extract_mazeret_gunleri, _resolve_personel_id, _find_duplicate_personel_ids,
-    normalize_id, ids_match,
+    normalize_id, ids_match, build_personel_lookup,
 )
 from models import GorevTanim, Personel
-from ortools_solver import (
+from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
 )
 
@@ -344,6 +344,7 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
 
 def parse_kurallar(data: Dict, personeller) -> List[SolverKural]:
     """OR-Tools çözücü için kuralları parse et (ayri + birlikte)"""
+    _cache = build_personel_lookup(personeller)
     kurallar = []
     for k_data in data.get("kurallar", []):
         tur = k_data.get("tur")
@@ -354,13 +355,13 @@ def parse_kurallar(data: Dict, personeller) -> List[SolverKural]:
         kisiler_raw = k_data.get("kisiler", [])
         if isinstance(kisiler_raw, list):
             for v in kisiler_raw:
-                pid = _resolve_personel_id(v, personeller, require_existing=True)
+                pid = _resolve_personel_id(v, personeller, require_existing=True, _cache=_cache)
                 if pid is not None and pid not in kisiler:
                     kisiler.append(pid)
 
         if len(kisiler) == 0:
             for key in ['p1', 'p2', 'p3']:
-                pid = _resolve_personel_id(k_data.get(key), personeller, require_existing=True)
+                pid = _resolve_personel_id(k_data.get(key), personeller, require_existing=True, _cache=_cache)
                 if pid is not None and pid not in kisiler:
                     kisiler.append(pid)
 
@@ -372,6 +373,7 @@ def parse_kurallar(data: Dict, personeller) -> List[SolverKural]:
 
 def parse_birlikte_kurallar(data: Dict, personeller) -> List[SolverKural]:
     """Sadece birlikte kurallarını parse et (nobet_hedef_hesapla için)"""
+    _cache = build_personel_lookup(personeller)
     birlikte_kurallar = []
     for k_data in data.get("kurallar", []):
         if k_data.get("tur") != "birlikte":
@@ -385,7 +387,7 @@ def parse_birlikte_kurallar(data: Dict, personeller) -> List[SolverKural]:
 
             refs = val if (key == 'kisiler' and isinstance(val, list)) else [val]
             for ref in refs:
-                pid = _resolve_personel_id(ref, personeller, require_existing=True)
+                pid = _resolve_personel_id(ref, personeller, require_existing=True, _cache=_cache)
                 if pid is not None and pid not in kisiler:
                     kisiler.append(pid)
 
@@ -400,9 +402,10 @@ def parse_birlikte_kurallar(data: Dict, personeller) -> List[SolverKural]:
 
 def parse_gorev_kisitlamalari(data: Dict, personeller) -> Dict[int, dict]:
     """Görev kısıtlamalarını dict formatında parse et {personel_id: {gorevAdi, tasmaGorevi}}"""
+    _cache = build_personel_lookup(personeller)
     gorev_kisitlamalari = {}
     for k_data in data.get("gorevKisitlamalari", []):
-        pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
+        pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True, _cache=_cache)
         gorev_adi = k_data.get("gorevAdi")
         if pid is not None and gorev_adi:
             gorev_kisitlamalari[pid] = {
@@ -415,13 +418,14 @@ def parse_gorev_kisitlamalari(data: Dict, personeller) -> Dict[int, dict]:
 def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
                           gun_sayisi: int) -> List[SolverAtama]:
     """OR-Tools çözücü için manuel atamaları parse et"""
+    _cache = build_personel_lookup(personeller)
     manuel_atamalar = []
     for m_data in data.get("manuelAtamalar", []):
         p_ad = m_data.get("personel") or m_data.get("personelAd")
         p_raw_id = m_data.get("personelId")
-        p_id = _resolve_personel_id(p_raw_id, personeller, require_existing=True)
+        p_id = _resolve_personel_id(p_raw_id, personeller, require_existing=True, _cache=_cache)
         if p_id is None:
-            p_id = _resolve_personel_id(p_ad, personeller, require_existing=True)
+            p_id = _resolve_personel_id(p_ad, personeller, require_existing=True, _cache=_cache)
 
         if p_id is None:
             continue
@@ -486,13 +490,14 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
         return raw_gorev_adi
 
     # Kısıtlı kişileri topla (exclusive atamalar)
+    _cache = build_personel_lookup(personeller)
     gorev_kisitlamalari_raw = data.get("gorevKisitlamalari", [])
     kisitlilar_by_role = {}  # { role: set(pid) }
     for k_data in gorev_kisitlamalari_raw:
         role = _normalize_gorev_adi(k_data.get("gorevAdi"))
         if not role:
             continue
-        kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
+        kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True, _cache=_cache)
         if kisit_pid is not None:
             kisitlilar_by_role.setdefault(role, set()).add(kisit_pid)
 
@@ -507,7 +512,7 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
             allowed_ids = set()
             if isinstance(ids, list):
                 for raw_id in ids:
-                    pid = _resolve_personel_id(raw_id, personeller, require_existing=True)
+                    pid = _resolve_personel_id(raw_id, personeller, require_existing=True, _cache=_cache)
                     if pid is not None:
                         allowed_ids.add(pid)
             # Kısıtlı kişileri de ekle
@@ -536,7 +541,7 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
             "has_pool": False
         })
 
-        kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True)
+        kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True, _cache=_cache)
         if kisit_pid is not None:
             kayit["kisitlilar"].add(kisit_pid)
 
@@ -544,7 +549,7 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
         eklenen_havuz_id = False
         if isinstance(havuz_ids_raw, list):
             for raw_id in havuz_ids_raw:
-                pid = _resolve_personel_id(raw_id, personeller, require_existing=True)
+                pid = _resolve_personel_id(raw_id, personeller, require_existing=True, _cache=_cache)
                 if pid is not None:
                     kayit["havuz"].add(pid)
                     eklenen_havuz_id = True
@@ -576,8 +581,9 @@ def parse_kisitlama_istisnalari(data: Dict, personeller,
 
     istisnalar = []
     seen = set()
+    _cache = build_personel_lookup(personeller)
     for raw in data.get("kisitlamaIstisnalari", []):
-        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True)
+        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True, _cache=_cache)
         gun = _safe_int(raw.get("gun"), 0)
         istisna_gorev = _normalize_gorev_adi(raw.get("istisnaGorev") or raw.get("gorevAdi"))
         kisitli_gorev = _normalize_gorev_adi(raw.get("kisitliGorev"))
@@ -604,8 +610,9 @@ def parse_birlikte_istisnalari(data: Dict, personeller) -> List[Dict]:
     """Birlikte kurali + ayri bina istisnalarini parse et."""
     istisnalar = []
     seen = set()
+    _cache = build_personel_lookup(personeller)
     for raw in data.get("birlikteIstisnalari", []):
-        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True)
+        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True, _cache=_cache)
         gun = _safe_int(raw.get("gun"), 0)
         if pid is None or gun < 1:
             continue
@@ -624,8 +631,9 @@ def parse_aragun_istisnalari(data: Dict, personeller) -> List[Dict]:
     """Ara gun istisnalarini parse et."""
     istisnalar = []
     seen = set()
+    _cache = build_personel_lookup(personeller)
     for raw in data.get("araGunIstisnalari", []):
-        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True)
+        pid = _resolve_personel_id(raw.get("personelId"), personeller, require_existing=True, _cache=_cache)
         gun1 = _safe_int(raw.get("gun1"), 0)
         gun2 = _safe_int(raw.get("gun2"), 0)
         if pid is None or gun1 < 1 or gun2 < 1:
