@@ -127,17 +127,24 @@ def parse_greedy_manuel_atamalar(data: Dict, personeller: List[Personel],
 
         gorev_id = m.get("gorevId")
         gorev_adi = m.get("gorevAdi")
+        gorev_base_adi = m.get("gorevBaseAdi")
         gorev_idx = None
 
-        if gorev_id is not None:
+        if gorev_adi:
             for idx, g in enumerate(gorev_objs):
-                if ids_match(g.id, gorev_id):
+                if g.ad == gorev_adi:
                     gorev_idx = idx
                     break
 
-        if gorev_idx is None and gorev_adi:
+        if gorev_idx is None and gorev_base_adi:
             for idx, g in enumerate(gorev_objs):
-                if g.ad == gorev_adi:
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi:
+                    gorev_idx = idx
+                    break
+
+        if gorev_idx is None and gorev_id is not None:
+            for idx, g in enumerate(gorev_objs):
+                if ids_match(g.id, gorev_id):
                     gorev_idx = idx
                     break
 
@@ -443,16 +450,23 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
 
         gorev_id = m_data.get("gorevId")
         gorev_adi = m_data.get("gorevAdi")
+        gorev_base_adi = m_data.get("gorevBaseAdi")
         slot_idx = None
-        if gorev_id is not None:
+        if gorev_adi:
             for g in gorevler:
-                if ids_match(g.id, gorev_id):
+                if g.ad == gorev_adi:
                     slot_idx = g.slot_idx
                     break
 
-        if slot_idx is None and gorev_adi:
+        if slot_idx is None and gorev_base_adi:
             for g in gorevler:
-                if g.ad == gorev_adi:
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi:
+                    slot_idx = g.slot_idx
+                    break
+
+        if slot_idx is None and gorev_id is not None:
+            for g in gorevler:
+                if ids_match(g.id, gorev_id):
                     slot_idx = g.slot_idx
                     break
 
@@ -478,7 +492,8 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
 
     Önce frontend'den gelen gorevHavuzlari objesini oku (yeni format).
     Yoksa eski gorevKisitlamalari[].havuzIds formatını dene.
-    Her iki durumda da kısıtlı kişileri (exclusive) havuza dahil et.
+    Kısıtlı / taşma personellerini yalnızca kullanıcı açıkça havuz tanımladıysa
+    o havuza ekle; tek başına görev kısıtı, görevi dar bir role havuzuna çevirmesin.
     """
 
     def _normalize_gorev_adi(raw_gorev_adi):
@@ -489,10 +504,11 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
                 return g.base_name if g.base_name else g.ad
         return raw_gorev_adi
 
-    # Kısıtlı kişileri topla (exclusive atamalar)
+    # Kısıtlı kişileri topla; explicit havuz varsa bu kişiler havuzdan dışlanmasın.
     _cache = build_personel_lookup(personeller)
     gorev_kisitlamalari_raw = data.get("gorevKisitlamalari", [])
     kisitlilar_by_role = {}  # { role: set(pid) }
+    tasma_by_role = {}       # { tasma_role: set(pid) } — taşma görevi olan kişiler
     for k_data in gorev_kisitlamalari_raw:
         role = _normalize_gorev_adi(k_data.get("gorevAdi"))
         if not role:
@@ -500,6 +516,11 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
         kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True, _cache=_cache)
         if kisit_pid is not None:
             kisitlilar_by_role.setdefault(role, set()).add(kisit_pid)
+            # Taşma görevi varsa o role de ekle
+            tasma_raw = k_data.get("tasmaGorevi")
+            tasma_role = _normalize_gorev_adi(tasma_raw) if tasma_raw else None
+            if tasma_role:
+                tasma_by_role.setdefault(tasma_role, set()).add(kisit_pid)
 
     # YENİ FORMAT: Frontend'den gelen gorevHavuzlari objesini oku
     gorev_havuzlari_raw = data.get("gorevHavuzlari", {})
@@ -515,16 +536,13 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
                     pid = _resolve_personel_id(raw_id, personeller, require_existing=True, _cache=_cache)
                     if pid is not None:
                         allowed_ids.add(pid)
-            # Kısıtlı kişileri de ekle
+            # Açık havuz tanımlıysa kısıtlı / taşma personellerini de dahil et.
             if role in kisitlilar_by_role:
                 allowed_ids |= kisitlilar_by_role[role]
+            if role in tasma_by_role:
+                allowed_ids |= tasma_by_role[role]
             if allowed_ids:
                 gorev_havuzlari[role] = allowed_ids
-
-        # gorevHavuzlari'da olmayan ama kısıtlı kişisi olan görevler için de havuz oluştur
-        for role, kisitli_ids in kisitlilar_by_role.items():
-            if role not in gorev_havuzlari and kisitli_ids:
-                gorev_havuzlari[role] = kisitli_ids
 
         return gorev_havuzlari
 

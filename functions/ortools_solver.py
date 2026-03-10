@@ -248,7 +248,7 @@ class NobetSolver:
                     "gorev": role
                 })
 
-            if role in exclusive_gorevler and p.kisitli_gorev != role:
+            if role in exclusive_gorevler and p.kisitli_gorev != role and p.tasma_gorevi != role:
                 # YENI KURAL: Eger bu kisiye bu gorev icin hedef kota verilmisse exclusive bloklamasini gec
                 hedef = self.hedefler.get(pid, {})
                 gorev_kotalari = hedef.get('gorev_kotalari', {})
@@ -970,7 +970,7 @@ class NobetSolver:
                     model.Add(role_atama <= kota)
                 # SOFT: Eksik kalırsa ceza
                 eksik = model.NewIntVar(0, self.gun_sayisi * len(slot_list), f'role_eksik_{p.id}_{role}')
-                model.Add(kota - role_atama <= eksik)
+                model.Add(eksik >= kota - role_atama)
                 slot_agirlik = self.slot_agirliklari.get(role, 1)
                 penalties.append(eksik * WEIGHT_GOREV_KOTA * slot_agirlik)
         
@@ -998,7 +998,7 @@ class NobetSolver:
             model.Add(toplam_atama <= hedef_toplam)
             # SOFT: Eksik kalırsa ceza
             eksik = model.NewIntVar(0, self.gun_sayisi, f'toplam_eksik_{p.id}')
-            model.Add(hedef_toplam - toplam_atama <= eksik)
+            model.Add(eksik >= hedef_toplam - toplam_atama)
             penalties.append(eksik * WEIGHT_TOPLAM)
         
         # S4. Birlikte tutma (SOFT CONSTRAINT - Aynı gün ikisi de atanmalı tercih edilir)
@@ -1126,7 +1126,7 @@ class NobetSolver:
                         hedef_toplam = hedef.get('hedef_toplam', 3)
                         # Hedefin altında kalırsa ceza (eksik olanı doldur)
                         eksik = model.NewIntVar(0, self.gun_sayisi, f'yillik_eksik_{p.id}')
-                        model.Add(hedef_toplam - toplam_atama <= eksik)
+                        model.Add(eksik >= hedef_toplam - toplam_atama)
                         penalties.append(eksik * WEIGHT_YILLIK * min(eksik_bonus, 3))
                     elif fark > 1:  # Ortalamadan 1+ fazla
                         # Bu kişiye daha az nöbet ver
@@ -1136,7 +1136,7 @@ class NobetSolver:
                         hedef_toplam = hedef.get('hedef_toplam', 3)
                         # Hedefin üstüne çıkarsa ceza (fazla tutanı azalt)
                         fazla = model.NewIntVar(0, self.gun_sayisi, f'yillik_fazla_{p.id}')
-                        model.Add(toplam_atama - hedef_toplam <= fazla)
+                model.Add(toplam_atama - hedef_toplam <= fazla)
                         penalties.append(fazla * WEIGHT_YILLIK * min(fazla_ceza, 3))
         
         # S7. Panik faktörü - Sıkışık kişilere öncelik
@@ -1156,7 +1156,7 @@ class NobetSolver:
                     toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
                     # Hedefin altına düşerse ağır ceza
                     eksik = model.NewIntVar(0, self.gun_sayisi, f'panik_eksik_{p.id}')
-                    model.Add(hedef_toplam - toplam_atama <= eksik)
+                    model.Add(eksik >= hedef_toplam - toplam_atama)
                     # Panik oranına göre ceza çarpanı
                     carpan = min(int(panik_orani * 10), 5)
                     penalties.append(eksik * WEIGHT_PANIK * carpan)

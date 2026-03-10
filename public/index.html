@@ -2399,7 +2399,10 @@ ta
 
       // KISITLAMA KONTROLÜ: Bu kişi başka bir göreve kısıtlı mı?
       const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(personel.id));
-      if (kisitlama && kisitlama.gorevAdi !== gorev.ad) {
+      const hedefRole = normalizeGorevAdi(gorev.baseName || gorev.ad);
+      const kisitliRole = kisitlama ? normalizeGorevAdi(kisitlama.gorevAdi) : null;
+      const tasmaRole = kisitlama?.tasmaGorevi ? normalizeGorevAdi(kisitlama.tasmaGorevi) : null;
+      if (kisitlama && hedefRole !== kisitliRole && hedefRole !== tasmaRole) {
         // Çelişki var! Kullanıcıya sor
         const onay = confirm(
           `⚠️ Kısıtlama Çelişkisi!\n\n` +
@@ -2413,8 +2416,8 @@ ta
         // İstisnayı kaydet
         kisitlamaIstisnalari = [...kisitlamaIstisnalari, {
           personelId: personel.id,
-          kisitliGorev: kisitlama.gorevAdi,
-          istisnaGorev: gorev.ad,
+          kisitliGorev: kisitliRole || kisitlama.gorevAdi,
+          istisnaGorev: hedefRole,
           gun: gun,
           onayTarihi: new Date().toISOString()
         }];
@@ -2483,7 +2486,7 @@ ta
           .filter(m => String(m.personelId) === String(personel.id))
           .map(m => parseInt(m.gun, 10))
           .filter(g => g >= 1);
-        const araGunIhlalleri = kisiManuelGunler.filter(g => Math.abs(g - gun) <= araGunVal && g !== gun);
+        const araGunIhlalleri = kisiManuelGunler.filter(g => Math.abs(g - gun) < araGunVal && g !== gun);
         if (araGunIhlalleri.length > 0) {
           const ihlalGunler = araGunIhlalleri.sort((a, b) => a - b).join(', ');
           const araGunOnay = confirm(
@@ -2526,7 +2529,8 @@ ta
         gun,
         gorevId: gorev.id,       // BUG FIX (A): Görev ID'si (sıralamadan bağımsız)
         gorevIdx,                // Geriye uyumluluk için koru
-        gorevAdi: gorev.ad
+        gorevAdi: gorev.ad,
+        gorevBaseAdi: normalizeGorevAdi(gorev.baseName || gorev.ad)
       });
 
       // Input temizle
@@ -2543,11 +2547,12 @@ ta
 
       // İlgili istisnayı da sil
       if (silinen) {
-        kisitlamaIstisnalari = kisitlamaIstisnalari.filter(ist =>
-          !(String(ist.personelId) === String(silinen.personelId) &&
-            ist.istisnaGorev === silinen.gorevAdi &&
-            ist.gun === silinen.gun)
-        );
+        kisitlamaIstisnalari = kisitlamaIstisnalari.filter(ist => {
+          const silinenRole = normalizeGorevAdi(silinen.gorevBaseAdi || silinen.gorevAdi);
+          return !(String(ist.personelId) === String(silinen.personelId) &&
+            normalizeGorevAdi(ist.istisnaGorev) === silinenRole &&
+            ist.gun === silinen.gun);
+        });
         birlikteIstisnalari = birlikteIstisnalari.filter(ist =>
           !(String(ist.personelId) === String(silinen.personelId) &&
             ist.gun === silinen.gun)
@@ -2583,7 +2588,10 @@ ta
 
         // Kısıtlama çelişkisi kontrolü
         const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(m.personelId));
-        const celiskiVar = kisitlama && kisitlama.gorevAdi !== m.gorevAdi;
+        const kisitliRole = kisitlama ? normalizeGorevAdi(kisitlama.gorevAdi) : null;
+        const tasmaRole = kisitlama?.tasmaGorevi ? normalizeGorevAdi(kisitlama.tasmaGorevi) : null;
+        const manuelRole = normalizeGorevAdi(m.gorevBaseAdi || m.gorevAdi);
+        const celiskiVar = !!(kisitlama && manuelRole !== kisitliRole && manuelRole !== tasmaRole);
 
         const badgeStyle = celiskiVar
           ? 'background:#fef3c7; border:1px solid #f59e0b; color:#92400e;'
@@ -2722,7 +2730,7 @@ ta
       gorevKisitlamalari = [...gorevKisitlamalari, {
         personelId: personel.id,
         gorevAdi: gorevAdi,
-        exclusive: true,
+        exclusive: false,
         gunTipiDagilimi,
         tasmaGorevi
       }];
@@ -2766,10 +2774,21 @@ ta
     function kisitlamaExclusiveDegistir(idx, checked) {
       if (gorevKisitlamalari[idx]) {
         gorevKisitlamalari = gorevKisitlamalari.map((k, i) =>
-          i === idx ? { ...k, exclusive: checked } : k
+          i === idx ? { ...k, exclusive: checked, _legacyExclusiveMissing: false } : k
         );
         kaydetDebounced();
       }
+    }
+
+    function normalizeLoadedGorevKisitlamasi(k) {
+      const hasExclusive = Object.prototype.hasOwnProperty.call(k || {}, 'exclusive');
+      return {
+        ...k,
+        exclusive: hasExclusive ? k?.exclusive === true : undefined,
+        _legacyExclusiveMissing: !hasExclusive,
+        gunTipiDagilimi: k?.gunTipiDagilimi || null,
+        tasmaGorevi: k?.tasmaGorevi || null
+      };
     }
 
     function gorevKisitlamaListesiGuncelle() {
@@ -3445,7 +3464,7 @@ ta
 
       oncelikSirasi.forEach(tip => {
         musaitGunler[tip].sort((a, b) => a - b).forEach(gun => {
-          const uygun = secilenGunler.every(secilen => Math.abs(secilen - gun) > araGun);
+          const uygun = secilenGunler.every(secilen => Math.abs(secilen - gun) >= araGun);
           if (uygun) {
             secilenGunler.push(gun);
             tipMax[tip]++;
@@ -3890,7 +3909,7 @@ ta
 
               // Ara gün kontrolü
               for (const atananGun of simKisiAtama[p.id].gunler) {
-                if (Math.abs(atananGun - gun) <= araGun) return false;
+                if (Math.abs(atananGun - gun) < araGun) return false;
               }
               return true;
             });
@@ -5142,7 +5161,18 @@ ta
         const toplamAtanan = personelListesi.reduce((s, p) => s + (p.gorevKotalari?.[g] || 0), 0);
         const baslangic = gorevKapasiteAyar[g]?.toplam > 0 ? gorevKapasiteAyar[g].toplam : gunSayisi * gorevSutunSayisi(g);
         const kalanKap = gorevKapasite[g];
-        const durum = kalanKap === 0 ? '✅ TAM' : kalanKap > 0 ? `⚠️ ${kalanKap} SLOT BOŞ` : `❌ ${Math.abs(kalanKap)} TAŞMA!`;
+        const sayimFarki = baslangic - toplamAtanan;
+        let durum;
+        if (sayimFarki === 0) {
+          durum = '✅ TAM';
+        } else if (sayimFarki > 0) {
+          durum = `⚠️ ${sayimFarki} SLOT BOŞ`;
+        } else {
+          durum = `❌ ${Math.abs(sayimFarki)} TAŞMA!`;
+        }
+        if (kalanKap !== sayimFarki) {
+          durum += ` (sayaç farkı: kapasite=${kalanKap})`;
+        }
         console.log(`[KOTA] ${g}: ${toplamAtanan}/${baslangic} atandı | ${durum}`);
       });
       console.groupEnd();
@@ -5558,6 +5588,21 @@ ta
           tavsiyeler.push(`"${k.gorevAdi}" icin daha fazla personele kota atanmali veya mevcut kotalari artirin.`);
         }
       });
+
+      const legacyExclusiveKisitlari = gorevKisitlamalari.filter(k => k?._legacyExclusiveMissing);
+      if (legacyExclusiveKisitlari.length > 0) {
+        const ornekler = legacyExclusiveKisitlari
+          .slice(0, 5)
+          .map(k => {
+            const kisi = personelListesi.find(p => String(p.id) === String(k.personelId));
+            return `${kisi?.ad || k.personelId} → ${k.gorevAdi}`;
+          })
+          .join(', ');
+        uyarilar.push(
+          `${legacyExclusiveKisitlari.length} kisi-gorev kisitinda "Sadece kendi aralarinda donsun" bilgisi eski kayittan eksik. Uyumluluk icin aktif kabul ediliyor: ${ornekler}${legacyExclusiveKisitlari.length > 5 ? '...' : ''}`
+        );
+        tavsiyeler.push('Kisitlar ekraninda bu kayitlari acip "Sadece kendi aralarinda donsun" secimini tek tek kontrol edip yeniden kaydedin.');
+      }
 
       // Denge kontrolü
       if (dengeFarki > 3) {
@@ -6365,7 +6410,7 @@ ta
               if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) return false;
               // Ara gün kontrolü (bu gün hariç)
               for (const atananGun of kisiAtama[p.id].gunler) {
-                if (atananGun !== gun && Math.abs(atananGun - gun) <= araGun) return false;
+                if (atananGun !== gun && Math.abs(atananGun - gun) < araGun) return false;
               }
               return true;
             });
@@ -6501,10 +6546,14 @@ ta
     }
 
     function manuelAtamaSlotIdxBul(m) {
-      const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => g.id === m.gorevId) : -1;
+      const normalizedManualRole = normalizeGorevAdi(m.gorevAdi || m.gorevBaseAdi);
       const slotByAd = gorevler.findIndex(g => g.ad === m.gorevAdi);
+      const slotByBase = normalizedManualRole
+        ? gorevler.findIndex(g => normalizeGorevAdi(g.baseName || g.ad) === normalizedManualRole)
+        : -1;
+      const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => String(g.id) === String(m.gorevId)) : -1;
       const slotByStored = Number.isFinite(Number(m.gorevIdx)) ? parseInt(m.gorevIdx, 10) : -1;
-      return slotById >= 0 ? slotById : (slotByAd >= 0 ? slotByAd : slotByStored);
+      return slotByAd >= 0 ? slotByAd : (slotByBase >= 0 ? slotByBase : (slotById >= 0 ? slotById : slotByStored));
     }
 
     function ortoolsOnKontrolYap(gunSayisi, araGun) {
@@ -6587,14 +6636,16 @@ ta
         }
 
         const kisitliRole = kisitMap[pid];
-        if (kisitliRole && role !== kisitliRole) {
+        const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === pid);
+        const tasmaRole = kisitlama?.tasmaGorevi ? normalizeGorevAdi(kisitlama.tasmaGorevi) : null;
+        if (kisitliRole && role !== kisitliRole && role !== tasmaRole) {
           const istisnaKey = `${pid}|${gun}|${role}`;
           if (!istisnaSet.has(istisnaKey)) {
             kritik.push(`[M${idx}] ${p.ad}: kisitli gorev disi manuel atama (${role} != ${kisitliRole})`);
           }
         }
 
-        if (exclusiveRoles.has(role) && kisitliRole !== role) {
+        if (exclusiveRoles.has(role) && kisitliRole !== role && tasmaRole !== role) {
           kritik.push(`[M${idx}] ${p.ad}: exclusive goreve manuel atama (${role})`);
         }
 
@@ -7143,10 +7194,8 @@ ta
       // Manuel atamalar
       const manuelAtamalarData = manuelAtamalar.map(m => {
         const p = personelListesi.find(x => String(x.id) === String(m.personelId));
-        const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => g.id === m.gorevId) : -1;
-        const slotByAd = gorevler.findIndex(g => g.ad === m.gorevAdi);
+        const slotIdx = manuelAtamaSlotIdxBul(m);
         const slotByStored = Number.isFinite(Number(m.gorevIdx)) ? parseInt(m.gorevIdx, 10) : null;
-        const slotIdx = slotById >= 0 ? slotById : (slotByAd >= 0 ? slotByAd : slotByStored);
 
         return {
           personelId: m.personelId,
@@ -7155,6 +7204,7 @@ ta
           gorevId: m.gorevId,
           slotIdx: slotIdx,
           gorevAdi: m.gorevAdi,
+          gorevBaseAdi: m.gorevBaseAdi || normalizeGorevAdi(m.gorevAdi),
           gorevIdx: slotByStored
         };
       });
@@ -7804,7 +7854,7 @@ ta
 
           let araGunUygun = true;
           for (const atananGun of kisiAtama[p.id].gunler) {
-            if (Math.abs(atananGun - d) <= araGun) {
+            if (Math.abs(atananGun - d) < araGun) {
               araGunUygun = false;
               break;
             }
@@ -7852,7 +7902,7 @@ ta
 
             // Ara gün kontrolü
             for (const atananGun of kisiAtama[p.id].gunler) {
-              if (Math.abs(atananGun - gun) <= araGun) return false;
+              if (Math.abs(atananGun - gun) < araGun) return false;
             }
             return true;
           });
@@ -8507,11 +8557,7 @@ ta
             ayriBina: g?.ayriBina === true
           }));
           manuelAtamalar = data.manuelAtamalar || [];
-          gorevKisitlamalari = (data.gorevKisitlamalari || []).map(k => ({
-            ...k,
-            exclusive: k?.exclusive !== false,
-            gunTipiDagilimi: k?.gunTipiDagilimi || null // null = eski davranış (tüm hedef göreve gider)
-          }));
+          gorevKisitlamalari = (data.gorevKisitlamalari || []).map(normalizeLoadedGorevKisitlamasi);
 
           // gorevHavuzlari yükle — yoksa eski havuzIds'lerden migrate et
           gorevHavuzlari = data.gorevHavuzlari || {};
@@ -8660,12 +8706,7 @@ ta
 
         kurallar = data.kurallar || [];
 
-        gorevKisitlamalari = (data.gorevKisitlamalari || []).map(k => ({
-          ...k,
-          exclusive: k?.exclusive !== false,
-          gunTipiDagilimi: k?.gunTipiDagilimi || null,
-          tasmaGorevi: k?.tasmaGorevi || null
-        }));
+        gorevKisitlamalari = (data.gorevKisitlamalari || []).map(normalizeLoadedGorevKisitlamasi);
 
         gorevHavuzlari = data.gorevHavuzlari || {};
         kisitlamaExclusive = data.kisitlamaExclusive || false;

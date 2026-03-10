@@ -382,7 +382,7 @@ class HedefHesaplayici:
                 model.Add(t[pid] >= min_hedef - missing)
                 missing_sq = model.NewIntVar(0, 25, f'missing_sq_{pid}')
                 model.AddMultiplicationEquality(missing_sq, [missing, missing])
-                penalties.append(missing_sq * 10000)
+                penalties.append(missing_sq * 100000)
 
             # B) SAAT DENGESİ - ÖNCELİK 2
             hour_diff = model.NewIntVar(0, 200, f'h_diff_{pid}')
@@ -453,6 +453,10 @@ class HedefHesaplayici:
             for tip in GUN_TIPLERI:
                 p.hedef_tipler[tip] = int(solver.Value(h[pid, tip]))
 
+        # Kısıtlı kişiler için taşma kota dağıtımı
+        # (hedef_tipler OR-Tools'tan geldikten sonra çalışmalı)
+        self._hesapla_kisitli_kisi_gorev_kotalari()
+
         hedefler = []
         birlikte_bilgi = []  # Birlikte grupları hakkında bilgi
 
@@ -472,7 +476,9 @@ class HedefHesaplayici:
                 'hedef_cmt': p.hedef_tipler.get('cmt', 0),
                 'hedef_pzr': p.hedef_tipler.get('pzr', 0),
                 'hedef_toplam': toplam, 'saat': saat,
-                'hedef_we': we_val, 'hedef_wd': wd_val
+                'hedef_we': we_val, 'hedef_wd': wd_val,
+                'gorev_kotalari': p.gorev_kotalari.copy() if p.gorev_kotalari else {},
+                'hedef_tipler': p.hedef_tipler.copy(),
             })
 
         # Birlikte grupları bilgisi
@@ -537,3 +543,107 @@ class HedefHesaplayici:
                     'tip_dagilimi': {t: self.tip_sayilari[t] for t in GUN_TIPLERI}
                 }
         return kotalari
+
+    def _hesapla_kisitli_kisi_gorev_kotalari(self) -> None:
+        """
+        Kısıtlı kişiler için kişi bazında gorev_kotalari üret.
+
+        Senaryo: KVC'ye 9 kişi kısıtlı, KVC kapasitesi 30 slot.
+        9 × hedef = 36 talep → 6 nöbet taşar → taşma görevine (MAVİ KOD) yaz.
+
+        Her kişi için:
+          ana_gorev_kota  = floor(ana_gorev_kapasitesi / kisitli_kisi_sayisi)
+          tasma_kota      = hedef_toplam - ana_gorev_kota  (>0 ise taşma görevine)
+        """
+        # gorev → kısıtlı kişi listesi ve taşma görevi
+        gorev_kisitli: Dict[str, list] = {}   # gorev_adi → [pid, ...]
+        gorev_tasma: Dict[str, str] = {}       # gorev_adi → tasma_gorev_adi
+
+        for pid, kisit_bilgi in self.gorev_kisitlamalari.items():
+            if isinstance(kisit_bilgi, dict):
+                ana_gorev = kisit_bilgi.get("gorevAdi", "")
+                tasma = kisit_bilgi.get("tasmaGorevi")
+            else:
+                ana_gorev = str(kisit_bilgi)
+                tasma = None
+            if not ana_gorev:
+                continue
+            matched_pid = find_matching_id(pid, {p.id: p for p in self.personel_listesi})
+            if matched_pid is None:
+                continue
+            gorev_kisitli.setdefault(ana_gorev, []).append(matched_pid)
+            if tasma:
+                gorev_tasma[ana_gorev] = tasma
+
+        for ana_gorev, pids in gorev_kisitli.items():
+            # Ana görevin slot sayısı (bir günde kaç slot)
+            ana_slot_gunluk = sum(
+                1 for g in self.gorevler
+                if g.base_name == ana_gorev or g.ad == ana_gorev
+            )
+            if ana_slot_gunluk == 0:
+                continue
+
+            # 30 günlük toplam kapasite
+            ana_kapasite = ana_slot_gunluk * self.gun_sayisi
+
+            # Taşma görevi slot sayısı
+            tasma_gorev = gorev_tasma.get(ana_gorev)
+            tasma_slot_gunluk = 0
+            if tasma_gorev:
+                tasma_slot_gunluk = sum(
+                    1 for g in self.gorevler
+                    if g.base_name == tasma_gorev or g.ad == tasma_gorev
+                )
+
+            # Her kısıtlı kişinin hedef toplamını topla
+            toplam_talep = 0
+            kisi_hedefler: Dict[int, int] = {}
+            for pid in pids:
+                p = self.personeller.get(pid)
+                if p is None:
+                    continue
+                hedef = sum(p.hedef_tipler.values()) if p.hedef_tipler else 0
+                kisi_hedefler[pid] = hedef
+                toplam_talep += hedef
+
+            if toplam_talep == 0:
+                continue
+
+            # Kapasite aşımı var mı?
+            tasma_toplam = max(0, toplam_talep - ana_kapasite)
+
+            for pid in pids:
+                p = self.personeller.get(pid)
+                if p is None:
+                    continue
+                hedef = kisi_hedefler.get(pid, 0)
+                if hedef == 0:
+                    continue
+
+                if tasma_toplam > 0 and tasma_gorev:
+                    # Bu kişinin taşma payı: hedefine orantılı
+                    kisi_tasma = round(tasma_toplam * hedef / toplam_talep)
+                    kisi_tasma = max(0, min(kisi_tasma, hedef - 1))  # En az 1 ana görev kalır
+                    ana_kota = hedef - kisi_tasma
+                else:
+                    kisi_tasma = 0
+                    ana_kota = hedef
+
+                # Taşma görevine de kapasite kontrolü: günlük slot × gün sayısı
+                if tasma_gorev and tasma_slot_gunluk > 0:
+                    maks_tasma_kapasite = tasma_slot_gunluk * self.gun_sayisi
+                    kisi_tasma = min(kisi_tasma, maks_tasma_kapasite)
+                    ana_kota = hedef - kisi_tasma
+
+                if not hasattr(p, 'gorev_kotalari') or p.gorev_kotalari is None:
+                    p.gorev_kotalari = {}
+
+                # Sadece gerçek taşma varsa kotaları yaz
+                # Taşma yoksa (tasma_toplam==0) mevcut kotaları bozma
+                if tasma_toplam > 0 and tasma_gorev:
+                    p.gorev_kotalari[ana_gorev] = ana_kota
+                    if kisi_tasma > 0:
+                        p.gorev_kotalari[tasma_gorev] = (
+                            p.gorev_kotalari.get(tasma_gorev, 0) + kisi_tasma
+                        )
