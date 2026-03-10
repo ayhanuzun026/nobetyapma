@@ -3637,12 +3637,10 @@ ta
           console.log('OR-Tools ile hedef hesaplanıyor...');
           const basarili = await hedefleriHesaplaOrtoolsAsync();
           if (!basarili) {
-            console.log('OR-Tools hedef hesaplama başarısız, yerel ile devam...');
-            hedefleriHesaplaYerel();
+            throw new Error('OR-Tools hedef hesaplama başarısız. Yerel fallback kapalı.');
           }
         } else {
-          // Yerel algoritma
-          hedefleriHesaplaYerel();
+          throw new Error('Yerel hedef hesaplama kapalı. OR-Tools aktif olmalı.');
         }
       } catch (error) {
         console.error('Hedef hesaplama hatası:', error);
@@ -6843,14 +6841,13 @@ ta
               try {
                 const basarili = await hedefleriHesaplaOrtoolsAsync();
                 if (!basarili) {
-                  console.log('[LOCK] OR-Tools hedef hesaplama başarısız, yerel ile devam...');
-                  hedefleriHesaplaYerel();
+                  throw new Error('OR-Tools hedef hesaplama başarısız. Yerel fallback kapalı.');
                 }
               } finally {
                 hedefHesaplamaAktif = false;
               }
             } else {
-              hedefleriHesaplaYerel();
+              throw new Error('Yerel hedef hesaplama kapalı. OR-Tools aktif olmalı.');
             }
           }
         }
@@ -6894,10 +6891,7 @@ ta
 
       } catch (error) {
         console.error('Backend hatası:', error);
-        alert('Nöbet dağıtımı sırasında hata oluştu: ' + error.message + '\n\nYerel algoritma ile devam ediliyor...');
-
-        // Hata durumunda yerel algoritmayı kullan
-        listeOlusturYerel();
+        alert('Nöbet dağıtımı sırasında hata oluştu: ' + error.message + '\n\nOtomatik greedy/yerel fallback kapalı. Lütfen kısıtları gözden geçirip tekrar deneyin.');
       } finally {
         btnListeOlustur.innerHTML = originalText;
         btnListeOlustur.disabled = false;

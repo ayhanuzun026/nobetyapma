@@ -625,14 +625,6 @@ class NobetSolver:
                 'detay': {'zero_count': zero_count, 'toplam': toplam_slot_gun}
             })
 
-        # --- Her zaman en sonda: Greedy fallback ---
-        aksiyonlar.append({
-            'aksiyon': 'greedy',
-            'puan': 10,
-            'neden': 'Son care: Greedy algoritma ile cozum uret',
-            'detay': {}
-        })
-
         # Ara gün azalt yoksa ekle (her zaman denenebilir)
         if not any(a['aksiyon'] == 'ara_gun_azalt' for a in aksiyonlar):
             aksiyonlar.insert(0, {
@@ -642,9 +634,9 @@ class NobetSolver:
                 'detay': {}
             })
 
-        # tum_soft_kaldir yoksa ekle (greedy'den önce)
+        # tum_soft_kaldir yoksa ekle
         if not any(a['aksiyon'] == 'tum_soft_kaldir' for a in aksiyonlar):
-            aksiyonlar.insert(-1, {
+            aksiyonlar.append({
                 'aksiyon': 'tum_soft_kaldir',
                 'puan': 30,
                 'neden': 'Tum soft kisitlari kaldirarak dene',

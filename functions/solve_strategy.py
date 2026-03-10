@@ -9,7 +9,6 @@ import logging
 
 from solver_models import SolverGorev, SolverSonuc
 from ortools_solver import NobetSolver
-from greedy_fallback import greedy_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -225,25 +224,6 @@ def solve_with_diagnostics(
                             "Tum soft kisitlar kaldirildiktan sonra cozum bulundu"
                         )
                         break
-
-            elif aksiyon == 'greedy':
-                tani_mesajlari.append("Greedy fallback baslatiliyor")
-                greedy_sonuc = greedy_fallback(
-                    personeller=personeller, gorevler=gorevler,
-                    gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
-                    kurallar=kurallar, hedefler=hedefler,
-                    ara_gun=min(1, ara_gun), yil=yil, ay=ay,
-                    resmi_tatiller=resmi_tatiller,
-                    gorev_kisitlamalari=data.get('gorevKisitlamalari', [])
-                )
-                if greedy_sonuc and greedy_sonuc.basarili:
-                    sonuc = greedy_sonuc
-                    gevsetme_bilgisi['greedy_fallback'] = True
-                    tani_mesajlari.append(
-                        "Greedy fallback ile cozum uretildi (kalite dusuk olabilir)"
-                    )
-                else:
-                    tani_mesajlari.append("Greedy fallback da basarisiz oldu")
 
     # Sonuç yoksa varsayılan hata
     if sonuc is None:
