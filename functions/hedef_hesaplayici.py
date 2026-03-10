@@ -3,6 +3,7 @@ Hedef Hesaplayıcı — OR-Tools CP-SAT ile nöbet hedeflerini dengeli dağıtı
 Üçlü dengeleme: Sayı dengesi, Saat dengesi, WE/WD dengesi.
 """
 
+import math
 from typing import List, Dict
 
 from utils import (
@@ -113,8 +114,8 @@ class HedefHesaplayici:
             min_hedef = {}
             for t in GUN_TIPLERI:
                 tip_hedefler = [h.get(t, 0) for h in grup_hedefler]
-                # Minimum hedef = min(mevcut hedefler) ama ortak kapasiteyi aşmasın
-                min_hedef[t] = min(min(tip_hedefler), ortak_musait[t])
+                # Ortalama hedef = grubun ort. hedefi ama ortak kapasiteyi aşmasın
+                min_hedef[t] = min(max(tip_hedefler), ortak_musait[t])
 
             # Görev kotalarını da dengele (ortak görevler için minimum al)
             ortak_gorev_kota = {}
@@ -231,7 +232,7 @@ class HedefHesaplayici:
         # A) SAYI ORTALAMASI
         avg_count_float = self.toplam_slot / n
         avg_count_floor = int(avg_count_float)
-        HARD_CAP = avg_count_floor + 2  # Kesin üst sınır
+        HARD_CAP = math.ceil(avg_count_float) + 1  # Kesin üst sınır
 
         # B) SAAT ORTALAMASI
         total_hours_needed = sum(self.tip_slotlari[tip] * self.saat[tip] for tip in GUN_TIPLERI)
@@ -395,7 +396,7 @@ class HedefHesaplayici:
             val1 = total_h_we[pid] * self.toplam_slot
             val2 = t[pid] * total_we_slots
             model.AddAbsEquality(we_balance_diff, val1 - val2)
-            penalties.append(we_balance_diff * 10)
+            penalties.append(we_balance_diff * 100)
 
         # --- 4. ZORUNLU KISITLAR ---
         pids = [p.id for p in self.personel_listesi]

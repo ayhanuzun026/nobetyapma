@@ -804,7 +804,7 @@ class NobetSolver:
             for g1 in range(1, self.gun_sayisi + 1):
                 if g1 in p.mazeret_gunleri:
                     continue  # Mazeret günü zaten 0, constraint gereksiz
-                for g2 in range(g1 + 1, min(g1 + self.ara_gun + 1, self.gun_sayisi + 1)):
+                for g2 in range(g1 + 1, min(g1 + self.ara_gun, self.gun_sayisi + 1)):
                     if g2 in p.mazeret_gunleri:
                         continue  # Mazeret günü zaten 0, constraint gereksiz
                     if (p.id, g1, g2) not in self.aragun_istisna_set:
@@ -919,8 +919,8 @@ class NobetSolver:
                 hedef = self.hedefler.get(pid, {})
                 hedef_toplam = hedef.get('hedef_toplam', 3)
 
-                # ceil(hedef/2) birlikte minimum, geri kalanı ayrı binaya gidebilir
-                birlikte_minimum = math.ceil(hedef_toplam / 2)
+                # floor(hedef/2) birlikte minimum, geri kalanı ayrı binaya gidebilir
+                birlikte_minimum = math.floor(hedef_toplam / 2)
                 ayri_bina_max = hedef_toplam - birlikte_minimum
                 # En az 1 izin ver (tamamen sıfır olmasın)
                 ayri_bina_max = max(ayri_bina_max, 1)
@@ -1062,7 +1062,7 @@ class NobetSolver:
                         )
                         # Haftada 1'den fazla nöbet varsa ceza
                         fazla = model.NewIntVar(0, 7, f'hafta_fazla_{p.id}_{hafta}')
-                        model.Add(hafta_nobet - 1 <= fazla)
+                        model.Add(fazla >= hafta_nobet - 1)
                         model.Add(fazla >= 0)
                         penalties.append(fazla * WEIGHT_HOMOJEN)
 
