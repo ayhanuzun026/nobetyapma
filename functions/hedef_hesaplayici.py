@@ -215,6 +215,66 @@ class HedefHesaplayici:
                     transfer_havuzu[tip] -= 1
                     ekstra -= 1
 
+        # Özel görev dengeleme: gecmis_gorevler verisiyle görev kotalarını ayarla
+        self._yillik_gorev_dengeleme()
+
+    def _yillik_gorev_dengeleme(self):
+        """Özel görev geçmişine göre görev kotalarını dengeleyerek yıl sonu eşitliği sağla.
+        Geçmişte az yapanın kotasını artır, çok yapanınkini azalt.
+        """
+        # Geçmiş görev verisi olan personelleri bul
+        gecmis_olan = [p for p in self.personel_listesi
+                       if hasattr(p, 'gecmis_gorevler') and p.gecmis_gorevler]
+        if len(gecmis_olan) < 2:
+            return
+
+        # Tüm özel görev isimlerini topla
+        tum_gorevler = set()
+        for p in gecmis_olan:
+            tum_gorevler.update(p.gecmis_gorevler.keys())
+
+        if not tum_gorevler:
+            return
+
+        # Her görev için dengeleme yap
+        for gorev_adi in tum_gorevler:
+            # Bu göreve atanabilecek personelleri bul (kotası olan veya geçmişi olan)
+            ilgili = []
+            for p in gecmis_olan:
+                gecmis = p.gecmis_gorevler.get(gorev_adi, 0)
+                kota = p.gorev_kotalari.get(gorev_adi, 0)
+                if gecmis > 0 or kota > 0:
+                    ilgili.append((p, gecmis))
+
+            if len(ilgili) < 2:
+                continue
+
+            # Ortalama geçmiş
+            ort = sum(g for _, g in ilgili) / len(ilgili)
+
+            transfer = 0
+            eksik_kisiler = []
+            fazla_kisiler = []
+
+            for p, gecmis in ilgili:
+                fark = gecmis - ort
+                if fark > 1:  # Ortalamadan 1+ fazla yapmış
+                    azalt = min(int(fark / 2), 1)  # Max 1 azalt
+                    mevcut = p.gorev_kotalari.get(gorev_adi, 0)
+                    if mevcut > 0 and azalt > 0:
+                        p.gorev_kotalari[gorev_adi] = mevcut - azalt
+                        transfer += azalt
+                elif fark < -1:  # Ortalamadan 1+ eksik yapmış
+                    eksik_kisiler.append((p, min(int(abs(fark) / 2), 1)))
+
+            # Eksik olanlara ver
+            for p, ekstra in eksik_kisiler:
+                if transfer <= 0:
+                    break
+                ver = min(ekstra, transfer)
+                p.gorev_kotalari[gorev_adi] = p.gorev_kotalari.get(gorev_adi, 0) + ver
+                transfer -= ver
+
     def hesapla(self) -> HedefSonuc:
         """
         ÜÇLÜ DENGELEME SİSTEMİ

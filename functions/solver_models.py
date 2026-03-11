@@ -36,6 +36,7 @@ class SolverPersonel:
     musait_gunler: Set[int] = field(default_factory=set)
     musait_tipler: Dict[str, int] = field(default_factory=dict)
     yillik_gerceklesen: Dict[str, int] = field(default_factory=dict)
+    gecmis_gorevler: Dict[str, int] = field(default_factory=dict)
 
 @dataclass
 class SolverGorev:

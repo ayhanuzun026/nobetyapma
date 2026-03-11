@@ -263,13 +263,15 @@ def parse_solver_personeller_hedef(data: Dict) -> List[SolverPersonel]:
         pid = normalize_id(p_data.get("id", len(personeller)))
         mazeret_set = _extract_mazeret_gunleri(p_data)
         yillik_gerceklesen = _parse_yillik_gerceklesen(p_data)
+        gecmis_gorevler = _parse_gecmis_gorevler(p_data)
 
         personeller.append(SolverPersonel(
             id=pid,
             ad=p_data.get("ad", ""),
             mazeret_gunleri=mazeret_set,
             kisitli_gorev=p_data.get("kisitliGorev"),
-            yillik_gerceklesen=yillik_gerceklesen
+            yillik_gerceklesen=yillik_gerceklesen,
+            gecmis_gorevler=gecmis_gorevler
         ))
 
     return personeller
@@ -334,6 +336,7 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
                     pass
 
         yillik_gerceklesen = _parse_yillik_gerceklesen(p_data)
+        gecmis_gorevler = _parse_gecmis_gorevler(p_data)
 
         personeller.append(SolverPersonel(
             id=pid,
@@ -343,7 +346,8 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
             tasma_gorevi=tasma_gorevi,
             hedef_tipler=hedef_tipler,
             gorev_kotalari=gorev_kotalari,
-            yillik_gerceklesen=yillik_gerceklesen
+            yillik_gerceklesen=yillik_gerceklesen,
+            gecmis_gorevler=gecmis_gorevler
         ))
 
     return personeller
@@ -684,3 +688,16 @@ def _parse_yillik_gerceklesen(p_data: Dict) -> Dict[str, int]:
             except (ValueError, TypeError):
                 yillik_gerceklesen[key] = 0
     return yillik_gerceklesen
+
+
+def _parse_gecmis_gorevler(p_data: Dict) -> Dict[str, int]:
+    """Geçmiş özel görev verilerini parse et"""
+    gecmis_gorevler = {}
+    gg_raw = p_data.get("gecmisGorevler", {})
+    if isinstance(gg_raw, dict):
+        for key, val in gg_raw.items():
+            try:
+                gecmis_gorevler[key] = int(val)
+            except (ValueError, TypeError):
+                gecmis_gorevler[key] = 0
+    return gecmis_gorevler

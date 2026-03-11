@@ -946,6 +946,10 @@ ta
           <button class="btn btn-primary btn-sm" onclick="gecmisModalAc()">
             <i class="fa-solid fa-calendar-days"></i> Geçmiş Detay
           </button>
+          <button class="btn btn-warning btn-sm" onclick="document.getElementById('gecmis-excel-upload').click()">
+            <i class="fas fa-file-upload"></i> Geçmiş Excel Yükle
+          </button>
+          <input type="file" id="gecmis-excel-upload" hidden accept=".xlsx,.xls" onchange="gecmisExcelYukle(this)">
         </div>
       </div>
 
@@ -1364,6 +1368,43 @@ ta
       <button class="btn btn-primary" id="btn-ileri" onclick="stepDegistir(1)">
         İleri <i class="fa-solid fa-arrow-right"></i>
       </button>
+    </div>
+  </div>
+
+  <!-- Geçmiş Excel Sütun Eşleştirme Modalı -->
+  <div class="modal" id="gecmis-excel-modal">
+    <div class="modal-content" style="max-width:700px;">
+      <div class="modal-header">
+        <h3 style="margin:0;">📊 Geçmiş Excel - Sütun Eşleştirme</h3>
+        <button class="btn btn-secondary btn-sm" onclick="document.getElementById('gecmis-excel-modal').classList.remove('active')">
+          <i class="fa-solid fa-times"></i> Kapat
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="flex gap-2 items-center mb-3" style="flex-wrap:wrap;">
+          <label style="font-weight:800;">Yıl:</label>
+          <select id="gecmis-excel-yil" style="padding:8px; border:2px solid #e2e8f0; border-radius:8px;"></select>
+          <label style="font-weight:800; margin-left:15px;">Ay:</label>
+          <select id="gecmis-excel-ay" style="padding:8px; border:2px solid #e2e8f0; border-radius:8px;">
+            <option value="1">Ocak</option><option value="2">Şubat</option><option value="3">Mart</option>
+            <option value="4">Nisan</option><option value="5">Mayıs</option><option value="6">Haziran</option>
+            <option value="7">Temmuz</option><option value="8">Ağustos</option><option value="9">Eylül</option>
+            <option value="10">Ekim</option><option value="11">Kasım</option><option value="12">Aralık</option>
+          </select>
+        </div>
+        <div class="help mb-3">Her sütunun hangi veriye karşılık geldiğini seçin. Eşleşmeyen sütunları "Atla" olarak bırakın.</div>
+        <div class="table-responsive">
+          <table class="custom-table" id="gecmis-excel-eslestir-table">
+            <thead><tr><th>Excel Sütun Başlığı</th><th>Eşleştir</th><th>Örnek Veri</th></tr></thead>
+            <tbody id="gecmis-excel-eslestir-tbody"></tbody>
+          </table>
+        </div>
+        <div class="mt-3" style="text-align:right;">
+          <button class="btn btn-primary" onclick="gecmisExcelUygula()">
+            <i class="fa-solid fa-check"></i> Uygula
+          </button>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1998,6 +2039,203 @@ ta
 
     function gecmisModalKapat() {
       document.getElementById('gecmis-modal').classList.remove('active');
+    }
+
+    // ============================================
+    // GEÇMİŞ EXCEL YÜKLEME
+    // ============================================
+    let _gecmisExcelCache = { basliklar: [], satirlar: [] };
+
+    function normalizeAd(ad) {
+      return String(ad || '').trim().toLowerCase().replace(/\s+/g, ' ')
+        .replace(/İ/g, 'i').replace(/I/g, 'ı').replace(/Ğ/g, 'ğ').replace(/Ü/g, 'ü')
+        .replace(/Ş/g, 'ş').replace(/Ö/g, 'ö').replace(/Ç/g, 'ç');
+    }
+
+    async function gecmisExcelYukle(input) {
+      if (!input.files || !input.files[0]) return;
+      const file = input.files[0];
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(arrayBuffer);
+        const sheet = workbook.worksheets[0];
+        if (!sheet) { alert('Excel dosyasında sayfa bulunamadı.'); return; }
+
+        const basliklar = [];
+        const satirlar = [];
+        let baslikSatiri = null;
+
+        sheet.eachRow((row, rowNumber) => {
+          const values = [];
+          row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+            values[colNumber - 1] = cell.value != null ? String(cell.value).trim() : '';
+          });
+          if (!baslikSatiri) {
+            baslikSatiri = rowNumber;
+            for (let i = 0; i < values.length; i++) {
+              basliklar.push(values[i] || `Sütun ${i + 1}`);
+            }
+          } else {
+            if (values.some(v => v && v.length > 0)) {
+              // Ensure array length matches headers
+              while (values.length < basliklar.length) values.push('');
+              satirlar.push(values);
+            }
+          }
+        });
+
+        if (basliklar.length === 0) { alert('Excel başlık satırı bulunamadı.'); return; }
+
+        _gecmisExcelCache = { basliklar, satirlar };
+        gecmisExcelSutunEslestirModalAc(basliklar, satirlar);
+      } catch (e) {
+        console.error('Geçmiş Excel yükleme hatası:', e);
+        alert('Excel dosyası okunamadı: ' + e.message);
+      }
+      input.value = '';
+    }
+
+    function gecmisExcelSutunEslestirModalAc(basliklar, satirlar) {
+      const modal = document.getElementById('gecmis-excel-modal');
+      const tbody = document.getElementById('gecmis-excel-eslestir-tbody');
+      const yilSelect = document.getElementById('gecmis-excel-yil');
+      const aySelect = document.getElementById('gecmis-excel-ay');
+
+      // Yıl seçici doldur
+      const buYil = new Date().getFullYear();
+      yilSelect.innerHTML = '';
+      for (let y = buYil - 2; y <= buYil + 1; y++) {
+        yilSelect.innerHTML += `<option value="${y}" ${y === buYil ? 'selected' : ''}>${y}</option>`;
+      }
+
+      // Özel görevleri al
+      const ozelGorevler = typeof getOzelGorevler === 'function' ? getOzelGorevler() : [];
+
+      // Seçenek listesi oluştur
+      const secenekler = [
+        { value: 'atla', label: 'Atla' },
+        { value: 'ad', label: 'Ad Soyad' },
+        { value: 'hici', label: 'H.İçi' },
+        { value: 'prs', label: 'Prş' },
+        { value: 'cum', label: 'Cum' },
+        { value: 'cmt', label: 'Cmt' },
+        { value: 'pzr', label: 'Pzr' },
+      ];
+      ozelGorevler.forEach(g => {
+        secenekler.push({ value: 'gorev:' + g, label: g });
+      });
+
+      // Otomatik tahmin fonksiyonu
+      function tahminEt(baslik) {
+        const b = normalizeAd(baslik);
+        if (['ad', 'isim', 'ad soyad', 'adsoyad', 'personel', 'adı soyadı'].some(k => b.includes(k))) return 'ad';
+        if (['h.içi', 'hafta içi', 'hici', 'h.ici', 'hafta ici', 'haftaici'].some(k => b.includes(k))) return 'hici';
+        if (['prş', 'perşembe', 'prs', 'persembe'].some(k => b.includes(k))) return 'prs';
+        if (b === 'cum' || b === 'cuma') return 'cum';
+        if (['cmt', 'cumartesi', 'c.tesi'].some(k => b.includes(k))) return 'cmt';
+        if (['pzr', 'pazar'].some(k => b.includes(k))) return 'pzr';
+        // Özel görevlerle eşleştir
+        for (const g of ozelGorevler) {
+          if (normalizeAd(g) === b || b.includes(normalizeAd(g))) return 'gorev:' + g;
+        }
+        return 'atla';
+      }
+
+      // Tablo satırlarını oluştur
+      tbody.innerHTML = '';
+      basliklar.forEach((baslik, idx) => {
+        const tahmin = tahminEt(baslik);
+        const ornekVeri = satirlar.length > 0 ? (satirlar[0][idx] || '-') : '-';
+        const tr = document.createElement('tr');
+        let optionsHtml = secenekler.map(s =>
+          `<option value="${s.value}" ${s.value === tahmin ? 'selected' : ''}>${s.label}</option>`
+        ).join('');
+        tr.innerHTML = `
+          <td style="font-weight:600;">${baslik}</td>
+          <td><select class="gecmis-excel-eslestir-select" data-col="${idx}"
+            style="padding:6px; border:2px solid #e2e8f0; border-radius:6px; min-width:120px;">${optionsHtml}</select></td>
+          <td style="color:#64748b; font-size:12px;">${ornekVeri}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      modal.classList.add('active');
+    }
+
+    function gecmisExcelUygula() {
+      const yil = parseInt(document.getElementById('gecmis-excel-yil').value);
+      const ay = parseInt(document.getElementById('gecmis-excel-ay').value);
+      const { basliklar, satirlar } = _gecmisExcelCache;
+
+      // Eşleştirme haritasını oku
+      const selectler = document.querySelectorAll('.gecmis-excel-eslestir-select');
+      const eslestirme = {}; // { colIdx: 'ad' | 'hici' | 'gorev:XXX' | 'atla' }
+      selectler.forEach(sel => {
+        eslestirme[parseInt(sel.dataset.col)] = sel.value;
+      });
+
+      // Ad sütununu bul
+      let adCol = null;
+      for (const [col, val] of Object.entries(eslestirme)) {
+        if (val === 'ad') { adCol = parseInt(col); break; }
+      }
+      if (adCol === null) {
+        alert('Ad Soyad sütunu seçilmedi! Lütfen bir sütunu "Ad Soyad" olarak eşleştirin.');
+        return;
+      }
+
+      let eslesenSayisi = 0;
+      const eslesmeyenler = [];
+
+      satirlar.forEach(satir => {
+        const excelAd = satir[adCol];
+        if (!excelAd || !String(excelAd).trim()) return;
+
+        // Personel bul
+        const eslesme = personelListesi.find(p => normalizeAd(p.ad) === normalizeAd(excelAd));
+        if (!eslesme) {
+          eslesmeyenler.push(String(excelAd).trim());
+          return;
+        }
+
+        // yillikGecmis yapısını oluştur
+        if (!eslesme.yillikGecmis) eslesme.yillikGecmis = {};
+        if (!eslesme.yillikGecmis[yil]) eslesme.yillikGecmis[yil] = {};
+        if (!eslesme.yillikGecmis[yil][ay]) eslesme.yillikGecmis[yil][ay] = {};
+
+        const ayData = eslesme.yillikGecmis[yil][ay];
+
+        // Her eşleştirilmiş sütunu uygula
+        for (const [col, tip] of Object.entries(eslestirme)) {
+          if (tip === 'atla' || tip === 'ad') continue;
+          const deger = parseInt(satir[parseInt(col)]) || 0;
+          if (deger === 0) continue;
+
+          if (tip.startsWith('gorev:')) {
+            const gorevAdi = tip.substring(6);
+            if (!ayData.gorevler) ayData.gorevler = {};
+            ayData.gorevler[gorevAdi] = deger;
+          } else {
+            // Gün tipi (hici, prs, cum, cmt, pzr)
+            ayData[tip] = deger;
+          }
+        }
+
+        eslesenSayisi++;
+      });
+
+      // Sonuç bildirimi
+      let mesaj = `${eslesenSayisi} personelin ${yil}/${ay} geçmiş verisi yüklendi.`;
+      if (eslesmeyenler.length > 0) {
+        mesaj += `\n\nEşleşmeyen isimler (${eslesmeyenler.length}):\n` + eslesmeyenler.join(', ');
+      }
+      alert(mesaj);
+
+      // Modal kapat + UI güncelle
+      document.getElementById('gecmis-excel-modal').classList.remove('active');
+      ozetTablosuGuncelle();
+      kaydetDebounced();
     }
 
     function gecmisTabloGuncelle() {
@@ -6924,11 +7162,29 @@ ta
         // Kısıtlamalı görev
         const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id));
 
+        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
+        const yillikGerceklesen = {};
+        const gecmisGorevler = {};
+        const gecmis = p.yillikGecmis?.[yil] || {};
+        for (let m = 1; m < ay; m++) {
+          const ayData = gecmis[m] || {};
+          GUN_TIPLERI.forEach(tip => {
+            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (ayData[tip] || 0);
+          });
+          if (ayData.gorevler) {
+            Object.entries(ayData.gorevler).forEach(([gorev, sayi]) => {
+              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
+            });
+          }
+        }
+
         return {
           id: p.id,
           ad: p.ad,
           mazeretler: mazeretler,
-          kisitliGorev: kisitlama?.gorevAdi || null
+          kisitliGorev: kisitlama?.gorevAdi || null,
+          yillikGerceklesen: yillikGerceklesen,
+          gecmisGorevler: gecmisGorevler
         };
       });
 
@@ -7165,6 +7421,22 @@ ta
 
       // Personel verileri - gün tipi hedefleri + görev kotaları
       const personelVerileri = personelListesi.map(p => {
+        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
+        const yillikGerceklesen = {};
+        const gecmisGorevler = {};
+        const gecmis = p.yillikGecmis?.[yil] || {};
+        for (let m = 1; m < ay; m++) {
+          const mData = gecmis[m] || {};
+          GUN_TIPLERI.forEach(tip => {
+            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (mData[tip] || 0);
+          });
+          if (mData.gorevler) {
+            Object.entries(mData.gorevler).forEach(([gorev, sayi]) => {
+              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
+            });
+          }
+        }
+
         return {
           id: p.id,
           ad: p.ad,
@@ -7178,7 +7450,9 @@ ta
           cmt: p.hedef?.cmt || 0,
           pzr: p.hedef?.pzr || 0,
           // Görev kotaları (AMELİYATHANE, MAVİ KOD, AMATEM vb.)
-          gorevKotalari: p.gorevKotalari || {}
+          gorevKotalari: p.gorevKotalari || {},
+          yillikGerceklesen: yillikGerceklesen,
+          gecmisGorevler: gecmisGorevler
         };
       });
 
@@ -7456,6 +7730,22 @@ ta
         const yillik = yillikToplamHesapla(p);
         const yillikToplam = GUN_TIPLERI.reduce((s, t) => s + yillik[t], 0);
 
+        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
+        const yillikGerceklesen = {};
+        const gecmisGorevler = {};
+        const gecmis = p.yillikGecmis?.[yil] || {};
+        for (let m = 1; m < ay; m++) {
+          const mData = gecmis[m] || {};
+          GUN_TIPLERI.forEach(tip => {
+            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (mData[tip] || 0);
+          });
+          if (mData.gorevler) {
+            Object.entries(mData.gorevler).forEach(([gorev, sayi]) => {
+              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
+            });
+          }
+        }
+
         return {
           id: p.id,
           ad: p.ad,
@@ -7469,7 +7759,9 @@ ta
           yillikIzinler: p.yillikIzinler || [],
           nobetIzinleri: p.nobetIzinleri || [],
           yillikToplam: yillikToplam,
-          devir: {} // Devir bilgisi (şimdilik boş)
+          devir: {}, // Devir bilgisi (şimdilik boş)
+          yillikGerceklesen: yillikGerceklesen,
+          gecmisGorevler: gecmisGorevler
         };
       });
 

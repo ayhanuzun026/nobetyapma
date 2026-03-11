@@ -1138,7 +1138,56 @@ class NobetSolver:
                         fazla = model.NewIntVar(0, self.gun_sayisi, f'yillik_fazla_{p.id}')
                 model.Add(toplam_atama - hedef_toplam <= fazla)
                         penalties.append(fazla * WEIGHT_YILLIK * min(fazla_ceza, 3))
-        
+
+        # S6b. Özel görev yıllık dengeleme - Geçmiş görev dağılımını eşitle
+        gecmis_gorev_olan = [p for p in self.personel_listesi
+                            if hasattr(p, 'gecmis_gorevler') and p.gecmis_gorevler]
+        if len(gecmis_gorev_olan) >= 2:
+            # Tüm özel görev isimlerini topla
+            tum_gorev_isimleri = set()
+            for p in gecmis_gorev_olan:
+                tum_gorev_isimleri.update(p.gecmis_gorevler.keys())
+
+            for gorev_adi in tum_gorev_isimleri:
+                # Bu görev için geçmişi olan personelleri bul
+                gecmis_list = [(p, p.gecmis_gorevler.get(gorev_adi, 0))
+                               for p in gecmis_gorev_olan
+                               if p.gecmis_gorevler.get(gorev_adi, 0) > 0 or
+                               p.gorev_kotalari.get(gorev_adi, 0) > 0]
+                if len(gecmis_list) < 2:
+                    continue
+
+                ort = sum(g for _, g in gecmis_list) / len(gecmis_list)
+
+                # Görev slotlarını bul
+                gorev_slotlari = [s for s, g in enumerate(self.gorevler)
+                                  if g.base_name == gorev_adi or g.ad == gorev_adi]
+                if not gorev_slotlari:
+                    continue
+
+                for p, gecmis in gecmis_list:
+                    fark = gecmis - ort
+                    if abs(fark) <= 1:
+                        continue
+
+                    # Bu kişinin bu görevdeki atama sayısı
+                    gorev_atama = sum(x[p.id, g, s]
+                                      for g in range(1, self.gun_sayisi + 1)
+                                      for s in gorev_slotlari)
+
+                    if fark < -1:  # Ortalamadan eksik - daha fazla ata
+                        eksik_bonus = min(int(abs(fark)), 3)
+                        kota = p.gorev_kotalari.get(gorev_adi, 1)
+                        eksik_var = model.NewIntVar(0, self.gun_sayisi, f'gorev_yillik_eksik_{p.id}_{gorev_adi}')
+                        model.Add(kota - gorev_atama <= eksik_var)
+                        penalties.append(eksik_var * WEIGHT_YILLIK * eksik_bonus)
+                    elif fark > 1:  # Ortalamadan fazla - daha az ata
+                        fazla_ceza = min(int(fark), 3)
+                        kota = p.gorev_kotalari.get(gorev_adi, 1)
+                        fazla_var = model.NewIntVar(0, self.gun_sayisi, f'gorev_yillik_fazla_{p.id}_{gorev_adi}')
+                        model.Add(gorev_atama - kota <= fazla_var)
+                        penalties.append(fazla_var * WEIGHT_YILLIK * fazla_ceza)
+
         # S7. Panik faktörü - Sıkışık kişilere öncelik
         # Mazereti çok olan ve hedefi yüksek olan kişilere öncelik ver
         for p in self.personel_listesi:
