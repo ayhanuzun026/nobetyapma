@@ -818,6 +818,9 @@ ta
       <h1><i class="fas fa-robot"></i> Nöbet Robotu Pro v2</h1>
       <div id="user-info" style="display:flex; align-items:center; gap:10px;">
         <span id="user-name" style="font-size:13px;"></span>
+        <span id="sync-status" style="font-size:13px; display:none;" title="Bulut senkronizasyonu">
+          <i class="fas fa-cloud" style="color:#64748b;"></i>
+        </span>
         <button class="btn btn-sm btn-danger" onclick="cikisYap()">Çıkış</button>
       </div>
     </div>
@@ -1483,6 +1486,43 @@ ta
     // Firebase
     let auth = null;
     try { auth = firebase.auth(); } catch (e) { console.warn('Firebase unavailable'); }
+
+    // Firestore
+    let db = null;
+    try { db = firebase.firestore(); } catch (e) { console.warn('Firestore unavailable'); }
+
+    // ============================================
+    // CLOUD SYNC HELPERS
+    // ============================================
+    function isCloudSyncEligible() {
+      return db && auth && auth.currentUser && !auth.currentUser.isAnonymous;
+    }
+
+    function getFirestoreDocRef(uid, yil, ay) {
+      return db.collection('users').doc(uid).collection('months').doc(`${yil}_${ay}`);
+    }
+
+    function updateSyncStatus(status) {
+      const el = document.getElementById('sync-status');
+      if (!el) return;
+      if (!isCloudSyncEligible()) { el.style.display = 'none'; return; }
+      el.style.display = 'inline';
+      const icon = el.querySelector('i');
+      if (!icon) return;
+      if (status === 'syncing') {
+        icon.className = 'fas fa-cloud-upload-alt';
+        icon.style.color = '#f59e0b';
+        el.title = 'Senkronize ediliyor...';
+      } else if (status === 'synced') {
+        icon.className = 'fas fa-cloud';
+        icon.style.color = '#16a34a';
+        el.title = 'Buluta senkronize edildi';
+      } else if (status === 'error') {
+        icon.className = 'fas fa-exclamation-triangle';
+        icon.style.color = '#ef4444';
+        el.title = 'Senkronizasyon hatası';
+      }
+    }
 
     // ============================================
     // AUTH
@@ -9123,6 +9163,37 @@ ta
       return `nobet_v2_${uid}_${yil}_${ay}`;
     }
 
+    // ============================================
+    // FIRESTORE CLOUD SYNC
+    // ============================================
+    let _firestoreDebounceTimer = null;
+
+    async function firestoreKaydet(data, uid, yil, ay) {
+      if (!isCloudSyncEligible()) return;
+      try {
+        updateSyncStatus('syncing');
+        const docRef = getFirestoreDocRef(uid, yil, ay);
+        await docRef.set({
+          ...data,
+          _meta: {
+            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+            version: 1
+          }
+        });
+        updateSyncStatus('synced');
+      } catch (e) {
+        console.warn('Firestore kaydet hatası:', e);
+        updateSyncStatus('error');
+      }
+    }
+
+    function firestoreKaydetDebounced(data, uid, yil, ay) {
+      if (_firestoreDebounceTimer) clearTimeout(_firestoreDebounceTimer);
+      _firestoreDebounceTimer = setTimeout(() => {
+        firestoreKaydet(data, uid, yil, ay);
+      }, 2000);
+    }
+
     function kaydet() {
       if (!veriYuklendi) return; // Sayfa tam yüklenmeden önce kayıt tetiklenirse engelle
       const uid = auth?.currentUser?.uid || 'LOCAL';
@@ -9166,9 +9237,12 @@ ta
       // F5 koruması için son çalışılan tarihi ayrıca kaydet
       localStorage.setItem(`nobet_last_yil_${uid}`, yil);
       localStorage.setItem(`nobet_last_ay_${uid}`, ay);
+
+      // Firestore'a async yaz (Google kullanıcıları için)
+      firestoreKaydetDebounced(data, uid, yil, ay);
     }
 
-    function yukle() {
+    async function yukle() {
       const uid = auth?.currentUser?.uid || 'LOCAL';
 
       // F5 koruması: Önceki çalışılan tarih var mı kontrol et, yoksa inputtan al
@@ -9180,8 +9254,35 @@ ta
       // Önce ay bazlı key'den oku, yoksa eski genel key'den
       const yil = document.getElementById('inp-yil').value;
       const ay = document.getElementById('inp-ay').value;
-      const saved = localStorage.getItem(getStorageKey(uid, yil, ay))
-        || localStorage.getItem(`nobet_v2_${uid}`);
+
+      let saved = null;
+      let kaynakFirestore = false;
+
+      // Google kullanıcıları için önce Firestore'dan oku
+      if (isCloudSyncEligible()) {
+        try {
+          updateSyncStatus('syncing');
+          const docRef = getFirestoreDocRef(uid, yil, ay);
+          const doc = await docRef.get();
+          if (doc.exists) {
+            const firestoreData = doc.data();
+            // _meta alanını temizle
+            delete firestoreData._meta;
+            saved = JSON.stringify(firestoreData);
+            kaynakFirestore = true;
+          }
+          updateSyncStatus('synced');
+        } catch (e) {
+          console.warn('Firestore okuma hatası, localStorage\'a düşülüyor:', e);
+          updateSyncStatus('error');
+        }
+      }
+
+      // Firestore'da bulunamadıysa localStorage'dan oku
+      if (!saved) {
+        saved = localStorage.getItem(getStorageKey(uid, yil, ay))
+          || localStorage.getItem(`nobet_v2_${uid}`);
+      }
 
       if (saved) {
         try {
@@ -9250,6 +9351,11 @@ ta
           veriYuklendi = true; // Yükleme tamamlandı, artık kaydet() çalışabilir
           veriYuklendi = true;
           goStep(data.step || 1);
+
+          // Lazy migration: localStorage'dan yüklendiyse ve Firestore'da yoksa → seed et
+          if (!kaynakFirestore && isCloudSyncEligible()) {
+            firestoreKaydet(data, uid, yil, ay);
+          }
         } catch (e) {
           console.error('Veri yükleme hatası:', e);
           goStep(1);
@@ -9263,7 +9369,7 @@ ta
     // ============================================
     // ÖNCEKİ AYDAN ÇEK
     // ============================================
-    function oncekiAydanCek() {
+    async function oncekiAydanCek() {
       const uid = auth?.currentUser?.uid || 'LOCAL';
       const { yil, ay } = getYilAy();
 
@@ -9296,6 +9402,24 @@ ta
               oncekiData = eskiSaved;
             }
           } catch (e) { /* ignore */ }
+        }
+      }
+
+      // localStorage'da bulunamadıysa Firestore'dan çek
+      if (!oncekiData && isCloudSyncEligible()) {
+        try {
+          updateSyncStatus('syncing');
+          const docRef = getFirestoreDocRef(uid, oncekiYil, oncekiAy);
+          const doc = await docRef.get();
+          if (doc.exists) {
+            const firestoreData = doc.data();
+            delete firestoreData._meta;
+            oncekiData = JSON.stringify(firestoreData);
+          }
+          updateSyncStatus('synced');
+        } catch (e) {
+          console.warn('Firestore önceki ay okuma hatası:', e);
+          updateSyncStatus('error');
         }
       }
 
