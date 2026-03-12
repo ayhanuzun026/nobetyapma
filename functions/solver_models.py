@@ -36,6 +36,7 @@ class SolverPersonel:
     musait_gunler: Set[int] = field(default_factory=set)
     musait_tipler: Dict[str, int] = field(default_factory=dict)
     yillik_gerceklesen: Dict[str, int] = field(default_factory=dict)
+    gecmis_gorevler: Dict[str, int] = field(default_factory=dict)
 
 @dataclass
 class SolverGorev:
@@ -57,6 +58,7 @@ class SolverAtama:
     gun: int
     slot_idx: int
     gorev_adi: str = ""
+    mazeret_onayli: bool = False
 
 @dataclass
 class HedefSonuc:

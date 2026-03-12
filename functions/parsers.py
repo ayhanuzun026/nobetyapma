@@ -130,19 +130,7 @@ def parse_greedy_manuel_atamalar(data: Dict, personeller: List[Personel],
         gorev_base_adi = m.get("gorevBaseAdi")
         gorev_idx = None
 
-        if gorev_adi:
-            for idx, g in enumerate(gorev_objs):
-                if g.ad == gorev_adi:
-                    gorev_idx = idx
-                    break
-
-        if gorev_idx is None and gorev_base_adi:
-            for idx, g in enumerate(gorev_objs):
-                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi:
-                    gorev_idx = idx
-                    break
-
-        if gorev_idx is None and gorev_id is not None:
+        if gorev_id is not None:
             for idx, g in enumerate(gorev_objs):
                 if ids_match(g.id, gorev_id):
                     gorev_idx = idx
@@ -153,6 +141,31 @@ def parse_greedy_manuel_atamalar(data: Dict, personeller: List[Personel],
 
         if gorev_idx is None:
             gorev_idx = _safe_int(m.get("gorevIdx"), None)
+
+        if gorev_idx is None and gorev_adi:
+            exact_matches = [idx for idx, g in enumerate(gorev_objs) if g.ad == gorev_adi]
+            if len(exact_matches) == 1:
+                gorev_idx = exact_matches[0]
+
+        if gorev_idx is None and gorev_base_adi:
+            base_matches = [
+                idx for idx, g in enumerate(gorev_objs)
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi
+            ]
+            if len(base_matches) == 1:
+                gorev_idx = base_matches[0]
+
+        if gorev_idx is None and gorev_adi:
+            for idx, g in enumerate(gorev_objs):
+                if g.ad == gorev_adi:
+                    gorev_idx = idx
+                    break
+
+        if gorev_idx is None and gorev_base_adi:
+            for idx, g in enumerate(gorev_objs):
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi:
+                    gorev_idx = idx
+                    break
 
         kisi_id = _resolve_personel_id(p_raw_id, personeller, require_existing=True)
         if kisi_id is None:
@@ -263,13 +276,15 @@ def parse_solver_personeller_hedef(data: Dict) -> List[SolverPersonel]:
         pid = normalize_id(p_data.get("id", len(personeller)))
         mazeret_set = _extract_mazeret_gunleri(p_data)
         yillik_gerceklesen = _parse_yillik_gerceklesen(p_data)
+        gecmis_gorevler = _parse_gecmis_gorevler(p_data)
 
         personeller.append(SolverPersonel(
             id=pid,
             ad=p_data.get("ad", ""),
             mazeret_gunleri=mazeret_set,
             kisitli_gorev=p_data.get("kisitliGorev"),
-            yillik_gerceklesen=yillik_gerceklesen
+            yillik_gerceklesen=yillik_gerceklesen,
+            gecmis_gorevler=gecmis_gorevler
         ))
 
     return personeller
@@ -334,6 +349,7 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
                     pass
 
         yillik_gerceklesen = _parse_yillik_gerceklesen(p_data)
+        gecmis_gorevler = _parse_gecmis_gorevler(p_data)
 
         personeller.append(SolverPersonel(
             id=pid,
@@ -343,7 +359,8 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
             tasma_gorevi=tasma_gorevi,
             hedef_tipler=hedef_tipler,
             gorev_kotalari=gorev_kotalari,
-            yillik_gerceklesen=yillik_gerceklesen
+            yillik_gerceklesen=yillik_gerceklesen,
+            gecmis_gorevler=gecmis_gorevler
         ))
 
     return personeller
@@ -451,8 +468,34 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
         gorev_id = m_data.get("gorevId")
         gorev_adi = m_data.get("gorevAdi")
         gorev_base_adi = m_data.get("gorevBaseAdi")
+        mazeret_onayli = bool(m_data.get("mazeretOnayli", False))
         slot_idx = None
-        if gorev_adi:
+
+        if gorev_id is not None:
+            for g in gorevler:
+                if ids_match(g.id, gorev_id):
+                    slot_idx = g.slot_idx
+                    break
+
+        if slot_idx is None:
+            slot_idx = _safe_int(m_data.get("slotIdx"), None)
+        if slot_idx is None:
+            slot_idx = _safe_int(m_data.get("gorevIdx"), None)
+
+        if slot_idx is None and gorev_adi:
+            exact_matches = [g.slot_idx for g in gorevler if g.ad == gorev_adi]
+            if len(exact_matches) == 1:
+                slot_idx = exact_matches[0]
+
+        if slot_idx is None and gorev_base_adi:
+            base_matches = [
+                g.slot_idx for g in gorevler
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi
+            ]
+            if len(base_matches) == 1:
+                slot_idx = base_matches[0]
+
+        if slot_idx is None and gorev_adi:
             for g in gorevler:
                 if g.ad == gorev_adi:
                     slot_idx = g.slot_idx
@@ -464,23 +507,13 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
                     slot_idx = g.slot_idx
                     break
 
-        if slot_idx is None and gorev_id is not None:
-            for g in gorevler:
-                if ids_match(g.id, gorev_id):
-                    slot_idx = g.slot_idx
-                    break
-
-        if slot_idx is None:
-            slot_idx = _safe_int(m_data.get("slotIdx"), None)
-        if slot_idx is None:
-            slot_idx = _safe_int(m_data.get("gorevIdx"), None)
-
         if slot_idx is not None and 0 <= slot_idx < len(gorevler):
             manuel_atamalar.append(SolverAtama(
                 personel_id=p_id,
                 gun=gun,
                 slot_idx=slot_idx,
-                gorev_adi=gorev_adi or ""
+                gorev_adi=gorev_adi or "",
+                mazeret_onayli=mazeret_onayli
             ))
 
     return manuel_atamalar
@@ -684,3 +717,16 @@ def _parse_yillik_gerceklesen(p_data: Dict) -> Dict[str, int]:
             except (ValueError, TypeError):
                 yillik_gerceklesen[key] = 0
     return yillik_gerceklesen
+
+
+def _parse_gecmis_gorevler(p_data: Dict) -> Dict[str, int]:
+    """Geçmiş özel görev verilerini parse et"""
+    gecmis_gorevler = {}
+    gg_raw = p_data.get("gecmisGorevler", {})
+    if isinstance(gg_raw, dict):
+        for key, val in gg_raw.items():
+            try:
+                gecmis_gorevler[key] = int(val)
+            except (ValueError, TypeError):
+                gecmis_gorevler[key] = 0
+    return gecmis_gorevler

@@ -946,6 +946,17 @@ ta
           <button class="btn btn-primary btn-sm" onclick="gecmisModalAc()">
             <i class="fa-solid fa-calendar-days"></i> Geçmiş Detay
           </button>
+          <button class="btn btn-warning btn-sm" onclick="document.getElementById('gecmis-excel-upload').click()">
+            <i class="fas fa-file-upload"></i> Geçmiş Excel Yükle
+          </button>
+          <input type="file" id="gecmis-excel-upload" hidden accept=".xlsx,.xls" onchange="gecmisExcelYukle(this)">
+          <button class="btn btn-info btn-sm" onclick="document.getElementById('gorev-ceteleme-upload').click()">
+            <i class="fas fa-file-upload"></i> Görev Çeteleme Yükle
+          </button>
+          <input type="file" id="gorev-ceteleme-upload" hidden accept=".xlsx,.xls" onchange="gorevCetelemeYukle(this)">
+          <button class="btn btn-danger btn-sm" onclick="gecmisVerileriSil()">
+            <i class="fa-solid fa-trash"></i> Geçmiş Sil
+          </button>
         </div>
       </div>
 
@@ -1367,6 +1378,7 @@ ta
     </div>
   </div>
 
+
   <!-- Geçmiş Detay Modal -->
   <div class="modal" id="gecmis-modal">
     <div class="modal-content">
@@ -1384,6 +1396,9 @@ ta
           <label style="font-weight:800; margin-left:15px;">Yıl:</label>
           <select id="gecmis-yil" onchange="gecmisTabloGuncelle()"
             style="padding:8px; border:2px solid #e2e8f0; border-radius:8px;"></select>
+          <button class="btn btn-danger btn-sm" style="margin-left:auto;" onclick="gecmisPersonelYilSil()">
+            <i class="fa-solid fa-trash"></i> Bu Yılı Sil
+          </button>
         </div>
         <div class="table-responsive">
           <table class="custom-table" id="gecmis-table">
@@ -1406,7 +1421,7 @@ ta
     let resmiTatiller = [];
     let kurallar = [];
     let gorevler = [];
-    let manuelAtamalar = []; // { personelId, gun, gorevId, gorevIdx, gorevAdi }
+    let manuelAtamalar = []; // { personelId, gun, gorevId, gorevIdx, gorevAdi, mazeretOnayli }
     let gorevKisitlamalari = []; // { personelId, gorevAdi, exclusive?, gunTipiDagilimi?: {hici,prs,cum,cmt,pzr} | null }
     let gorevHavuzlari = {}; // { gorevAdi: [personelId1, personelId2, ...] } — görev bazlı yedek havuz
     let gorevKapasiteAyar = {}; // { gorevAdi: { toplam: X, hici: X, prs: X, cum: X, cmt: X, pzr: X } }
@@ -2000,6 +2015,460 @@ ta
       document.getElementById('gecmis-modal').classList.remove('active');
     }
 
+    // Geçmiş Detay modalında seçili personelin seçili yılını sil
+    function gecmisPersonelYilSil() {
+      const personelId = document.getElementById('gecmis-personel').value;
+      const yil = parseInt(document.getElementById('gecmis-yil').value);
+      const personel = personelListesi.find(p => p.id == personelId);
+      if (!personel) return;
+
+      if (!confirm(`${personel.ad} - ${yil} yılı geçmiş verisi silinecek. Emin misiniz?`)) return;
+
+      if (personel.yillikGecmis && personel.yillikGecmis[yil]) {
+        delete personel.yillikGecmis[yil];
+      }
+
+      gecmisTabloGuncelle();
+      ozetTablosuGuncelle();
+      kaydetDebounced();
+      alert(`${personel.ad} - ${yil} yılı geçmiş verisi silindi.`);
+    }
+
+    // Step 3: Tüm personelin geçmiş verilerini sil
+    function gecmisVerileriSil() {
+      const buYil = new Date().getFullYear();
+      const secim = prompt(
+        'Hangi geçmiş verileri silmek istiyorsunuz?\n\n' +
+        '1 = Belirli bir yıl (yıl numarası girin, ör: ' + buYil + ')\n' +
+        '2 = TÜM geçmiş verileri sil\n\n' +
+        'Yıl numarası veya "2" girin:'
+      );
+      if (!secim) return;
+
+      if (secim.trim() === '2') {
+        if (!confirm('TÜM personelin TÜM yıllara ait geçmiş verileri silinecek!\n\nBu işlem geri alınamaz. Emin misiniz?')) return;
+        personelListesi.forEach(p => { p.yillikGecmis = {}; });
+        ozetTablosuGuncelle();
+        kaydetDebounced();
+        alert('Tüm geçmiş verileri silindi.');
+      } else {
+        const yil = parseInt(secim.trim());
+        if (isNaN(yil) || yil < 2000 || yil > 2100) {
+          alert('Geçersiz giriş: ' + secim);
+          return;
+        }
+        if (!confirm(`Tüm personelin ${yil} yılı geçmiş verileri silinecek. Emin misiniz?`)) return;
+        let silinenSayisi = 0;
+        personelListesi.forEach(p => {
+          if (p.yillikGecmis && p.yillikGecmis[yil]) {
+            delete p.yillikGecmis[yil];
+            silinenSayisi++;
+          }
+        });
+        ozetTablosuGuncelle();
+        kaydetDebounced();
+        alert(`${silinenSayisi} personelin ${yil} yılı geçmiş verisi silindi.`);
+      }
+    }
+
+    // ============================================
+    // GEÇMİŞ EXCEL YÜKLEME (Çeteleme Otomatik Parse)
+    // ============================================
+
+    function normalizeAd(ad) {
+      return String(ad || '').trim().toLowerCase().replace(/\s+/g, ' ')
+        .replace(/İ/g, 'i').replace(/I/g, 'ı').replace(/Ğ/g, 'ğ').replace(/Ü/g, 'ü')
+        .replace(/Ş/g, 'ş').replace(/Ö/g, 'ö').replace(/Ç/g, 'ç');
+    }
+
+    async function gecmisExcelYukle(input) {
+      if (!input.files || !input.files[0]) return;
+      const file = input.files[0];
+
+      const AY_ESLESTIR = {
+        'ocak': 1, 'şubat': 2, 'subat': 2, 'mart': 3, 'nisan': 4, 'nısan': 4,
+        'mayis': 5, 'mayıs': 5, 'haziran': 6, 'temmuz': 7, 'agustos': 8, 'ağustos': 8,
+        'eylul': 9, 'eylül': 9, 'ekim': 10, 'kasim': 11, 'kasım': 11, 'aralik': 12, 'aralık': 12
+      };
+      // Her ay bloğu 6 sütun: [0]=H.İÇİ→hici, [1]=PRŞ→prs, [2]=CUM→cum, [3]=CMT→cmt, [4]=PZR→pzr, [5]=TP→atla
+      const GUN_TIPI_SIRA = ['hici', 'prs', 'cum', 'cmt', 'pzr'];
+
+      function hucreDegerAl(cell) {
+        let val = cell.value;
+        if (val && typeof val === 'object' && val.richText) {
+          val = val.richText.map(r => r.text).join('');
+        }
+        if (val && typeof val === 'object' && val.result !== undefined) {
+          val = val.result; // formül sonucu
+        }
+        return val;
+      }
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(arrayBuffer);
+
+        // "NÖBET ÇETELEME" sayfasını bul, yoksa ilk sayfayı al
+        let sheet = workbook.worksheets.find(ws =>
+          normalizeAd(ws.name).includes('ceteleme') || normalizeAd(ws.name).includes('çeteleme')
+        ) || workbook.worksheets[0];
+        if (!sheet) { alert('Excel dosyasında sayfa bulunamadı.'); return; }
+
+        // A1'den yıl bilgisini oku
+        let yil = null;
+        const a1Val = hucreDegerAl(sheet.getRow(1).getCell(1));
+        if (a1Val != null) {
+          const parsed = parseInt(String(a1Val));
+          if (parsed >= 2000 && parsed <= 2100) yil = parsed;
+        }
+        // Yıl bulunamadıysa kullanıcıdan sor
+        if (!yil) {
+          const buYil = new Date().getFullYear();
+          const yilStr = prompt('Çeteleme yılı A1\'de bulunamadı. Hangi yıla ait?', String(buYil));
+          if (!yilStr) { input.value = ''; return; }
+          yil = parseInt(yilStr);
+          if (isNaN(yil) || yil < 2000 || yil > 2100) {
+            alert('Geçersiz yıl: ' + yilStr);
+            input.value = '';
+            return;
+          }
+        }
+
+        // Satır 1, C1'den itibaren ay başlıklarını tespit et
+        // Yapı: A1=YIL, B1=boş, C1=OCAK(merge 6 sütun), I1=ŞUBAT(merge 6 sütun), ...
+        // Her ay bloğu tam 6 sütun: H.İÇİ, PRŞ, CUM, CMT, PZR, TP
+        // Merged cell'lerde ExcelJS tüm hücrelere aynı değeri verir, bu yüzden
+        // sadece ilk bulunan ay'ı kaydedip sonraki 5 sütunu atlıyoruz
+        const ayBloklari = []; // [ { ay: 1, baslangicCol: 3 }, ... ]
+        const satir1 = sheet.getRow(1);
+        const maxCol = sheet.columnCount || 200;
+
+        let col = 3; // C sütunundan (col 3) başla
+        while (col <= maxCol) {
+          const cell = satir1.getCell(col);
+          let val = hucreDegerAl(cell);
+          if (val == null || !String(val).trim()) { col++; continue; }
+          const strVal = String(val).trim().toLowerCase();
+
+          // "TOPLAM" bloğunu görünce dur
+          if (strVal === 'toplam' || strVal === 't.n' || strVal === 'top' || strVal === 'genel toplam') break;
+
+          const ayNo = AY_ESLESTIR[strVal];
+          if (ayNo) {
+            ayBloklari.push({ ay: ayNo, baslangicCol: col });
+            col += 6; // Bu ay bloğunun 6 sütununu atla, sonraki aya geç
+          } else {
+            col++;
+          }
+        }
+
+        if (ayBloklari.length === 0) {
+          alert('Çeteleme formatı tanınamadı: Satır 1\'de ay başlıkları bulunamadı (OCAK, ŞUBAT, vb.).');
+          input.value = '';
+          return;
+        }
+
+        // Eski veriyi silme seçeneği
+        const silSecim = confirm(
+          `${yil} yılı tespit edildi.\nAylar: ${ayBloklari.map(b => AY_ISIMLERI[b.ay]).join(', ')}\n\n` +
+          `Mevcut ${yil} geçmiş verilerini silip üzerine yazmak ister misiniz?\n\n` +
+          `[Tamam] = Eski ${yil} verisi silinir, sadece Excel'deki yüklenir\n` +
+          `[İptal] = Eski verinin üzerine eklenir (var olan aylar güncellenir)`
+        );
+
+        // Veri satırlarını oku (B4'ten aşağı)
+        let eslesenSayisi = 0;
+        const eslesmeyenler = [];
+        const toplamSatir = sheet.rowCount || 500;
+
+        for (let rowNum = 4; rowNum <= toplamSatir; rowNum++) {
+          const row = sheet.getRow(rowNum);
+          // B sütunu (col 2) = Ad Soyad
+          const adVal = hucreDegerAl(row.getCell(2));
+          if (!adVal || !String(adVal).trim()) continue;
+          const excelAd = String(adVal).trim();
+
+          // Personel eşleştir
+          const eslesme = personelListesi.find(p => normalizeAd(p.ad) === normalizeAd(excelAd));
+          if (!eslesme) {
+            eslesmeyenler.push(excelAd);
+            continue;
+          }
+
+          // yillikGecmis yapısını hazırla
+          if (!eslesme.yillikGecmis) eslesme.yillikGecmis = {};
+          if (!eslesme.yillikGecmis[yil]) eslesme.yillikGecmis[yil] = {};
+          // Sil seçildiyse o yılın sadece GÜN TİPİ verilerini temizle (görevlere dokunma)
+          if (silSecim) {
+            Object.keys(eslesme.yillikGecmis[yil]).forEach(ay => {
+              const ayData = eslesme.yillikGecmis[yil][ay];
+              if (ayData) {
+                delete ayData.hici;
+                delete ayData.prs;
+                delete ayData.cum;
+                delete ayData.cmt;
+                delete ayData.pzr;
+              }
+            });
+          }
+
+          // Her ay bloğu için verileri oku
+          // Blok: baslangicCol+0=H.İÇİ, +1=PRŞ, +2=CUM, +3=CMT, +4=PZR, +5=TP(atla)
+          ayBloklari.forEach(blok => {
+            let hasData = false;
+            const gunVerileri = {};
+
+            GUN_TIPI_SIRA.forEach((tip, i) => {
+              const cellVal = hucreDegerAl(row.getCell(blok.baslangicCol + i));
+              const deger = parseInt(cellVal) || 0;
+              gunVerileri[tip] = deger;
+              if (deger > 0) hasData = true;
+            });
+
+            if (hasData) {
+              // Mevcut ay verisini koru (görevler silinmesin), sadece gün tiplerini yaz
+              if (!eslesme.yillikGecmis[yil][blok.ay]) eslesme.yillikGecmis[yil][blok.ay] = {};
+              Object.assign(eslesme.yillikGecmis[yil][blok.ay], gunVerileri);
+            }
+          });
+
+          eslesenSayisi++;
+        }
+
+        // Sonuç bildirimi
+        let mesaj = `${eslesenSayisi} personelin ${yil} yılı geçmiş verisi yüklendi.`;
+        mesaj += `\nAylar: ${ayBloklari.map(b => AY_ISIMLERI[b.ay]).join(', ')}`;
+        if (silSecim) mesaj += `\n(Eski ${yil} verisi silindi)`;
+        if (eslesmeyenler.length > 0) {
+          mesaj += `\n\nEşleşmeyen isimler (${eslesmeyenler.length}):\n` + eslesmeyenler.join(', ');
+        }
+        alert(mesaj);
+
+        // UI güncelle
+        ozetTablosuGuncelle();
+        kaydetDebounced();
+      } catch (e) {
+        console.error('Geçmiş Excel yükleme hatası:', e);
+        alert('Excel dosyası okunamadı: ' + e.message);
+      }
+      input.value = '';
+    }
+
+    // ============================================
+    // GÖREV ÇETELEME EXCEL YÜKLEME
+    // ============================================
+    // Format:
+    // Satır 1: Başlık (ör: "Yunusemre Devlet Hastanesi Mavi Kod Çeteleme")
+    // Satır 3: A3=YIL, C3=OCAK(merge), sonraki ay bloğu=ŞUBAT(merge), ...
+    // Satır 5: Sıra | Ad Soyad | görev1 | görev2 | görev1 | görev2 | ... (her ay bloğunda tekrar)
+    // Satır 6+: Veriler — "x2", "X1", "x3" formatında
+    // Son blok: TOPLAM (atla)
+
+    async function gorevCetelemeYukle(input) {
+      if (!input.files || !input.files[0]) return;
+      const file = input.files[0];
+
+      const AY_ESLESTIR = {
+        'ocak': 1, 'şubat': 2, 'subat': 2, 'mart': 3, 'nisan': 4, 'nısan': 4,
+        'mayis': 5, 'mayıs': 5, 'haziran': 6, 'temmuz': 7, 'agustos': 8, 'ağustos': 8,
+        'eylul': 9, 'eylül': 9, 'ekim': 10, 'kasim': 11, 'kasım': 11, 'aralik': 12, 'aralık': 12
+      };
+
+      function hucreDegerAl(cell) {
+        let val = cell.value;
+        if (val && typeof val === 'object' && val.richText) {
+          val = val.richText.map(r => r.text).join('');
+        }
+        if (val && typeof val === 'object' && val.result !== undefined) {
+          val = val.result;
+        }
+        return val;
+      }
+
+      // "x2", "X1", "x3" → 2, 1, 3 parse et
+      function xDegerParse(val) {
+        if (val == null) return 0;
+        const str = String(val).trim().toLowerCase();
+        if (!str) return 0;
+        const match = str.match(/x?\s*(\d+)/);
+        return match ? parseInt(match[1]) : 0;
+      }
+
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const workbook = new ExcelJS.Workbook();
+        await workbook.xlsx.load(arrayBuffer);
+        const sheet = workbook.worksheets[0];
+        if (!sheet) { alert('Excel dosyasında sayfa bulunamadı.'); return; }
+
+        // Yıl bilgisini bul: A3 veya A1'de olabilir
+        let yil = null;
+        for (const rowNum of [3, 1, 2]) {
+          const val = hucreDegerAl(sheet.getRow(rowNum).getCell(1));
+          if (val != null) {
+            const parsed = parseInt(String(val));
+            if (parsed >= 2000 && parsed <= 2100) { yil = parsed; break; }
+          }
+        }
+        if (!yil) {
+          const buYil = new Date().getFullYear();
+          const yilStr = prompt('Çeteleme yılı bulunamadı. Hangi yıla ait?', String(buYil));
+          if (!yilStr) { input.value = ''; return; }
+          yil = parseInt(yilStr);
+          if (isNaN(yil) || yil < 2000 || yil > 2100) {
+            alert('Geçersiz yıl: ' + yilStr);
+            input.value = '';
+            return;
+          }
+        }
+
+        // Önce satır 5'ten görev isimlerini oku (C5'ten itibaren ilk bloğu al)
+        // Görevler her ay bloğunda tekrar eder, ilk bloktan görev isimlerini ve sayısını öğren
+        const satir5 = sheet.getRow(5);
+        const maxCol = sheet.columnCount || 200;
+        const gorevIsimleri = []; // ["MAVİ KOD", "AMATEM"]
+
+        // C5'ten (col 3) itibaren ilk bloğun görev isimlerini oku
+        // İkinci bloğun başlangıcı = ilk görev isminin tekrarladığı yer
+        const ilkGorevCol = 3;
+        const ilkGorevAd = hucreDegerAl(satir5.getCell(ilkGorevCol));
+        if (!ilkGorevAd || !String(ilkGorevAd).trim()) {
+          alert('Görev isimleri satır 5, C sütunundan bulunamadı.');
+          input.value = '';
+          return;
+        }
+        const ilkGorevNorm = normalizeAd(ilkGorevAd);
+        gorevIsimleri.push(String(ilkGorevAd).trim());
+
+        // İlk görev isminden sonraki farklı isimleri oku, tekrar edince dur
+        for (let c = ilkGorevCol + 1; c <= maxCol; c++) {
+          const v = hucreDegerAl(satir5.getCell(c));
+          if (!v || !String(v).trim()) break;
+          const norm = normalizeAd(v);
+          if (norm === ilkGorevNorm) break; // İkinci ay bloğunun başı — dur
+          gorevIsimleri.push(String(v).trim());
+        }
+
+        const gorevSayisi = gorevIsimleri.length;
+
+        // Ay bloklarını satır 5'ten tespit et (ilk görev isminin tekrarladığı her yer = yeni ay)
+        // Bu yöntem merge sorunlarından etkilenmez
+        const ayBloklari = [];
+        const satir3 = sheet.getRow(3);
+
+        // Satır 5'te ilk görev isminin tekrarladığı tüm sütunları bul
+        const ayBaslangicSutunlari = [];
+        for (let c = ilkGorevCol; c <= maxCol; c++) {
+          const v = hucreDegerAl(satir5.getCell(c));
+          if (!v || !String(v).trim()) continue;
+          if (normalizeAd(v) === ilkGorevNorm) {
+            ayBaslangicSutunlari.push(c);
+          }
+        }
+
+        // Her ay başlangıç sütunu için satır 3'ten ay ismini bul
+        ayBaslangicSutunlari.forEach(ayCol => {
+          // Satır 3'te bu sütundaki ay ismini oku
+          const ayVal = hucreDegerAl(satir3.getCell(ayCol));
+          if (!ayVal) return;
+          const ayStr = String(ayVal).trim().toLowerCase();
+
+          // TOPLAM bloğunu atla
+          if (ayStr === 'toplam' || ayStr === 'top' || ayStr === 'genel toplam' || ayStr === 'toplm') return;
+
+          const ayNo = AY_ESLESTIR[ayStr];
+          if (ayNo) {
+            ayBloklari.push({ ay: ayNo, baslangicCol: ayCol });
+          }
+        });
+
+        if (ayBloklari.length === 0) {
+          alert('Görev çeteleme formatı tanınamadı: Satır 3\'te ay başlıkları bulunamadı.');
+          input.value = '';
+          return;
+        }
+
+        // Eski veriyi silme seçeneği
+        const debugBilgi = ayBloklari.map(b => `${AY_ISIMLERI[b.ay]}→sütun${b.baslangicCol}`).join(', ');
+        const silSecim = confirm(
+          `${yil} yılı — Görev Çeteleme\n` +
+          `Aylar: ${debugBilgi}\n` +
+          `Görevler (${gorevSayisi}): ${gorevIsimleri.join(', ')}\n\n` +
+          `Mevcut görev geçmiş verilerini silip üzerine yazmak ister misiniz?\n\n` +
+          `[Tamam] = Eski görev verisi silinir\n` +
+          `[İptal] = Üzerine eklenir`
+        );
+
+        // Veri satırlarını oku (satır 6'dan itibaren)
+        let eslesenSayisi = 0;
+        const eslesmeyenler = [];
+        const toplamSatir = sheet.rowCount || 500;
+
+        for (let rowNum = 6; rowNum <= toplamSatir; rowNum++) {
+          const row = sheet.getRow(rowNum);
+          // B sütunu (col 2) = Ad Soyad
+          const adVal = hucreDegerAl(row.getCell(2));
+          if (!adVal || !String(adVal).trim()) continue;
+          const excelAd = String(adVal).trim();
+
+          // Personel eşleştir
+          const eslesme = personelListesi.find(p => normalizeAd(p.ad) === normalizeAd(excelAd));
+          if (!eslesme) {
+            eslesmeyenler.push(excelAd);
+            continue;
+          }
+
+          // yillikGecmis yapısını hazırla
+          if (!eslesme.yillikGecmis) eslesme.yillikGecmis = {};
+          if (!eslesme.yillikGecmis[yil]) eslesme.yillikGecmis[yil] = {};
+
+          // Sil seçildiyse o yılın görev verilerini temizle
+          if (silSecim) {
+            Object.keys(eslesme.yillikGecmis[yil]).forEach(ay => {
+              if (eslesme.yillikGecmis[yil][ay] && eslesme.yillikGecmis[yil][ay].gorevler) {
+                eslesme.yillikGecmis[yil][ay].gorevler = {};
+              }
+            });
+          }
+
+          // Her ay bloğu için verileri oku
+          ayBloklari.forEach(blok => {
+            const ay = blok.ay;
+            if (!eslesme.yillikGecmis[yil][ay]) eslesme.yillikGecmis[yil][ay] = {};
+            if (!eslesme.yillikGecmis[yil][ay].gorevler) eslesme.yillikGecmis[yil][ay].gorevler = {};
+
+            gorevIsimleri.forEach((gorevAdi, i) => {
+              const cellVal = hucreDegerAl(row.getCell(blok.baslangicCol + i));
+              const deger = xDegerParse(cellVal);
+              if (deger > 0) {
+                eslesme.yillikGecmis[yil][ay].gorevler[gorevAdi] = deger;
+              }
+            });
+          });
+
+          eslesenSayisi++;
+        }
+
+        // Sonuç bildirimi
+        let mesaj = `${eslesenSayisi} personelin ${yil} yılı görev çeteleme verisi yüklendi.`;
+        mesaj += `\nAylar: ${ayBloklari.map(b => AY_ISIMLERI[b.ay]).join(', ')}`;
+        mesaj += `\nGörevler: ${gorevIsimleri.join(', ')}`;
+        if (eslesmeyenler.length > 0) {
+          mesaj += `\n\nEşleşmeyen isimler (${eslesmeyenler.length}):\n` + eslesmeyenler.join(', ');
+        }
+        alert(mesaj);
+
+        // UI güncelle
+        ozetTablosuGuncelle();
+        kaydetDebounced();
+      } catch (e) {
+        console.error('Görev çeteleme yükleme hatası:', e);
+        alert('Excel dosyası okunamadı: ' + e.message);
+      }
+      input.value = '';
+    }
+
     function gecmisTabloGuncelle() {
       const personelId = document.getElementById('gecmis-personel').value;
       const yil = parseInt(document.getElementById('gecmis-yil').value);
@@ -2381,6 +2850,7 @@ ta
       const personelIdStr = document.getElementById('manuel-personel').value;
       const gun = parseInt(document.getElementById('manuel-gun').value);
       const gorevIdx = parseInt(document.getElementById('manuel-gorev').value);
+      let mazeretOnayli = false;
 
       if (!personelIdStr) return alert('Personel seçiniz!');
       if (!gun || gun < 1 || gun > 31) return alert('Geçerli bir gün giriniz!');
@@ -2437,6 +2907,7 @@ ta
           `Yine de bu güne nöbet atamak istiyor musunuz?`
         );
         if (!mazeretOnay) return;
+        mazeretOnayli = true;
       }
 
       // BİRLİKTE + AYRI BİNA KONTROLÜ
@@ -2486,7 +2957,7 @@ ta
           .filter(m => String(m.personelId) === String(personel.id))
           .map(m => parseInt(m.gun, 10))
           .filter(g => g >= 1);
-        const araGunIhlalleri = kisiManuelGunler.filter(g => Math.abs(g - gun) < araGunVal && g !== gun);
+        const araGunIhlalleri = kisiManuelGunler.filter(g => araGunIhlaliVar(g, gun, araGunVal));
         if (araGunIhlalleri.length > 0) {
           const ihlalGunler = araGunIhlalleri.sort((a, b) => a - b).join(', ');
           const araGunOnay = confirm(
@@ -2530,7 +3001,8 @@ ta
         gorevId: gorev.id,       // BUG FIX (A): Görev ID'si (sıralamadan bağımsız)
         gorevIdx,                // Geriye uyumluluk için koru
         gorevAdi: gorev.ad,
-        gorevBaseAdi: normalizeGorevAdi(gorev.baseName || gorev.ad)
+        gorevBaseAdi: normalizeGorevAdi(gorev.baseName || gorev.ad),
+        mazeretOnayli
       });
 
       // Input temizle
@@ -2592,18 +3064,24 @@ ta
         const tasmaRole = kisitlama?.tasmaGorevi ? normalizeGorevAdi(kisitlama.tasmaGorevi) : null;
         const manuelRole = normalizeGorevAdi(m.gorevBaseAdi || m.gorevAdi);
         const celiskiVar = !!(kisitlama && manuelRole !== kisitliRole && manuelRole !== tasmaRole);
+        const mazeretIstisnasi = m.mazeretOnayli === true;
 
-        const badgeStyle = celiskiVar
+        const badgeStyle = (celiskiVar || mazeretIstisnasi)
           ? 'background:#fef3c7; border:1px solid #f59e0b; color:#92400e;'
           : '';
-        const celiskiIcon = celiskiVar ? '⚠️ ' : '📌 ';
-        const celiskiNot = celiskiVar
-          ? ` <span style="font-size:10px; color:#b45309;" title="Bu kişi ${kisitlama.gorevAdi} görevine kısıtlı ama farklı göreve atandı">(İSTİSNA)</span>`
-          : '';
+        const celiskiIcon = (celiskiVar || mazeretIstisnasi) ? '⚠️ ' : '📌 ';
+        const notlar = [];
+        if (celiskiVar) {
+          notlar.push(`<span style="font-size:10px; color:#b45309;" title="Bu kişi ${kisitlama.gorevAdi} görevine kısıtlı ama farklı göreve atandı">(KISIT ISTISNASI)</span>`);
+        }
+        if (mazeretIstisnasi) {
+          notlar.push('<span style="font-size:10px; color:#b45309;" title="Bu manuel atama mazeret/izin çakışmasına rağmen kullanıcı onayıyla kaydedildi">(MAZERET ONAYI)</span>');
+        }
+        const notHtml = notlar.length > 0 ? ` ${notlar.join(' ')}` : '';
 
         return `
       <span class="badge badge-info" style="margin:2px; ${badgeStyle}">
-        ${celiskiIcon}${personel?.ad || '?'} → ${m.gun}. gün (${tipLabel}) - ${m.gorevAdi}${celiskiNot}
+        ${celiskiIcon}${personel?.ad || '?'} → ${m.gun}. gün (${tipLabel}) - ${m.gorevAdi}${notHtml}
         <button onclick="manuelAtamaSil(${idx})" style="background:none; border:none; cursor:pointer; margin-left:4px;">✕</button>
       </span>
     `;
@@ -3406,7 +3884,7 @@ ta
         const nobetIzinli = p.nobetIzinleri?.includes(m.gun);
         if (mazeretli || yillikli || nobetIzinli) {
           const izinTuru = yillikli ? 'Yillik Izin' : nobetIzinli ? 'Nobet Izni' : 'Mazeret';
-          cakismalar.push({ ad: p.ad, gun: m.gun, izinTuru, gorev: m.gorevAdi });
+          cakismalar.push({ ad: p.ad, gun: m.gun, izinTuru, gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
         }
       });
 
@@ -3430,7 +3908,7 @@ ta
       if (cakismalar.length > 0) {
         html += `<div class="ozet-cakisma">
       <div style="font-weight:700; color:#fca5a5; margin-bottom:4px;">&#9888; Manuel Atama Cakismalari: ${cakismalar.length} uyari</div>
-      ${cakismalar.map(c => `<div class="ozet-cakisma-item">&#8226; ${c.ad}: ${c.gun}. gun ${c.izinTuru.toLowerCase()} ama nobet atanmis (${c.gorev})</div>`).join('')}
+      ${cakismalar.map(c => `<div class="ozet-cakisma-item">&#8226; ${c.ad}: ${c.gun}. gun ${c.izinTuru.toLowerCase()} ama nobet atanmis (${c.gorev})${c.onayli ? ' [onayli]' : ''}</div>`).join('')}
     </div>`;
       }
 
@@ -3464,7 +3942,7 @@ ta
 
       oncelikSirasi.forEach(tip => {
         musaitGunler[tip].sort((a, b) => a - b).forEach(gun => {
-          const uygun = secilenGunler.every(secilen => Math.abs(secilen - gun) >= araGun);
+          const uygun = secilenGunler.every(secilen => !araGunIhlaliVar(secilen, gun, araGun));
           if (uygun) {
             secilenGunler.push(gun);
             tipMax[tip]++;
@@ -3572,12 +4050,12 @@ ta
               return; // WE/WD, birlikte, kota da kilitli kalır
             }
 
-            // Kişi görev kısıtlamasında gün tipi dağılımı belirlenmiş mi kontrol et
+            // gorev kısıtındaki gün tipi dağılımı, global hedefi ezmemeli.
+            // Bu dağılım özel görev kotası dağıtımında ayrıca kullanılır.
             const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id) && k.gunTipiDagilimi);
             if (kisitlama) {
-              p.hedef = { ...kisitlama.gunTipiDagilimi };
-              console.log(`[KISITLAMA] ${p.ad} manuel gün tipi dağılımı korundu:`, p.hedef);
-              return;
+              const dagitimToplam = GUN_TIPLERI.reduce((s, t) => s + (kisitlama.gunTipiDagilimi[t] || 0), 0);
+              console.log(`[KISITLAMA] ${p.ad} görev gün tipi dağılımı özel görev kotasında korunacak: toplam=${dagitimToplam}`, kisitlama.gunTipiDagilimi);
             }
 
             // Gün tipi hedeflerini doğrudan kullan (OR-Tools hesapladı)
@@ -3909,7 +4387,7 @@ ta
 
               // Ara gün kontrolü
               for (const atananGun of simKisiAtama[p.id].gunler) {
-                if (Math.abs(atananGun - gun) < araGun) return false;
+                if (araGunIhlaliVar(atananGun, gun, araGun)) return false;
               }
               return true;
             });
@@ -4603,17 +5081,12 @@ ta
             return;
           }
 
-          // Kişi görev kısıtlamasında gün tipi dağılımı belirlenmiş mi kontrol et
+          // gorev kısıtındaki gün tipi dağılımı, yerel hedefi ezmemeli.
+          // Bu dağılım özel görev kotası dağıtımında ayrıca kullanılır.
           const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id) && k.gunTipiDagilimi);
           if (kisitlama) {
-            p.hedef = { ...kisitlama.gunTipiDagilimi };
-            console.log(`[KISITLAMA-YEREL] ${p.ad} manuel gün tipi dağılımı korundu:`, p.hedef);
-            // WE/WD bilgilerini dağılımdan hesapla
-            p.weAtanan = (kisitlama.gunTipiDagilimi.cum || 0) + (kisitlama.gunTipiDagilimi.cmt || 0) + (kisitlama.gunTipiDagilimi.pzr || 0);
-            p.wdAtanan = (kisitlama.gunTipiDagilimi.hici || 0) + (kisitlama.gunTipiDagilimi.prs || 0);
-            p.hedefWE = p.weAtanan;
-            p.hedefWD = p.wdAtanan;
-            return;
+            const dagitimToplam = GUN_TIPLERI.reduce((s, t) => s + (kisitlama.gunTipiDagilimi[t] || 0), 0);
+            console.log(`[KISITLAMA-YEREL] ${p.ad} görev gün tipi dağılımı özel görev kotasında korunacak: toplam=${dagitimToplam}`, kisitlama.gunTipiDagilimi);
           }
 
           p.hedef = { ...simKisiAtama[p.id].tipSayilari };
@@ -4724,13 +5197,16 @@ ta
       });
 
       // Önce tüm kotaları sıfırla (manuel atamalar hariç)
+      const manuelKotaHaritasi = {};
       personelListesi.forEach(p => {
         if (!p.gorevKotalari) p.gorevKotalari = {};
+        manuelKotaHaritasi[String(p.id)] = {};
         ozelGorevler.forEach(g => {
           // Manuel atama sayısını hesapla
           const manuelSayisi = manuelAtamalar.filter(m =>
             String(m.personelId) === String(p.id) && m.gorevAdi === g
           ).length;
+          manuelKotaHaritasi[String(p.id)][g] = manuelSayisi;
           p.gorevKotalari[g] = manuelSayisi;
         });
       });
@@ -4749,38 +5225,34 @@ ta
         const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (personel.hedef?.[t] || 0), 0);
 
         // Manuel atama sayısını düş
-        const manuelSayisi = manuelAtamalar.filter(m =>
-          String(m.personelId) === String(personel.id) && m.gorevAdi === gorevAdi
-        ).length;
+        const manuelSayisi = manuelKotaHaritasi[String(personel.id)]?.[gorevAdi] || 0;
+        const manuelDigerGorevler = ozelGorevler.reduce((s, g) =>
+          s + (g === gorevAdi ? 0 : (manuelKotaHaritasi[String(personel.id)]?.[g] || 0)), 0
+        );
+        const kisiIcinAzamiGorevToplami = Math.max(manuelSayisi, toplamHedef - manuelDigerGorevler);
 
         let atanicakKota;
+        let istenenKota;
 
         if (k.gunTipiDagilimi) {
           // gunTipiDagilimi varsa: sadece belirtilen miktarı göreve ata
           const dagitimToplam = GUN_TIPLERI.reduce((s, t) => s + (k.gunTipiDagilimi[t] || 0), 0);
-          atanicakKota = Math.min(dagitimToplam, gorevKapasite[gorevAdi] + manuelSayisi);
+          istenenKota = Math.min(dagitimToplam, kisiIcinAzamiGorevToplami);
+          atanicakKota = Math.max(manuelSayisi,
+            Math.min(istenenKota, gorevKapasite[gorevAdi] + manuelSayisi)
+          );
           personel.gorevKotalari[gorevAdi] = atanicakKota;
 
-          // Diğer görevlere sıfır ATAMA: SADECE dagitimToplam == toplamHedef ise
-          if (dagitimToplam >= toplamHedef) {
-            ozelGorevler.forEach(g => {
-              if (g !== gorevAdi) {
-                personel.gorevKotalari[g] = 0;
-              }
-            });
+          if (dagitimToplam > kisiIcinAzamiGorevToplami) {
+            console.warn(`[KOTA-ADIM1] ${personel.ad} için ${gorevAdi} dağılımı toplam hedefi aşıyor; manuel diğer görevler korunarak ${dagitimToplam} → ${istenenKota} kırpıldı`);
           }
-          // dagitimToplam < toplamHedef ise kalan diğer görevlere dağıtılabilir (adım 2'de)
         } else {
-          // gunTipiDagilimi null ise: eski davranış — tüm hedef göreve gider
-          atanicakKota = Math.min(toplamHedef, gorevKapasite[gorevAdi] + manuelSayisi);
+          // gunTipiDagilimi null ise: manuel dışındaki kalan hedef bu göreve gider
+          istenenKota = kisiIcinAzamiGorevToplami;
+          atanicakKota = Math.max(manuelSayisi,
+            Math.min(istenenKota, gorevKapasite[gorevAdi] + manuelSayisi)
+          );
           personel.gorevKotalari[gorevAdi] = atanicakKota;
-
-          // Diğer görevlere 0 kota
-          ozelGorevler.forEach(g => {
-            if (g !== gorevAdi) {
-              personel.gorevKotalari[g] = 0;
-            }
-          });
         }
 
         // Kapasiteden düş (manuel hariç)
@@ -4788,9 +5260,7 @@ ta
 
         // TAŞMA GÖREVİ: Ana görev kapasitesi yetmediyse, taşan kotayı taşma görevine ata
         if (k.tasmaGorevi && ozelGorevler.includes(k.tasmaGorevi)) {
-          const istenenKota = k.gunTipiDagilimi
-            ? GUN_TIPLERI.reduce((s, t) => s + (k.gunTipiDagilimi[t] || 0), 0)
-            : toplamHedef;
+          const hedeflenenToplam = typeof istenenKota === 'number' ? istenenKota : kisiIcinAzamiGorevToplami;
           const gercekAtanan = atanicakKota - manuelSayisi; // Manuel hariç gerçek atanan
           const tasanMiktar = Math.max(0, istenenKota - atanicakKota);
 
@@ -4895,6 +5365,12 @@ ta
                 }
               }
 
+              // Havuz kontrolü: Bu görevin havuzu varsa, sadece havuz üyeleri aday olabilir
+              const havuz = gorevHavuzlari[gorevAdi];
+              if (havuz && havuz.length > 0) {
+                if (!havuz.some(id => String(id) === String(p.id))) return false;
+              }
+
               const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
               if (toplamHedef === 0) return false;
 
@@ -4949,6 +5425,27 @@ ta
 
       // 3. BİRLİKTE GRUPLARI İÇİN GÖREV KOTASI EŞİTLEME
       // Birlikte tutulacak kişilerin görev kotalarını eşitle (mazeretler uygunsa)
+      const ozelGorevMeta = {};
+      ozelGorevler.forEach(gorevAdi => {
+        const gorevObj = gorevler.find(g =>
+          (g?.ad && String(g.ad) === String(gorevAdi)) ||
+          (g?.baseName && String(g.baseName) === String(gorevAdi))
+        );
+        ozelGorevMeta[gorevAdi] = {
+          ayriBina: gorevObj?.ayriBina === true,
+          havuzlu: (gorevHavuzlari[gorevAdi] || []).length > 0,
+          kisitli: gorevKisitlamalari.some(k => k.gorevAdi === gorevAdi || k.tasmaGorevi === gorevAdi)
+        };
+      });
+
+      const birlikteEsitlemeMuaf = (personel, gorevAdi) => {
+        const meta = ozelGorevMeta[gorevAdi] || {};
+        const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(personel.id));
+        if (kisitlama) return true;
+        if (meta.ayriBina || meta.havuzlu || meta.kisitli) return true;
+        return false;
+      };
+
       const birlikteKurallarKota = kurallar.filter(k => k.tur === 'birlikte');
       birlikteKurallarKota.forEach(kural => {
         const kisiler = (kural.kisiler || []).map(id =>
@@ -4957,15 +5454,20 @@ ta
 
         if (kisiler.length < 2) return;
 
-        // Kısıtlamalı kişi varsa eşitleme yapma
-        const kisitliVar = kisiler.some(p =>
-          gorevKisitlamalari.some(k => String(k.personelId) === String(p.id))
-        );
-        if (kisitliVar) return;
-
         // Her görev için grup içindeki minimum kotayı bul
         ozelGorevler.forEach(gorevAdi => {
-          const kotalar = kisiler.map(p => p.gorevKotalari?.[gorevAdi] || 0);
+          const uygunKisiler = kisiler.filter(p => !birlikteEsitlemeMuaf(p, gorevAdi));
+          if (uygunKisiler.length < 2) {
+            const muafAdlar = kisiler
+              .filter(p => birlikteEsitlemeMuaf(p, gorevAdi))
+              .map(p => p.ad);
+            if (muafAdlar.length > 0) {
+              console.log(`[KOTA-ADIM3] ${gorevAdi} için birlikte eşitleme atlandı: ${muafAdlar.join(', ')}`);
+            }
+            return;
+          }
+
+          const kotalar = uygunKisiler.map(p => p.gorevKotalari?.[gorevAdi] || 0);
           const minKota = Math.min(...kotalar);
           const maxKota = Math.max(...kotalar);
 
@@ -4973,7 +5475,7 @@ ta
           if (minKota !== maxKota) {
             // Fazla kotaları hesapla (toplam korunacak)
             let fazlaKota = 0;
-            kisiler.forEach(p => {
+            uygunKisiler.forEach(p => {
               const mevcut = p.gorevKotalari?.[gorevAdi] || 0;
               if (mevcut > minKota) {
                 fazlaKota += (mevcut - minKota);
@@ -4981,7 +5483,7 @@ ta
             });
 
             // Herkesi minimum kotaya eşitle ve fazlayı kapasiteye geri ver
-            kisiler.forEach(p => {
+            uygunKisiler.forEach(p => {
               if (!p.gorevKotalari) p.gorevKotalari = {};
               const mevcut = p.gorevKotalari[gorevAdi] || 0;
               const fark = mevcut - minKota;
@@ -4993,12 +5495,17 @@ ta
 
             // Fazla kotaları grup dışındaki kişilere dağıt
             if (fazlaKota > 0) {
-              const grupIds = kisiler.map(p => String(p.id));
+              const grupIds = uygunKisiler.map(p => String(p.id));
               const digerAdaylar = personelListesi
                 .filter(p => {
                   if (grupIds.includes(String(p.id))) return false;
                   const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id));
                   if (kisitlama && kisitlama.gorevAdi !== gorevAdi) return false;
+                  // Havuz kontrolü: Bu görevin havuzu varsa, sadece havuz üyeleri aday olabilir
+                  const havuz = gorevHavuzlari[gorevAdi];
+                  if (havuz && havuz.length > 0) {
+                    if (!havuz.some(id => String(id) === String(p.id))) return false;
+                  }
                   const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
                   const toplamKota = ozelGorevler.reduce((s, g) => s + (p.gorevKotalari?.[g] || 0), 0);
                   return toplamKota < toplamHedef;
@@ -5023,7 +5530,7 @@ ta
               }
             }
 
-            console.log(`Birlikte grup görev kotası eşitlendi: ${kisiler.map(p => p.ad).join(', ')} → ${gorevAdi}: ${minKota}`);
+            console.log(`Birlikte grup görev kotası eşitlendi: ${uygunKisiler.map(p => p.ad).join(', ')} → ${gorevAdi}: ${minKota}`);
           }
         });
       });
@@ -5100,11 +5607,28 @@ ta
         if (acikGorevler.length === 0) break;
 
         let herhangiAtandi5 = false;
+        const step5Debug = [];
 
         for (const gorevAdi of acikGorevler) {
           if (gorevKapasite[gorevAdi] <= 0) continue;
 
           // Toplam kotası < toplam hedefi olan kişileri bul
+          const redNedenleri = {
+            kisitli_diger_gorev: 0,
+            kisitli_tum_hedefi_dolu: 0,
+            havuz_disi: 0,
+            hedef_yok: 0,
+            toplam_hedef_dolu: 0
+          };
+          const redOrnekleri = [];
+          const logRed = (neden, personel, extra = '') => {
+            redNedenleri[neden] = (redNedenleri[neden] || 0) + 1;
+            if (redOrnekleri.length < 8) {
+              redOrnekleri.push(`${personel.ad}: ${neden}${extra ? ` (${extra})` : ''}`);
+            }
+            return false;
+          };
+
           const adaylar5 = personelListesi
             .filter(p => {
               // Kısıtlamalı ve tüm hedefi kısıtlı göreve gidiyorsa atla
@@ -5113,17 +5637,29 @@ ta
                 if (kisitlama.gunTipiDagilimi && kisitlama.gorevAdi !== gorevAdi) {
                   const dagitimToplam = GUN_TIPLERI.reduce((s, t) => s + (kisitlama.gunTipiDagilimi[t] || 0), 0);
                   const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
-                  if (dagitimToplam >= toplamHedef) return false;
+                  if (dagitimToplam >= toplamHedef) {
+                    return logRed('kisitli_tum_hedefi_dolu', p, `${kisitlama.gorevAdi} dagitim=${dagitimToplam}/${toplamHedef}`);
+                  }
                 } else {
-                  return false;
+                  return logRed('kisitli_diger_gorev', p, kisitlama.gorevAdi || 'kisitli');
+                }
+              }
+
+              // Havuz kontrolü: Bu görevin havuzu varsa, sadece havuz üyeleri aday olabilir
+              const havuz = gorevHavuzlari[gorevAdi];
+              if (havuz && havuz.length > 0) {
+                if (!havuz.some(id => String(id) === String(p.id))) {
+                  return logRed('havuz_disi', p);
                 }
               }
 
               const toplamHedef = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
-              if (toplamHedef === 0) return false;
+              if (toplamHedef === 0) return logRed('hedef_yok', p);
 
               const toplamKota = ozelGorevler.reduce((s, g) => s + (p.gorevKotalari?.[g] || 0), 0);
-              if (toplamKota >= toplamHedef) return false;
+              if (toplamKota >= toplamHedef) {
+                return logRed('toplam_hedef_dolu', p, `${toplamKota}/${toplamHedef}`);
+              }
 
               return true;
             })
@@ -5145,10 +5681,20 @@ ta
             toplamKalan5--;
             herhangiAtandi5 = true;
             console.log(`[KOTA-ADIM5] Kalan kapasite dağıtımı: ${adaylar5[0].ad} → ${gorevAdi} (+1)`);
+          } else {
+            step5Debug.push({
+              gorevAdi,
+              kalanKapasite: gorevKapasite[gorevAdi],
+              nedenler: { ...redNedenleri },
+              ornekler: [...redOrnekleri]
+            });
           }
         }
 
         if (!herhangiAtandi5) {
+          if (step5Debug.length > 0) {
+            console.warn('[KOTA-ADIM5] Aday bulunamayan görev analizi:', JSON.parse(JSON.stringify(step5Debug)));
+          }
           console.warn(`[KOTA-ADIM5] Kalan kapasite dağıtılamadı, ${toplamKalan5} slot kaldı`);
           break;
         }
@@ -5715,15 +6261,15 @@ ta
       manuelAtamalar.forEach(m => {
         const p = personelListesi.find(x => String(x.id) === String(m.personelId));
         if (!p) return;
-        if (p.mazeretler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Mazeret', gorev: m.gorevAdi });
-        else if (p.yillikIzinler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Yillik Izin', gorev: m.gorevAdi });
-        else if (p.nobetIzinleri?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Nobet Izni', gorev: m.gorevAdi });
+        if (p.mazeretler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Mazeret', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
+        else if (p.yillikIzinler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Yillik Izin', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
+        else if (p.nobetIzinleri?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Nobet Izni', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
       });
       if (manuelCakismalar.length > 0) {
         html += `
       <div style="background:#7f1d1d44; border:1px solid #dc262644; border-radius:8px; padding:12px; margin-bottom:12px;">
         <div style="font-weight:700; color:#fca5a5; margin-bottom:6px;">&#9888; Manuel Atama Cakismalari (${manuelCakismalar.length})</div>
-        ${manuelCakismalar.map(c => `<div style="color:#fca5a5; padding:3px 0; font-size:12px;">&#8226; ${c.ad}: ${c.gun}. gun ${c.tur.toLowerCase()} + nobet atanmis (${c.gorev})</div>`).join('')}
+        ${manuelCakismalar.map(c => `<div style="color:#fca5a5; padding:3px 0; font-size:12px;">&#8226; ${c.ad}: ${c.gun}. gun ${c.tur.toLowerCase()} + nobet atanmis (${c.gorev})${c.onayli ? ' [onayli]' : ''}</div>`).join('')}
       </div>
     `;
       }
@@ -6410,7 +6956,7 @@ ta
               if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) return false;
               // Ara gün kontrolü (bu gün hariç)
               for (const atananGun of kisiAtama[p.id].gunler) {
-                if (atananGun !== gun && Math.abs(atananGun - gun) < araGun) return false;
+                if (atananGun !== gun && araGunIhlaliVar(atananGun, gun, araGun)) return false;
               }
               return true;
             });
@@ -6545,15 +7091,47 @@ ta
       return String(ad).replace(/ #\d+$/, '').trim();
     }
 
+    function araGunIhlaliVar(gun1, gun2, araGun) {
+      const g1 = parseInt(gun1, 10);
+      const g2 = parseInt(gun2, 10);
+      if (!Number.isFinite(g1) || !Number.isFinite(g2)) return false;
+      const fark = Math.abs(g1 - g2);
+      return fark > 0 && fark <= araGun;
+    }
+
     function manuelAtamaSlotIdxBul(m) {
-      const normalizedManualRole = normalizeGorevAdi(m.gorevAdi || m.gorevBaseAdi);
-      const slotByAd = gorevler.findIndex(g => g.ad === m.gorevAdi);
-      const slotByBase = normalizedManualRole
-        ? gorevler.findIndex(g => normalizeGorevAdi(g.baseName || g.ad) === normalizedManualRole)
-        : -1;
       const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => String(g.id) === String(m.gorevId)) : -1;
       const slotByStored = Number.isFinite(Number(m.gorevIdx)) ? parseInt(m.gorevIdx, 10) : -1;
-      return slotByAd >= 0 ? slotByAd : (slotByBase >= 0 ? slotByBase : (slotById >= 0 ? slotById : slotByStored));
+      if (slotById >= 0) return slotById;
+
+      if (slotByStored >= 0 && slotByStored < gorevler.length) {
+        const storedGorev = gorevler[slotByStored];
+        const storedBase = normalizeGorevAdi(storedGorev.baseName || storedGorev.ad);
+        const manualBase = normalizeGorevAdi(m.gorevBaseAdi || m.gorevAdi);
+        if ((m.gorevAdi && storedGorev.ad === m.gorevAdi) || (manualBase && storedBase === manualBase)) {
+          return slotByStored;
+        }
+      }
+
+      const exactMatches = gorevler
+        .map((g, idx) => ({ g, idx }))
+        .filter(x => x.g.ad === m.gorevAdi)
+        .map(x => x.idx);
+      if (exactMatches.length === 1) return exactMatches[0];
+
+      const normalizedManualRole = normalizeGorevAdi(m.gorevBaseAdi || m.gorevAdi);
+      const baseMatches = normalizedManualRole
+        ? gorevler
+          .map((g, idx) => ({ g, idx }))
+          .filter(x => normalizeGorevAdi(x.g.baseName || x.g.ad) === normalizedManualRole)
+          .map(x => x.idx)
+        : [];
+      if (baseMatches.length === 1) return baseMatches[0];
+
+      if (slotByStored >= 0 && slotByStored < gorevler.length) return slotByStored;
+      if (exactMatches.length > 0) return exactMatches[0];
+      if (baseMatches.length > 0) return baseMatches[0];
+      return -1;
     }
 
     function ortoolsOnKontrolYap(gunSayisi, araGun) {
@@ -6632,7 +7210,11 @@ ta
         perSlotDay[keySD] = (perSlotDay[keySD] || 0) + 1;
 
         if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) {
-          kritik.push(`[M${idx}] ${p.ad}: mazeretli gune manuel atama (${gun}. gun)`);
+          if (m.mazeretOnayli === true) {
+            uyari.push(`[M${idx}] ${p.ad}: mazeretli gune manuel atama (${gun}. gun) [onaylanmis]`);
+          } else {
+            kritik.push(`[M${idx}] ${p.ad}: mazeretli gune manuel atama (${gun}. gun)`);
+          }
         }
 
         const kisitliRole = kisitMap[pid];
@@ -6924,11 +7506,29 @@ ta
         // Kısıtlamalı görev
         const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id));
 
+        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
+        const yillikGerceklesen = {};
+        const gecmisGorevler = {};
+        const gecmis = p.yillikGecmis?.[yil] || {};
+        for (let m = 1; m < ay; m++) {
+          const ayData = gecmis[m] || {};
+          GUN_TIPLERI.forEach(tip => {
+            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (ayData[tip] || 0);
+          });
+          if (ayData.gorevler) {
+            Object.entries(ayData.gorevler).forEach(([gorev, sayi]) => {
+              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
+            });
+          }
+        }
+
         return {
           id: p.id,
           ad: p.ad,
           mazeretler: mazeretler,
-          kisitliGorev: kisitlama?.gorevAdi || null
+          kisitliGorev: kisitlama?.gorevAdi || null,
+          yillikGerceklesen: yillikGerceklesen,
+          gecmisGorevler: gecmisGorevler
         };
       });
 
@@ -6965,10 +7565,8 @@ ta
 
       // Manuel atamaları hazırla
       const manuelData = manuelAtamalar.map(m => {
-        const slotById = m.gorevId !== undefined ? gorevler.findIndex(g => g.id === m.gorevId) : -1;
-        const slotByAd = gorevler.findIndex(g => g.ad === m.gorevAdi);
         const slotByStored = Number.isFinite(Number(m.gorevIdx)) ? parseInt(m.gorevIdx, 10) : null;
-        const slotIdx = slotById >= 0 ? slotById : (slotByAd >= 0 ? slotByAd : slotByStored);
+        const slotIdx = manuelAtamaSlotIdxBul(m);
 
         return {
           personelId: m.personelId,
@@ -6976,7 +7574,9 @@ ta
           gorevId: m.gorevId,
           slotIdx: slotIdx,
           gorevIdx: slotByStored,
-          gorevAdi: m.gorevAdi
+          gorevAdi: m.gorevAdi,
+          gorevBaseAdi: m.gorevBaseAdi || normalizeGorevAdi(m.gorevAdi),
+          mazeretOnayli: m.mazeretOnayli === true
         };
       });
 
@@ -7165,6 +7765,22 @@ ta
 
       // Personel verileri - gün tipi hedefleri + görev kotaları
       const personelVerileri = personelListesi.map(p => {
+        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
+        const yillikGerceklesen = {};
+        const gecmisGorevler = {};
+        const gecmis = p.yillikGecmis?.[yil] || {};
+        for (let m = 1; m < ay; m++) {
+          const mData = gecmis[m] || {};
+          GUN_TIPLERI.forEach(tip => {
+            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (mData[tip] || 0);
+          });
+          if (mData.gorevler) {
+            Object.entries(mData.gorevler).forEach(([gorev, sayi]) => {
+              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
+            });
+          }
+        }
+
         return {
           id: p.id,
           ad: p.ad,
@@ -7178,7 +7794,9 @@ ta
           cmt: p.hedef?.cmt || 0,
           pzr: p.hedef?.pzr || 0,
           // Görev kotaları (AMELİYATHANE, MAVİ KOD, AMATEM vb.)
-          gorevKotalari: p.gorevKotalari || {}
+          gorevKotalari: p.gorevKotalari || {},
+          yillikGerceklesen: yillikGerceklesen,
+          gecmisGorevler: gecmisGorevler
         };
       });
 
@@ -7205,7 +7823,8 @@ ta
           slotIdx: slotIdx,
           gorevAdi: m.gorevAdi,
           gorevBaseAdi: m.gorevBaseAdi || normalizeGorevAdi(m.gorevAdi),
-          gorevIdx: slotByStored
+          gorevIdx: slotByStored,
+          mazeretOnayli: m.mazeretOnayli === true
         };
       });
 
@@ -7456,6 +8075,22 @@ ta
         const yillik = yillikToplamHesapla(p);
         const yillikToplam = GUN_TIPLERI.reduce((s, t) => s + yillik[t], 0);
 
+        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
+        const yillikGerceklesen = {};
+        const gecmisGorevler = {};
+        const gecmis = p.yillikGecmis?.[yil] || {};
+        for (let m = 1; m < ay; m++) {
+          const mData = gecmis[m] || {};
+          GUN_TIPLERI.forEach(tip => {
+            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (mData[tip] || 0);
+          });
+          if (mData.gorevler) {
+            Object.entries(mData.gorevler).forEach(([gorev, sayi]) => {
+              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
+            });
+          }
+        }
+
         return {
           id: p.id,
           ad: p.ad,
@@ -7469,7 +8104,9 @@ ta
           yillikIzinler: p.yillikIzinler || [],
           nobetIzinleri: p.nobetIzinleri || [],
           yillikToplam: yillikToplam,
-          devir: {} // Devir bilgisi (şimdilik boş)
+          devir: {}, // Devir bilgisi (şimdilik boş)
+          yillikGerceklesen: yillikGerceklesen,
+          gecmisGorevler: gecmisGorevler
         };
       });
 
@@ -7500,7 +8137,9 @@ ta
           gun: m.gun,
           gorevId: m.gorevId,      // BUG FIX (A): gorevId ekle
           gorevIdx: m.gorevIdx,    // Geriye uyumluluk
-          gorevAdi: m.gorevAdi     // Alternatif eşleşme için
+          gorevAdi: m.gorevAdi,    // Alternatif eşleşme için
+          gorevBaseAdi: m.gorevBaseAdi || normalizeGorevAdi(m.gorevAdi),
+          mazeretOnayli: m.mazeretOnayli === true
         };
       });
 
@@ -7854,7 +8493,7 @@ ta
 
           let araGunUygun = true;
           for (const atananGun of kisiAtama[p.id].gunler) {
-            if (Math.abs(atananGun - d) < araGun) {
+            if (araGunIhlaliVar(atananGun, d, araGun)) {
               araGunUygun = false;
               break;
             }
@@ -7902,7 +8541,7 @@ ta
 
             // Ara gün kontrolü
             for (const atananGun of kisiAtama[p.id].gunler) {
-              if (Math.abs(atananGun - gun) < araGun) return false;
+              if (araGunIhlaliVar(atananGun, gun, araGun)) return false;
             }
             return true;
           });
