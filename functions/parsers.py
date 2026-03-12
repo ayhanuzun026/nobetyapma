@@ -130,19 +130,7 @@ def parse_greedy_manuel_atamalar(data: Dict, personeller: List[Personel],
         gorev_base_adi = m.get("gorevBaseAdi")
         gorev_idx = None
 
-        if gorev_adi:
-            for idx, g in enumerate(gorev_objs):
-                if g.ad == gorev_adi:
-                    gorev_idx = idx
-                    break
-
-        if gorev_idx is None and gorev_base_adi:
-            for idx, g in enumerate(gorev_objs):
-                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi:
-                    gorev_idx = idx
-                    break
-
-        if gorev_idx is None and gorev_id is not None:
+        if gorev_id is not None:
             for idx, g in enumerate(gorev_objs):
                 if ids_match(g.id, gorev_id):
                     gorev_idx = idx
@@ -153,6 +141,31 @@ def parse_greedy_manuel_atamalar(data: Dict, personeller: List[Personel],
 
         if gorev_idx is None:
             gorev_idx = _safe_int(m.get("gorevIdx"), None)
+
+        if gorev_idx is None and gorev_adi:
+            exact_matches = [idx for idx, g in enumerate(gorev_objs) if g.ad == gorev_adi]
+            if len(exact_matches) == 1:
+                gorev_idx = exact_matches[0]
+
+        if gorev_idx is None and gorev_base_adi:
+            base_matches = [
+                idx for idx, g in enumerate(gorev_objs)
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi
+            ]
+            if len(base_matches) == 1:
+                gorev_idx = base_matches[0]
+
+        if gorev_idx is None and gorev_adi:
+            for idx, g in enumerate(gorev_objs):
+                if g.ad == gorev_adi:
+                    gorev_idx = idx
+                    break
+
+        if gorev_idx is None and gorev_base_adi:
+            for idx, g in enumerate(gorev_objs):
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi:
+                    gorev_idx = idx
+                    break
 
         kisi_id = _resolve_personel_id(p_raw_id, personeller, require_existing=True)
         if kisi_id is None:
@@ -455,8 +468,34 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
         gorev_id = m_data.get("gorevId")
         gorev_adi = m_data.get("gorevAdi")
         gorev_base_adi = m_data.get("gorevBaseAdi")
+        mazeret_onayli = bool(m_data.get("mazeretOnayli", False))
         slot_idx = None
-        if gorev_adi:
+
+        if gorev_id is not None:
+            for g in gorevler:
+                if ids_match(g.id, gorev_id):
+                    slot_idx = g.slot_idx
+                    break
+
+        if slot_idx is None:
+            slot_idx = _safe_int(m_data.get("slotIdx"), None)
+        if slot_idx is None:
+            slot_idx = _safe_int(m_data.get("gorevIdx"), None)
+
+        if slot_idx is None and gorev_adi:
+            exact_matches = [g.slot_idx for g in gorevler if g.ad == gorev_adi]
+            if len(exact_matches) == 1:
+                slot_idx = exact_matches[0]
+
+        if slot_idx is None and gorev_base_adi:
+            base_matches = [
+                g.slot_idx for g in gorevler
+                if g.base_name == gorev_base_adi or g.ad == gorev_base_adi
+            ]
+            if len(base_matches) == 1:
+                slot_idx = base_matches[0]
+
+        if slot_idx is None and gorev_adi:
             for g in gorevler:
                 if g.ad == gorev_adi:
                     slot_idx = g.slot_idx
@@ -468,23 +507,13 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
                     slot_idx = g.slot_idx
                     break
 
-        if slot_idx is None and gorev_id is not None:
-            for g in gorevler:
-                if ids_match(g.id, gorev_id):
-                    slot_idx = g.slot_idx
-                    break
-
-        if slot_idx is None:
-            slot_idx = _safe_int(m_data.get("slotIdx"), None)
-        if slot_idx is None:
-            slot_idx = _safe_int(m_data.get("gorevIdx"), None)
-
         if slot_idx is not None and 0 <= slot_idx < len(gorevler):
             manuel_atamalar.append(SolverAtama(
                 personel_id=p_id,
                 gun=gun,
                 slot_idx=slot_idx,
-                gorev_adi=gorev_adi or ""
+                gorev_adi=gorev_adi or "",
+                mazeret_onayli=mazeret_onayli
             ))
 
     return manuel_atamalar

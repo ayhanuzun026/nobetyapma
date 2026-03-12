@@ -58,6 +58,8 @@ class NobetSolver:
         self.ara_gun = ara_gun
         self.max_sure = max_sure_saniye
         self.slot_sayisi = len(gorevler)
+        self.manual_mazeret_override_days = set()
+        self.manual_mazeret_override_slots = set()
         
         self.gunler_by_tip = {t: [] for t in GUN_TIPLERI}
         for g, tip in gun_tipleri.items():
@@ -120,6 +122,16 @@ class NobetSolver:
             if matched_id is not None and gun1 >= 1 and gun2 >= 1:
                 g1, g2 = min(gun1, gun2), max(gun1, gun2)
                 self.aragun_istisna_set.add((matched_id, g1, g2))
+
+        for m in self.manuel_atamalar:
+            if not getattr(m, "mazeret_onayli", False):
+                continue
+            matched_id = find_matching_id(m.personel_id, self.personeller.keys())
+            if matched_id is None:
+                continue
+            if 1 <= m.gun <= self.gun_sayisi and 0 <= m.slot_idx < self.slot_sayisi:
+                self.manual_mazeret_override_days.add((matched_id, m.gun))
+                self.manual_mazeret_override_slots.add((matched_id, m.gun, m.slot_idx))
         
         # Slot kıtlık ağırlığı: Az slotlu görevler daha önemli
         # max_slot / slot_sayisi formülü ile hesapla
@@ -225,7 +237,7 @@ class NobetSolver:
             per_slot_day[(m.gun, m.slot_idx)] = per_slot_day.get((m.gun, m.slot_idx), 0) + 1
             manual_days.setdefault(pid, []).append(m.gun)
 
-            if m.gun in p.mazeret_gunleri:
+            if m.gun in p.mazeret_gunleri and not getattr(m, "mazeret_onayli", False):
                 conflicts.append({
                     "code": "MAZERET_GUNU",
                     "mesaj": f"{p.ad} mazeretli oldugu gun manuel atama almis",
@@ -363,7 +375,7 @@ class NobetSolver:
         p = self.personeller.get(pid)
         if p is None:
             return False
-        if gun in p.mazeret_gunleri:
+        if gun in p.mazeret_gunleri and (pid, gun, slot_idx) not in self.manual_mazeret_override_slots:
             return False
         if slot_idx < 0 or slot_idx >= self.slot_sayisi:
             return False
@@ -761,20 +773,26 @@ class NobetSolver:
         eliminated_vars = 0
         for p in self.personel_listesi:
             for g in range(1, self.gun_sayisi + 1):
-                if g in p.mazeret_gunleri or p.id in sifir_hedef_ids:
-                    # Mazeret günlerinde veya hedefi 0 ise değişken oluşturma - sabit 0
-                    for s in range(self.slot_sayisi):
+                for s in range(self.slot_sayisi):
+                    has_manual_mazeret_override = (p.id, g, s) in self.manual_mazeret_override_slots
+
+                    if p.id in sifir_hedef_ids:
                         x[p.id, g, s] = model.NewConstant(0)
                         eliminated_vars += 1
-                else:
-                    for s in range(self.slot_sayisi):
-                        # Role-based elimination: impossible by role constraints
-                        if not self._person_can_take_slot_on_day(p.id, s, g, exclusive_roles, birlikte_uye_ids):
-                            x[p.id, g, s] = model.NewConstant(0)
-                            eliminated_vars += 1
-                        else:
-                            x[p.id, g, s] = model.NewBoolVar(f'x_{p.id}_{g}_{s}')
-        
+                        continue
+
+                    if g in p.mazeret_gunleri and not has_manual_mazeret_override:
+                        x[p.id, g, s] = model.NewConstant(0)
+                        eliminated_vars += 1
+                        continue
+
+                    # Role-based elimination: impossible by role constraints
+                    if not self._person_can_take_slot_on_day(p.id, s, g, exclusive_roles, birlikte_uye_ids):
+                        x[p.id, g, s] = model.NewConstant(0)
+                        eliminated_vars += 1
+                    else:
+                        x[p.id, g, s] = model.NewBoolVar(f'x_{p.id}_{g}_{s}')
+
         # H1. Her slot EN FAZLA 1 kişi olsun, boş kalırsa ceza (SOFT)
         bos_slotlar = []
         for g in range(1, self.gun_sayisi + 1):
@@ -796,23 +814,23 @@ class NobetSolver:
             for g in range(1, self.gun_sayisi + 1):
                 model.Add(sum(x[p.id, g, s] for s in range(self.slot_sayisi)) <= 1)
         
-        # H4. Ara gun - Herkes için minimum ara gün (HARD)
-        # Temel kural: En az 1 gün ara (aynı gün veya ardışık gün olmaz)
+        # H4. Ara gun - Herkes icin minimum ara gun (HARD)
+        # Temel kural: En az 1 gun ara (ayni gun veya ardisik gun olmaz)
         for p in self.personel_listesi:
             if p.id in sifir_hedef_ids:
-                continue  # Hedefi 0 olan kişiler zaten eliminate edildi
+                continue  # Hedefi 0 olan kisiler zaten eliminate edildi
             for g1 in range(1, self.gun_sayisi + 1):
-                if g1 in p.mazeret_gunleri:
-                    continue  # Mazeret günü zaten 0, constraint gereksiz
+                if g1 in p.mazeret_gunleri and (p.id, g1) not in self.manual_mazeret_override_days:
+                    continue  # Mazeret gunu zaten 0, constraint gereksiz
                 for g2 in range(g1 + 1, min(g1 + self.ara_gun + 1, self.gun_sayisi + 1)):
-                    if g2 in p.mazeret_gunleri:
-                        continue  # Mazeret günü zaten 0, constraint gereksiz
+                    if g2 in p.mazeret_gunleri and (p.id, g2) not in self.manual_mazeret_override_days:
+                        continue  # Mazeret gunu zaten 0, constraint gereksiz
                     if (p.id, g1, g2) not in self.aragun_istisna_set:
                         model.Add(
                             sum(x[p.id, g1, s] for s in range(self.slot_sayisi)) +
                             sum(x[p.id, g2, s] for s in range(self.slot_sayisi)) <= 1
                         )
-        
+
         # H5. Ayri tutma
         for kural in self.kurallar:
             if kural.tur == 'ayri':
@@ -1136,7 +1154,7 @@ class NobetSolver:
                         hedef_toplam = hedef.get('hedef_toplam', 3)
                         # Hedefin üstüne çıkarsa ceza (fazla tutanı azalt)
                         fazla = model.NewIntVar(0, self.gun_sayisi, f'yillik_fazla_{p.id}')
-                model.Add(toplam_atama - hedef_toplam <= fazla)
+                        model.Add(toplam_atama - hedef_toplam <= fazla)
                         penalties.append(fazla * WEIGHT_YILLIK * min(fazla_ceza, 3))
 
         # S6b. Özel görev yıllık dengeleme - Geçmiş görev dağılımını eşitle

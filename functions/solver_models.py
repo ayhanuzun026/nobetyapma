@@ -58,6 +58,7 @@ class SolverAtama:
     gun: int
     slot_idx: int
     gorev_adi: str = ""
+    mazeret_onayli: bool = False
 
 @dataclass
 class HedefSonuc:
