@@ -1,5 +1,5 @@
 """
-Excel export fonksiyonu — greedy_solver'a bağlı.
+Excel export fonksiyonu — OR-Tools solver sonucuyla calisan versiyon.
 """
 
 from datetime import date
@@ -7,11 +7,28 @@ import io
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+from utils import gun_adi_bul, normalize_id
 
-def create_excel(yil, ay, yonetici):
+
+def create_excel(yil, ay, cizelge, gorevler, personeller, hedefler, gun_sayisi,
+                 resmi_tatiller=None):
+    """OR-Tools sonucundan Excel raporu uretir.
+
+    Args:
+        yil: Yil
+        ay: Ay
+        cizelge: {str(gun): [personel_ad, ...]} formati
+        gorevler: List[SolverGorev]
+        personeller: List[SolverPersonel]
+        hedefler: {personel_id: {hedef_toplam, hedef_tipler, ...}}
+        gun_sayisi: Aydaki gun sayisi
+        resmi_tatiller: Resmi tatil listesi
+    """
+    resmi_tatiller = resmi_tatiller or []
+
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "Nöbet Listesi"
+    ws.title = "Nobet Listesi"
 
     header_font = Font(bold=True, color="FFFFFF")
     header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
@@ -22,8 +39,8 @@ def create_excel(yil, ay, yonetici):
         top=Side(style='thin'), bottom=Side(style='thin')
     )
 
-    headers = ["Tarih", "Gün"]
-    for g in yonetici.gorevler:
+    headers = ["Tarih", "Gun"]
+    for g in gorevler:
         headers.append(g.ad)
     ws.append(headers)
 
@@ -35,17 +52,17 @@ def create_excel(yil, ay, yonetici):
 
     tr_gunler = {
         "Pazar": "Paz", "Cumartesi": "Cmt", "Cuma": "Cum",
-        "Persembe": "Prş", "Pazartesi": "Pzt", "Sali": "Sal", "Carsamba": "Çar"
+        "Persembe": "Prs", "Pazartesi": "Pzt", "Sali": "Sal", "Carsamba": "Car"
     }
 
-    for gun in range(1, yonetici.days_in_month + 1):
+    for gun in range(1, gun_sayisi + 1):
         dt = date(yil, ay, gun)
-        gun_adi_long = yonetici.takvim[gun]
+        gun_adi_long = gun_adi_bul(yil, ay, gun, resmi_tatiller)
         gun_kisa = tr_gunler.get(gun_adi_long, gun_adi_long)
 
         row_data = [dt.strftime("%d.%m.%Y"), gun_kisa]
-        atamalar = yonetici.cizelge[gun]
-        for kisi in atamalar:
+        slotlar = cizelge.get(str(gun), [None] * len(gorevler))
+        for kisi in slotlar:
             row_data.append(kisi if kisi else "-")
         ws.append(row_data)
 
@@ -53,14 +70,24 @@ def create_excel(yil, ay, yonetici):
             for cell in ws[ws.max_row]:
                 cell.fill = weekend_fill
 
-    # İstatistik sayfası
-    ws_stat = wb.create_sheet("İstatistik")
-    ws_stat.append(["Personel", "Hedef", "Gerçekleşen", "Fark", "Kalan H.İçi", "Kalan Pzr", "Mazeret Gün"])
+    # Istatistik sayfasi
+    ws_stat = wb.create_sheet("Istatistik")
+    ws_stat.append(["Personel", "Hedef", "Gerceklesen", "Fark", "Mazeret Gun"])
 
-    for p in yonetici.personeller:
-        gerceklesen = len(p.atanan_gunler)
-        fark = gerceklesen - p.hedef_toplam
-        ws_stat.append([p.ad, p.hedef_toplam, gerceklesen, fark, p.kalan_hici, p.kalan_pzr, p.mazeret_sayisi])
+    kisi_sayac = {}
+    for gun_str, slotlar in cizelge.items():
+        for personel_ad in slotlar:
+            if personel_ad:
+                kisi_sayac[personel_ad] = kisi_sayac.get(personel_ad, 0) + 1
+
+    for p in personeller:
+        pid = normalize_id(p.id)
+        h = hedefler.get(p.id) or hedefler.get(pid) or {}
+        hedef_toplam = h.get('hedef_toplam', 0)
+        gerceklesen = kisi_sayac.get(p.ad, 0)
+        fark = gerceklesen - hedef_toplam
+        mazeret_sayisi = len(p.mazeret_gunleri) if hasattr(p, 'mazeret_gunleri') else 0
+        ws_stat.append([p.ad, hedef_toplam, gerceklesen, fark, mazeret_sayisi])
 
     output = io.BytesIO()
     wb.save(output)

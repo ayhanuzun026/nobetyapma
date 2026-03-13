@@ -14,22 +14,22 @@ from utils import (
     normalize_id,
     _find_duplicate_personel_ids,
 )
-from greedy_solver import NobetYoneticisi
 from excel_export import create_excel
-from solver_models import SolverSonuc
-from ortools_solver import NobetSolver
-from hedef_hesaplayici import HedefHesaplayici
 from kapasite import kapasite_hesapla
 from http_helpers import _cors_preflight, _json_response, _error_response
 from solve_strategy import solve_with_diagnostics
 from firestore_logger import log_session
+from planlayici import (
+    frontend_gorev_kota_override_topla,
+    frontend_kilitli_hedefleri_topla,
+    ortak_plan_uret,
+)
 from parsers import (
     build_takvim, build_gun_tipleri,
-    parse_gorev_tanimlari, parse_greedy_personeller, parse_greedy_manuel_atamalar,
     parse_kapasite_personeller,
     parse_solver_gorevler, parse_solver_gorevler_nobet_coz,
     parse_solver_personeller_hedef, parse_solver_personeller_coz,
-    parse_kurallar, parse_birlikte_kurallar,
+    parse_kurallar,
     parse_gorev_kisitlamalari, parse_manuel_atamalar, parse_gorev_havuzlari,
     parse_kisitlama_istisnalari,
     parse_birlikte_istisnalari, parse_aragun_istisnalari,
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================
-# ENDPOINT: nobet_dagit (Greedy)
+# ENDPOINT: nobet_dagit (OR-Tools hizli onizleme)
 # ============================================
 
 @https_fn.on_request(min_instances=0, max_instances=10, timeout_sec=540, memory=1024)
@@ -56,10 +56,10 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": "Veri gönderilmedi"}, status=400)
 
         try:
-            yil = int(data.get("yil", 2025))
-            ay = int(data.get("ay", 1))
-            gunluk_sayi = int(data.get("gunlukSayi", 5))
-            ara_gun = int(data.get("araGun", 2))
+            yil = _safe_int(data.get("yil", 2025), 2025)
+            ay = _safe_int(data.get("ay", 1), 1)
+            slot_sayisi = _safe_int(data.get("gunlukSayi") or data.get("slotSayisi", 5), 5)
+            ara_gun = _safe_int(data.get("araGun", 2), 2)
         except (ValueError, TypeError) as ve:
             return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
 
@@ -68,49 +68,109 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         if not (2000 <= yil <= 2100):
             return _json_response({"error": f"Geçersiz yıl değeri: {yil}"}, status=400)
 
-        kurallar = data.get("kurallar", [])
-        gorev_kisitlamalari = data.get("gorevKisitlamalari", [])
-
-        gorev_objs = parse_gorev_tanimlari(data, gunluk_sayi)
-        days_in_month = get_days_in_month(yil, ay)
         resmi_tatiller = data.get("resmiTatiller", [])
-        takvim = build_takvim(yil, ay, resmi_tatiller)
-        personeller = parse_greedy_personeller(data)
+        saat_degerleri = data.get("saatDegerleri", None)
+        ignore_manual_conflicts = bool(data.get("ignoreManualConflicts", False))
+
+        gun_sayisi = get_days_in_month(yil, ay)
+        gun_tipleri = build_gun_tipleri(yil, ay, gun_sayisi, resmi_tatiller)
+        gorevler = parse_solver_gorevler_nobet_coz(data, slot_sayisi)
+        personeller = parse_solver_personeller_coz(data, gorevler)
+
+        if not personeller:
+            return _json_response({"error": "Personel listesi bos."}, status=400)
+        if not gorevler:
+            return _json_response({"error": "Gorev listesi bos."}, status=400)
 
         duplicate_ids = _find_duplicate_personel_ids(personeller)
         if duplicate_ids:
             return _json_response({"error": "Duplicate personel ID", "duplicateIds": duplicate_ids}, status=400)
 
-        yonetici = NobetYoneticisi(
-            personeller=personeller, gunluk_sayi=gunluk_sayi, takvim=takvim,
-            ara_gun=ara_gun, days_in_month=days_in_month,
-            gorev_tanimlari=gorev_objs, kurallar=kurallar,
-            gorev_kisitlamalari=gorev_kisitlamalari
+        gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
+        birlikte_istisnalari = parse_birlikte_istisnalari(data, personeller)
+        aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
+        kurallar = parse_kurallar(data, personeller)
+        manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
+
+        birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
+        gorev_kisitlamalari_dict = parse_gorev_kisitlamalari(data, personeller)
+        kilitli_hedefler = frontend_kilitli_hedefleri_topla(personeller)
+        gorev_kota_overrides = frontend_gorev_kota_override_topla(personeller)
+
+        planlama = ortak_plan_uret(
+            gun_sayisi=gun_sayisi,
+            gun_tipleri=gun_tipleri,
+            personeller=personeller,
+            gorevler=gorevler,
+            birlikte_kurallar=birlikte_kurallar,
+            kurallar=kurallar,
+            gorev_kisitlamalari=gorev_kisitlamalari_dict,
+            manuel_atamalar=manuel_atamalar,
+            ara_gun=ara_gun,
+            saat_degerleri=saat_degerleri,
+            kilitli_hedefler=kilitli_hedefler,
+            gorev_kota_overrides=gorev_kota_overrides,
+            kaynak="nobet_dagit_ortak_plan",
+        )
+        hedefler = planlama.get("hedefler_map", {})
+        plan_kontrati = planlama.get("plan_kontrati")
+
+        max_sure = min(_safe_int(data.get("maxSure", 120), 120), 300)
+
+        sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(
+            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+            personeller=personeller, gorevler=gorevler,
+            kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+            kisitlama_istisnalari=kisitlama_istisnalari,
+            birlikte_istisnalari=birlikte_istisnalari,
+            aragun_istisnalari=aragun_istisnalari,
+            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+            ara_gun=ara_gun, max_sure=max_sure,
+            yil=yil, ay=ay, resmi_tatiller=resmi_tatiller, data=data,
+            ignore_manual_conflicts=ignore_manual_conflicts,
+            plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
         )
 
-        parse_greedy_manuel_atamalar(data, personeller, gorev_objs, days_in_month, yonetici)
-        yonetici.dagit()
-
-        sonuc_cizelge = {str(gun): atamalar for gun, atamalar in yonetici.cizelge.items()}
+        cizelge = {}
+        for g in range(1, gun_sayisi + 1):
+            cizelge[str(g)] = [None] * len(gorevler)
+        for atama in sonuc.atamalar:
+            cizelge[str(atama['gun'])][atama['slot_idx']] = atama['personel_ad']
 
         kisi_ozet = []
         eksik_atamalar = []
+        kisi_sayac = {}
+        for atama in sonuc.atamalar:
+            pid = atama.get('personel_id')
+            kisi_sayac[pid] = kisi_sayac.get(pid, 0) + 1
         for p in personeller:
-            gerceklesen = len(p.atanan_gunler)
-            fark = p.hedef_toplam - gerceklesen
+            h = hedefler.get(p.id) or hedefler.get(normalize_id(p.id)) or {}
+            hedef_toplam = h.get('hedef_toplam', 0)
+            gerceklesen = kisi_sayac.get(p.id, 0)
+            fark = hedef_toplam - gerceklesen
+            hedef_tipler = h.get('hedef_tipler', {})
             kisi_ozet.append({
-                "ad": p.ad, "hedef": p.hedef_toplam, "gerceklesen": gerceklesen, "fark": fark,
-                "kalanHici": p.kalan_hici, "kalanPrs": p.kalan_prs, "kalanCum": p.kalan_cum,
-                "kalanCmt": p.kalan_cmt, "kalanPzr": p.kalan_pzr
+                "ad": p.ad, "hedef": hedef_toplam, "gerceklesen": gerceklesen, "fark": fark,
+                "kalanHici": hedef_tipler.get('hici', 0),
+                "kalanPrs": hedef_tipler.get('prs', 0),
+                "kalanCum": hedef_tipler.get('cum', 0),
+                "kalanCmt": hedef_tipler.get('cmt', 0),
+                "kalanPzr": hedef_tipler.get('pzr', 0),
             })
             if fark > 0:
                 eksik_atamalar.append({
                     "personel": p.ad, "eksik": fark,
-                    "detay": {"hici": p.kalan_hici, "prs": p.kalan_prs, "cum": p.kalan_cum,
-                              "cmt": p.kalan_cmt, "pzr": p.kalan_pzr}
+                    "detay": {
+                        "hici": hedef_tipler.get('hici', 0),
+                        "prs": hedef_tipler.get('prs', 0),
+                        "cum": hedef_tipler.get('cum', 0),
+                        "cmt": hedef_tipler.get('cmt', 0),
+                        "pzr": hedef_tipler.get('pzr', 0),
+                    }
                 })
 
-        excel_file = create_excel(yil, ay, yonetici)
+        excel_file = create_excel(yil, ay, cizelge, gorevler, personeller, hedefler, gun_sayisi)
         bucket = storage.bucket()
         dosya_adi = f"sonuclar/nobet_{yil}_{ay}_{int(datetime.now().timestamp())}.xlsx"
         blob = bucket.blob(dosya_adi)
@@ -121,9 +181,11 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         signed_url = blob.generate_signed_url(version="v4", expiration=timedelta(hours=1), method="GET")
 
         cikti = {
-            "basari": True, "excelUrl": signed_url, "cizelge": sonuc_cizelge,
+            "basari": sonuc.basarili, "excelUrl": signed_url, "cizelge": cizelge,
             "kisiOzet": kisi_ozet, "eksikAtamalar": eksik_atamalar,
-            "gorevler": [g.ad for g in yonetici.gorevler]
+            "gorevler": [g.ad for g in gorevler],
+            "istatistikler": sonuc.istatistikler,
+            "mesaj": sonuc.mesaj, "sureMs": sonuc.sure_ms,
         }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_dagit", data, cikti, sure_ms,
@@ -235,26 +297,35 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": "Duplicate personel ID", "duplicateIds": duplicate_ids}, status=400)
 
         gorevler = parse_solver_gorevler(data)
-        birlikte_kurallar = parse_birlikte_kurallar(data, personeller)
+        kurallar = parse_kurallar(data, personeller)
+        birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari = parse_gorev_kisitlamalari(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
 
-        hesaplayici = HedefHesaplayici(
-            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
-            personeller=personeller, gorevler=gorevler,
+        planlama = ortak_plan_uret(
+            gun_sayisi=gun_sayisi,
+            gun_tipleri=gun_tipleri,
+            personeller=personeller,
+            gorevler=gorevler,
             birlikte_kurallar=birlikte_kurallar,
+            kurallar=kurallar,
             gorev_kisitlamalari=gorev_kisitlamalari,
             manuel_atamalar=manuel_atamalar,
-            ara_gun=ara_gun, saat_degerleri=saat_degerleri,
-            kilitli_hedefler=kilitli_hedefler
+            ara_gun=ara_gun,
+            saat_degerleri=saat_degerleri,
+            kilitli_hedefler=kilitli_hedefler,
+            kaynak="nobet_hedef_hesapla_ortak_plan",
         )
-        sonuc = hesaplayici.hesapla()
+        sonuc = planlama.get("hedef_sonuc")
+        plan_kontrati = planlama.get("plan_kontrati")
 
         cikti = {
             "basari": sonuc.basarili, "hedefler": sonuc.hedefler,
             "birlikteAtamalar": sonuc.birlikte_atamalar,
             "gorevKotalari": sonuc.gorev_kotalari,
-            "istatistikler": sonuc.istatistikler, "mesaj": sonuc.mesaj
+            "istatistikler": sonuc.istatistikler, "mesaj": sonuc.mesaj,
+            "planKontrati": plan_kontrati.to_dict() if plan_kontrati else None,
+            "planHash": plan_kontrati.plan_hash if plan_kontrati else None,
         }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_hedef_hesapla", data, cikti, sure_ms,
@@ -334,68 +405,64 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         kurallar = parse_kurallar(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
 
-        # Hedefleri hazırla
-        frontend_hedefleri_var = any(
-            p.hedef_tipler and sum(p.hedef_tipler.values()) > 0
-            for p in personeller
-        )
+        # Ortak planlayici: preview ve final ayni plani kullansin
+        birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
+        gorev_kisitlamalari_dict = parse_gorev_kisitlamalari(data, personeller)
+        kilitli_hedefler = frontend_kilitli_hedefleri_topla(personeller)
+        gorev_kota_overrides = frontend_gorev_kota_override_topla(personeller)
 
-        if frontend_hedefleri_var:
-            hedefler = {}
-            for p in personeller:
-                hedefler[p.id] = {
-                    'hedef_toplam': sum(p.hedef_tipler.values()) if p.hedef_tipler else 0,
-                    'hedef_tipler': p.hedef_tipler or {},
-                    'gorev_kotalari': p.gorev_kotalari or {}
-                }
-        else:
-            birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
-            gorev_kisitlamalari_dict = parse_gorev_kisitlamalari(data, personeller)
-
-            hesaplayici = HedefHesaplayici(
-                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
-                personeller=personeller, gorevler=gorevler,
+        try:
+            planlama = ortak_plan_uret(
+                gun_sayisi=gun_sayisi,
+                gun_tipleri=gun_tipleri,
+                personeller=personeller,
+                gorevler=gorevler,
                 birlikte_kurallar=birlikte_kurallar,
+                kurallar=kurallar,
                 gorev_kisitlamalari=gorev_kisitlamalari_dict,
                 manuel_atamalar=manuel_atamalar,
-                ara_gun=ara_gun, saat_degerleri=saat_degerleri
+                ara_gun=ara_gun,
+                saat_degerleri=saat_degerleri,
+                kilitli_hedefler=kilitli_hedefler,
+                gorev_kota_overrides=gorev_kota_overrides,
             )
-            try:
-                hesap_sonuc = hesaplayici.hesapla()
-            except Exception as hedef_err:
-                logger.exception("Hedef hesaplama basarisiz: %s", hedef_err)
-                sure_ms = int((time.time() - t0) * 1000)
-                log_session("nobet_coz", data, None, sure_ms, hata=hedef_err,
-                            frontend_loglar=data.get("frontendLoglar"))
-                return _json_response({
-                    "error": f"Hedef hesaplama sırasında hata oluştu: {str(hedef_err)[:200]}",
-                    "error_type": "HedefHesaplamaHatasi"
-                }, status=500)
-            if not hesap_sonuc or not hesap_sonuc.hedefler:
-                logger.error("Hedef hesaplama sonucu boş döndü")
-                return _json_response({
-                    "error": "Hedef hesaplama sonucu boş. Personel ve görev verilerini kontrol edin.",
-                    "error_type": "HedefBos"
-                }, status=400)
-            hedefler = {}
-            for h in hesap_sonuc.hedefler:
-                pid = normalize_id(h.get('id'))
-                hedef_tipler = h.get('hedef_tipler', {})
-                if not hedef_tipler:
-                    hedef_tipler = {
-                        'hici': h.get('hedef_hici', 0),
-                        'prs': h.get('hedef_prs', 0),
-                        'cum': h.get('hedef_cum', 0),
-                        'cmt': h.get('hedef_cmt', 0),
-                        'pzr': h.get('hedef_pzr', 0),
-                    }
-                hedefler[pid] = {
-                    'hedef_toplam': h.get('hedef_toplam', 0),
-                    'hedef_tipler': hedef_tipler,
-                    'gorev_kotalari': h.get('gorev_kotalari', {})
-                }
+        except Exception as hedef_err:
+            logger.exception("Ortak planlama basarisiz: %s", hedef_err)
+            sure_ms = int((time.time() - t0) * 1000)
+            log_session("nobet_coz", data, None, sure_ms, hata=hedef_err,
+                        frontend_loglar=data.get("frontendLoglar"))
+            return _json_response({
+                "error": f"Planlama sirasinda hata olustu: {str(hedef_err)[:200]}",
+                "error_type": "PlanlamaHatasi"
+            }, status=500)
 
-        # Çözüm stratejisi
+        hesap_sonuc = planlama.get("hedef_sonuc")
+        plan_kontrati = planlama.get("plan_kontrati")
+        hedefler = planlama.get("hedefler_map", {})
+        if not hesap_sonuc or not hedefler:
+            logger.error("Ortak planlama sonucu bos dondu")
+            return _json_response({
+                "error": "Planlama sonucu bos. Personel ve gorev verilerini kontrol edin.",
+                "error_type": "PlanBos"
+            }, status=400)
+
+        def _plan_yenileyici(yeni_ara_gun: int):
+            return ortak_plan_uret(
+                gun_sayisi=gun_sayisi,
+                gun_tipleri=gun_tipleri,
+                personeller=personeller,
+                gorevler=gorevler,
+                birlikte_kurallar=birlikte_kurallar,
+                kurallar=kurallar,
+                gorev_kisitlamalari=gorev_kisitlamalari_dict,
+                manuel_atamalar=manuel_atamalar,
+                ara_gun=yeni_ara_gun,
+                saat_degerleri=saat_degerleri,
+                kilitli_hedefler=kilitli_hedefler,
+                gorev_kota_overrides=gorev_kota_overrides,
+                kaynak=(plan_kontrati.kaynak if plan_kontrati else None),
+            )
+
         sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
             personeller=personeller, gorevler=gorevler,
@@ -406,7 +473,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
             ara_gun=ara_gun, max_sure=max_sure,
             yil=yil, ay=ay, resmi_tatiller=resmi_tatiller, data=data,
-            ignore_manual_conflicts=ignore_manual_conflicts
+            ignore_manual_conflicts=ignore_manual_conflicts,
+            plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
+            plan_yenileyici=_plan_yenileyici,
         )
 
         # Çizelge formatına dönüştür
@@ -458,7 +527,15 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             "istatistikler": sonuc.istatistikler,
             "kaliteUyarilari": kalite_uyarilari,
             "teshis": teshis_bilgisi,
-            "gorevler": [g.ad for g in gorevler], "hedefDebug": hedef_debug
+            "gorevler": [g.ad for g in gorevler], "hedefDebug": hedef_debug,
+            "planKontrati": (
+                (sonuc.istatistikler.get("plan", {}) or {}).get("kontrat")
+                if isinstance(sonuc.istatistikler, dict) else None
+            ) or (plan_kontrati.to_dict() if plan_kontrati else None),
+            "planHash": (
+                (sonuc.istatistikler.get("plan", {}) or {}).get("plan_hash")
+                if isinstance(sonuc.istatistikler, dict) else None
+            ) or (plan_kontrati.plan_hash if plan_kontrati else None),
         }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_coz", data, cikti, sure_ms,

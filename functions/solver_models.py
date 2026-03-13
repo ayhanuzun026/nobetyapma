@@ -3,8 +3,8 @@ Solver veri modelleri ve ağırlık sabitleri.
 Tüm solver modülleri tarafından paylaşılan dataclass'lar burada tanımlıdır.
 """
 
-from dataclasses import dataclass, field
-from typing import List, Dict, Set, Optional
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Optional, Set
 
 
 # ============================================
@@ -76,3 +76,34 @@ class SolverSonuc:
     istatistikler: Dict
     sure_ms: int
     mesaj: str
+
+
+@dataclass
+class PlanPersonel:
+    personel_id: int
+    ad: str
+    hedef_toplam: int = 0
+    hedef_tipler: Dict[str, int] = field(default_factory=dict)
+    gorev_kotalari: Dict[str, int] = field(default_factory=dict)
+    kilitli: bool = False
+    kaynak: str = "otomatik"
+    kilitli_gunler: List[int] = field(default_factory=list)
+    onerilen_gunler: List[int] = field(default_factory=list)
+    onerilen_rol_gunleri: Dict[int, str] = field(default_factory=dict)
+    gun_iskeleti_uygulanabilir: bool = False
+
+
+@dataclass
+class PlanKontrati:
+    plan_hash: str
+    kaynak: str
+    olusturulan_ara_gun: int
+    hedefler: Dict[int, Dict] = field(default_factory=dict)
+    personeller: List[PlanPersonel] = field(default_factory=list)
+    meta: Dict[str, Any] = field(default_factory=dict)
+    uygulama: Dict[str, Any] = field(default_factory=dict)
+    istatistikler: Dict[str, Any] = field(default_factory=dict)
+    gun_iskeleti: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)

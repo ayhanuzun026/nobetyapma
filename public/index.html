@@ -1365,6 +1365,35 @@ ta
           </table>
         </div>
       </div>
+
+      <!-- Plan Uyumu Sapma Raporu -->
+      <div id="plan-uyumu-container" class="mt-3" style="display:none;">
+        <div class="rule-box" style="background:#f0fdf4; border-left:4px solid #16a34a;">
+          <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" onclick="document.getElementById('plan-uyumu-detay').style.display = document.getElementById('plan-uyumu-detay').style.display === 'none' ? 'block' : 'none'">
+            <h4 style="margin:0;">📊 Plan Uyumu Detayı</h4>
+            <span id="plan-uyumu-ozet-badge" class="badge badge-ok"></span>
+          </div>
+          <div id="plan-uyumu-detay" style="display:none; margin-top:12px;">
+            <div id="plan-uyumu-meta" class="help mb-3"></div>
+            <div class="table-responsive">
+              <table class="custom-table" id="plan-uyumu-table">
+                <thead>
+                  <tr>
+                    <th>Personel</th>
+                    <th>Plan</th>
+                    <th>Gerçek</th>
+                    <th>Fark</th>
+                    <th>Tip Sapması</th>
+                    <th>Gün Sapması</th>
+                    <th>Durum</th>
+                  </tr>
+                </thead>
+                <tbody id="plan-uyumu-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="footer">
@@ -9359,6 +9388,84 @@ ta
       <td><span class="badge ${durumClass}">${durum}</span></td>
     `;
         kisiOzetTbody.appendChild(tr);
+      });
+
+      // Plan Uyumu Sapma Raporu
+      planUyumuGuncelle();
+    }
+
+    function planUyumuGuncelle() {
+      const container = document.getElementById('plan-uyumu-container');
+      const sapmaData = window.ortoolsIstatistikler?.plan_sapmalari;
+      if (!sapmaData || !sapmaData.detay || sapmaData.detay.length === 0) {
+        container.style.display = 'none';
+        return;
+      }
+      container.style.display = 'block';
+
+      const tamUyumlu = sapmaData.tam_uyumlu_personel || 0;
+      const toplamKisi = sapmaData.personel_sayisi || 0;
+      const uyumOrani = toplamKisi > 0 ? Math.round((tamUyumlu / toplamKisi) * 100) : 0;
+
+      const ozetBadge = document.getElementById('plan-uyumu-ozet-badge');
+      const badgeClass = uyumOrani >= 80 ? 'badge-ok' : (uyumOrani >= 50 ? 'badge-warn' : 'badge-bad');
+      ozetBadge.className = `badge ${badgeClass}`;
+      ozetBadge.textContent = `${tamUyumlu}/${toplamKisi} tam uyumlu (%${uyumOrani})`;
+
+      const gunIskeleti = window.ortoolsIstatistikler?.gun_iskeleti || {};
+      const esdegerGecis = gunIskeleti.esdeger_gecis_sayisi || 0;
+
+      let metaHtml = '';
+      if (sapmaData.plan_hash) {
+        metaHtml += `<span class="badge" style="background:#e0e7ff; color:#3730a3; margin-right:4px;">Plan: ${sapmaData.plan_hash}</span>`;
+      }
+      if (sapmaData.kaynak) {
+        metaHtml += `<span class="badge" style="background:#fef3c7; color:#92400e; margin-right:4px;">${sapmaData.kaynak}</span>`;
+      }
+      if (esdegerGecis > 0) {
+        metaHtml += `<span class="badge badge-warn" style="margin-right:4px;">Eşdeğer geçiş: ${esdegerGecis}</span>`;
+      }
+      metaHtml += `<span class="badge" style="background:#f0fdf4; color:#166534;">Toplam sapma: ${sapmaData.toplam_sapma || 0} | Tip: ${sapmaData.tip_sapma_toplami || 0} | Görev: ${sapmaData.gorev_sapma_toplami || 0} | Gün: ${sapmaData.gun_sapma_toplami || 0}</span>`;
+      document.getElementById('plan-uyumu-meta').innerHTML = metaHtml;
+
+      const tbody = document.getElementById('plan-uyumu-tbody');
+      tbody.innerHTML = '';
+
+      const tipLabels = { hici: 'Hİ', prs: 'Prş', cum: 'Cum', cmt: 'Cmt', pzr: 'Pzr' };
+
+      sapmaData.detay.forEach(d => {
+        const tr = document.createElement('tr');
+        const fark = d.toplam_fark || 0;
+        const farkClass = fark === 0 ? 'badge-ok' : (Math.abs(fark) <= 1 ? 'badge-warn' : 'badge-bad');
+
+        const tipSapmaStr = Object.entries(d.tip_sapmalari || {})
+          .map(([t, v]) => `${tipLabels[t] || t}:${v > 0 ? '+' : ''}${v}`)
+          .join(', ') || '-';
+
+        const eksikGunler = (d.eksik_gunler || []).length;
+        const ekstraGunler = (d.ekstra_gunler || []).length;
+        let gunSapmaStr = '-';
+        if (eksikGunler > 0 || ekstraGunler > 0) {
+          const parts = [];
+          if (eksikGunler > 0) parts.push(`-${eksikGunler} gün`);
+          if (ekstraGunler > 0) parts.push(`+${ekstraGunler} gün`);
+          gunSapmaStr = parts.join(', ');
+        }
+
+        const tamUyum = fark === 0 && Object.keys(d.tip_sapmalari || {}).length === 0 && eksikGunler === 0 && ekstraGunler === 0;
+        const durumIcon = tamUyum ? '✅' : '⚠️';
+        const durumClass = tamUyum ? 'badge-ok' : 'badge-warn';
+
+        tr.innerHTML = `
+          <td style="font-weight:700;">${d.personel_ad || '?'}</td>
+          <td>${d.hedef_toplam || 0}</td>
+          <td>${d.gercek_toplam || 0}</td>
+          <td><span class="badge ${farkClass}">${fark > 0 ? '+' : ''}${fark}</span></td>
+          <td style="font-size:12px;">${tipSapmaStr}</td>
+          <td style="font-size:12px;">${gunSapmaStr}</td>
+          <td><span class="badge ${durumClass}">${durumIcon}</span></td>
+        `;
+        tbody.appendChild(tr);
       });
     }
 

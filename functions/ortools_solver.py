@@ -9,6 +9,7 @@ import math
 
 from utils import (
     GUN_TIPLERI, SAAT_DEGERLERI,
+    ESDEGER_TIP_GRUPLARI,
     find_matching_id,
     birlikte_aile_anahtari,
     BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
@@ -46,6 +47,7 @@ class NobetSolver:
                  aragun_istisnalari: List[Dict] = None,
                  manuel_atamalar: List[SolverAtama] = None,
                  hedefler: Dict[int, Dict] = None,
+                 plan_kontrati: Dict = None,
                  ara_gun: int = 2, max_sure_saniye: int = 300,
                  ignore_manual_conflicts: bool = False):
         self.gun_sayisi = gun_sayisi
@@ -58,6 +60,8 @@ class NobetSolver:
         self.kisitlama_istisnalari = kisitlama_istisnalari or []
         self.manuel_atamalar = manuel_atamalar or []
         self.hedefler = hedefler or {}
+        self.plan_kontrati = plan_kontrati or {}
+        self.plan_uygulama = self.plan_kontrati.get("uygulama", {}) if isinstance(self.plan_kontrati, dict) else {}
         self.ara_gun = ara_gun
         self.max_sure = max_sure_saniye
         self.slot_sayisi = len(gorevler)
@@ -160,6 +164,194 @@ class NobetSolver:
                 if g not in p.mazeret_gunleri:
                     p.musait_tipler[tip] += 1
                     p.musait_gunler.add(g)
+
+    def _plan_aktif_mi(self) -> bool:
+        if not isinstance(self.plan_kontrati, dict) or not self.plan_kontrati:
+            return False
+        return bool(self.plan_uygulama.get("yetkili", True))
+
+    def _plan_penalty_multiplier(self) -> int:
+        if not self._plan_aktif_mi():
+            return 1
+        try:
+            return max(1, int(self.plan_uygulama.get("plan_sadakat_agirlik_carpani", 1)))
+        except (TypeError, ValueError):
+            return 1
+
+    def _plan_toplam_hard_mi(self) -> bool:
+        return self._plan_aktif_mi() and bool(self.plan_uygulama.get("toplam_hard", True))
+
+    def _plan_gun_tipi_toleransi(self) -> int:
+        if not self._plan_aktif_mi():
+            return 0
+        try:
+            return max(0, int(self.plan_uygulama.get("gun_tipi_toleransi", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _plan_gorev_kota_toleransi(self) -> int:
+        if not self._plan_aktif_mi():
+            return 0
+        try:
+            return max(0, int(self.plan_uygulama.get("gorev_kota_toleransi", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _gun_iskeleti_aktif_mi(self) -> bool:
+        if not self._plan_aktif_mi():
+            return False
+        gun_iskeleti = self.plan_kontrati.get("gun_iskeleti", {}) if isinstance(self.plan_kontrati, dict) else {}
+        return bool(self.plan_uygulama.get("gun_iskeleti_kullan", False) and gun_iskeleti.get("aktif"))
+
+    def _gun_iskeleti_toleransi(self) -> int:
+        if not self._gun_iskeleti_aktif_mi():
+            return 999999
+        try:
+            return max(0, int(self.plan_uygulama.get("gun_iskeleti_toleransi", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _gun_iskeleti_hard_mi(self) -> bool:
+        return self._gun_iskeleti_aktif_mi() and bool(self.plan_uygulama.get("gun_iskeleti_hard", False))
+
+    def _gun_iskeleti_agirligi(self) -> int:
+        if not self._gun_iskeleti_aktif_mi():
+            return 0
+        try:
+            return max(1, int(self.plan_uygulama.get("gun_iskeleti_sadakat_agirligi", 2500)))
+        except (TypeError, ValueError):
+            return 2500
+
+    def _planlanan_gunler_map(self) -> Dict[int, Set[int]]:
+        gun_iskeleti = self.plan_kontrati.get("gun_iskeleti", {}) if isinstance(self.plan_kontrati, dict) else {}
+        raw = gun_iskeleti.get("personel_gunleri", {})
+        normalized = {}
+        for raw_pid, gunler in (raw or {}).items():
+            pid = find_matching_id(raw_pid, self.personeller.keys())
+            if pid is None:
+                continue
+            normalized[pid] = {
+                int(gun) for gun in (gunler or [])
+                if isinstance(gun, int) or str(gun).isdigit()
+            }
+        return normalized
+
+    def _planlanan_rol_gunleri_map(self) -> Dict[int, Dict[int, str]]:
+        """Plan kontratından kişi-gün-rol mapping'ini al."""
+        if not isinstance(self.plan_kontrati, dict):
+            return {}
+        personeller_raw = self.plan_kontrati.get("personeller", [])
+        if not personeller_raw:
+            return {}
+        result: Dict[int, Dict[int, str]] = {}
+        for pp in personeller_raw:
+            if isinstance(pp, dict):
+                raw_pid = pp.get("personel_id")
+                rol_gunleri = pp.get("onerilen_rol_gunleri", {})
+            else:
+                raw_pid = getattr(pp, "personel_id", None)
+                rol_gunleri = getattr(pp, "onerilen_rol_gunleri", {})
+            if not rol_gunleri:
+                continue
+            pid = find_matching_id(raw_pid, self.personeller.keys())
+            if pid is None:
+                continue
+            gun_rol_map: Dict[int, str] = {}
+            for gun_key, rol in (rol_gunleri or {}).items():
+                try:
+                    gun_rol_map[int(gun_key)] = str(rol)
+                except (ValueError, TypeError):
+                    continue
+            if gun_rol_map:
+                result[pid] = gun_rol_map
+        return result
+
+    def _gun_iskeleti_uygulanabilir_ids(self) -> Set[int]:
+        if not self._gun_iskeleti_aktif_mi():
+            return set()
+        gun_iskeleti = self.plan_kontrati.get("gun_iskeleti", {})
+        ids = set()
+        for raw_pid in gun_iskeleti.get("uygulanabilir_personeller", []) or []:
+            pid = find_matching_id(raw_pid, self.personeller.keys())
+            if pid is not None:
+                ids.add(pid)
+        return ids
+
+    def _hesapla_plan_sapmalari(self, kisi_sayac: Dict[int, Dict], atamalar: List[Dict]) -> Dict:
+        if not self._plan_aktif_mi():
+            return {}
+
+        detay = []
+        tam_uyumlu = 0
+        toplam_sapma = 0
+        tip_sapma_toplami = 0
+        gorev_sapma_toplami = 0
+        gun_sapma_toplami = 0
+        planlanan_gunler_map = self._planlanan_gunler_map()
+        actual_days_map: Dict[int, Set[int]] = {p.id: set() for p in self.personel_listesi}
+        for atama in atamalar or []:
+            pid = atama.get('personel_id')
+            gun = atama.get('gun')
+            if pid in actual_days_map and gun is not None:
+                actual_days_map[pid].add(int(gun))
+        for p in self.personel_listesi:
+            hedef = self.hedefler.get(p.id, {})
+            if not hedef:
+                continue
+            gercek = kisi_sayac.get(p.id, {'toplam': 0, 'tipler': {}, 'gorevler': {}})
+            hedef_tipler = hedef.get('hedef_tipler', {}) or {}
+            hedef_gorevler = hedef.get('gorev_kotalari', {}) or {}
+
+            tip_sapmalari = {}
+            for tip in GUN_TIPLERI:
+                fark = gercek['tipler'].get(tip, 0) - hedef_tipler.get(tip, 0)
+                if fark != 0:
+                    tip_sapmalari[tip] = fark
+                    tip_sapma_toplami += abs(fark)
+
+            gorev_sapmalari = {}
+            for gorev_adi in set(hedef_gorevler.keys()):
+                fark = gercek['gorevler'].get(gorev_adi, 0) - hedef_gorevler.get(gorev_adi, 0)
+                if fark != 0:
+                    gorev_sapmalari[gorev_adi] = fark
+                    gorev_sapma_toplami += abs(fark)
+
+            toplam_fark = gercek['toplam'] - hedef.get('hedef_toplam', 0)
+            toplam_sapma += abs(toplam_fark)
+            planlanan_gunler = set(planlanan_gunler_map.get(p.id, set()))
+            gercek_gunler = set(actual_days_map.get(p.id, set()))
+            eksik_gunler = sorted(planlanan_gunler - gercek_gunler)
+            ekstra_gunler = sorted(gercek_gunler - planlanan_gunler)
+            gun_sapma_toplami += len(eksik_gunler) + len(ekstra_gunler)
+
+            if toplam_fark == 0 and not tip_sapmalari and not gorev_sapmalari and not eksik_gunler and not ekstra_gunler:
+                tam_uyumlu += 1
+
+            detay.append({
+                'personel_id': p.id,
+                'personel_ad': p.ad,
+                'hedef_toplam': hedef.get('hedef_toplam', 0),
+                'gercek_toplam': gercek['toplam'],
+                'toplam_fark': toplam_fark,
+                'tip_sapmalari': tip_sapmalari,
+                'gorev_sapmalari': gorev_sapmalari,
+                'planlanan_gunler': sorted(planlanan_gunler),
+                'gercek_gunler': sorted(gercek_gunler),
+                'eksik_gunler': eksik_gunler,
+                'ekstra_gunler': ekstra_gunler,
+            })
+
+        return {
+            'plan_hash': self.plan_kontrati.get('plan_hash'),
+            'kaynak': self.plan_kontrati.get('kaynak'),
+            'tam_uyumlu_personel': tam_uyumlu,
+            'personel_sayisi': len(detay),
+            'toplam_sapma': toplam_sapma,
+            'tip_sapma_toplami': tip_sapma_toplami,
+            'gorev_sapma_toplami': gorev_sapma_toplami,
+            'gun_sapma_toplami': gun_sapma_toplami,
+            'detay': detay,
+        }
 
     def _role_name_by_slot(self, slot_idx: int) -> str:
         if slot_idx < 0 or slot_idx >= len(self.gorevler):
@@ -915,9 +1107,11 @@ class NobetSolver:
         # (Değişken eliminasyonu aşamasında mazeret günleri NewConstant(0) yapıldı)
         
         # H3. Ayni gun tek slot
+        kisi_gun_atama = {}
         for p in self.personel_listesi:
             for g in range(1, self.gun_sayisi + 1):
-                model.Add(sum(x[p.id, g, s] for s in range(self.slot_sayisi)) <= 1)
+                kisi_gun_atama[p.id, g] = sum(x[p.id, g, s] for s in range(self.slot_sayisi))
+                model.Add(kisi_gun_atama[p.id, g] <= 1)
         
         # H4. Ara gun - Herkes icin minimum ara gun (HARD)
         # Temel kural: En az 1 gun ara (ayni gun veya ardisik gun olmaz)
@@ -1082,30 +1276,109 @@ class NobetSolver:
                 for g in range(1, self.gun_sayisi + 1):
                     for s in role_slotlari:
                         model.Add(x[p.id, g, s] == 0)
+
+        # H10b. Kişi-gün iskeleti — ön planlı günlere sadakat
+        if self._gun_iskeleti_aktif_mi():
+            planlanan_gunler_map = self._planlanan_gunler_map()
+            uygulanabilir_ids = self._gun_iskeleti_uygulanabilir_ids()
+            gun_tol = self._gun_iskeleti_toleransi()
+            for p in self.personel_listesi:
+                if p.id not in uygulanabilir_ids:
+                    continue
+                planlanan_gunler = sorted(planlanan_gunler_map.get(p.id, set()))
+                if not planlanan_gunler:
+                    continue
+                hedef = self.hedefler.get(p.id, {})
+                hedef_toplam = int(hedef.get('hedef_toplam', len(planlanan_gunler)) or 0)
+                planlanan_hesap = sum(kisi_gun_atama[p.id, g] for g in planlanan_gunler)
+                alt_sinir = max(0, min(len(planlanan_gunler), hedef_toplam) - gun_tol)
+                model.Add(planlanan_hesap >= alt_sinir)
         
         # SOFT CONSTRAINTS
         penalties = []
-        
+
         # S0. Boş slot cezası (çok büyük - boş bırakmamaya çalışsın)
         WEIGHT_BOS_SLOT = 100000
         for bos_mu in bos_slotlar:
             penalties.append(bos_mu * WEIGHT_BOS_SLOT)
+
+        # S0b. Gün iskeleti sadakati
+        if self._gun_iskeleti_aktif_mi():
+            planlanan_gunler_map = self._planlanan_gunler_map()
+            uygulanabilir_ids = self._gun_iskeleti_uygulanabilir_ids()
+            gun_tol = self._gun_iskeleti_toleransi()
+            gun_iskeleti_agirligi = self._gun_iskeleti_agirligi()
+            for p in self.personel_listesi:
+                if p.id not in uygulanabilir_ids:
+                    continue
+                planlanan_gunler = sorted(planlanan_gunler_map.get(p.id, set()))
+                if not planlanan_gunler:
+                    continue
+                hedef = self.hedefler.get(p.id, {})
+                hedef_toplam = int(hedef.get('hedef_toplam', len(planlanan_gunler)) or 0)
+                planlanan_hesap = sum(kisi_gun_atama[p.id, g] for g in planlanan_gunler)
+                eksik_plan = model.NewIntVar(0, hedef_toplam, f'gun_iskeleti_eksik_{p.id}')
+                model.Add(eksik_plan >= hedef_toplam - planlanan_hesap)
+                if self._gun_iskeleti_hard_mi():
+                    model.Add(eksik_plan <= gun_tol)
+                penalties.append(eksik_plan * gun_iskeleti_agirligi)
+
+        # S0c. Rol iskeleti sadakati — planlanan role uygun slot'a atama tercih edilir
+        WEIGHT_ROL_ISKELET = WEIGHT_GUN_TIPI // 3  # ~165, düşük soft ceza
+        if self._gun_iskeleti_aktif_mi():
+            rol_gunleri_map = self._planlanan_rol_gunleri_map()
+            uygulanabilir_ids = self._gun_iskeleti_uygulanabilir_ids()
+            for p in self.personel_listesi:
+                if p.id not in uygulanabilir_ids:
+                    continue
+                kisi_rol_gunleri = rol_gunleri_map.get(p.id, {})
+                if not kisi_rol_gunleri:
+                    continue
+                for gun, planlanan_rol in kisi_rol_gunleri.items():
+                    if gun < 1 or gun > self.gun_sayisi:
+                        continue
+                    planlanan_slotlar = self.role_slots.get(planlanan_rol, [])
+                    if not planlanan_slotlar:
+                        continue
+                    # Planlanan role uygun slot'lara atanmışsa 0 ceza,
+                    # farklı slot'a atanmışsa düşük ceza
+                    farkli_slot_atama = sum(
+                        x[p.id, gun, s]
+                        for s in range(self.slot_sayisi)
+                        if s not in planlanan_slotlar
+                    )
+                    if isinstance(farkli_slot_atama, int) and farkli_slot_atama == 0:
+                        continue
+                    sapma = model.NewIntVar(0, self.slot_sayisi, f'rol_iskelet_sapma_{p.id}_{gun}')
+                    model.Add(sapma >= farkli_slot_atama)
+                    penalties.append(sapma * WEIGHT_ROL_ISKELET)
+
+        plan_penalty_multiplier = self._plan_penalty_multiplier()
+        plan_gun_tipi_tol = self._plan_gun_tipi_toleransi()
+        plan_gorev_tol = self._plan_gorev_kota_toleransi()
         
-        # S1. Gorev kotalari — HARD üst sınır + SOFT eksik cezası
+        # S1. Gorev kotalari ? HARD ust sinir + SOFT eksik cezasi
         for p in self.personel_listesi:
             hedef = self.hedefler.get(p.id, {})
             gorev_kotalari = hedef.get('gorev_kotalari', {})
             for role, slot_list in self.role_slots.items():
-                kota = gorev_kotalari.get(role, 0)
                 role_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in slot_list)
-                if kota > 0:
-                    # HARD: Kotayı aşamaz
+                if role not in gorev_kotalari:
+                    continue
+
+                kota = gorev_kotalari.get(role, 0)
+                if self._plan_aktif_mi():
+                    ust_sinir = kota if kota <= 0 else kota + plan_gorev_tol
+                    model.Add(role_atama <= ust_sinir)
+                    if kota > 0:
+                        model.Add(role_atama >= max(0, kota - plan_gorev_tol))
+                elif kota > 0:
                     model.Add(role_atama <= kota)
-                # SOFT: Eksik kalırsa ceza
+
                 eksik = model.NewIntVar(0, self.gun_sayisi * len(slot_list), f'role_eksik_{p.id}_{role}')
                 model.Add(eksik >= kota - role_atama)
                 slot_agirlik = self.slot_agirliklari.get(role, 1)
-                penalties.append(eksik * WEIGHT_GOREV_KOTA * slot_agirlik)
+                penalties.append(eksik * WEIGHT_GOREV_KOTA * slot_agirlik * plan_penalty_multiplier)
         
         # S2. Gun tipi kotalari
         for p in self.personel_listesi:
@@ -1116,24 +1389,76 @@ class NobetSolver:
                 tip_gunleri = self.gunler_by_tip.get(tip, [])
                 if tip_gunleri:
                     tip_atama = sum(x[p.id, g, s] for g in tip_gunleri for s in range(self.slot_sayisi))
+                    if self._plan_aktif_mi():
+                        model.Add(tip_atama <= tip_hedef + plan_gun_tipi_tol)
+                        model.Add(tip_atama >= max(0, tip_hedef - plan_gun_tipi_tol))
                     fazla = model.NewIntVar(0, len(tip_gunleri) * self.slot_sayisi, f'tip_fazla_{p.id}_{tip}')
                     eksik = model.NewIntVar(0, len(tip_gunleri) * self.slot_sayisi, f'tip_eksik_{p.id}_{tip}')
                     model.Add(tip_atama - tip_hedef == fazla - eksik)
-                    penalties.append(fazla * WEIGHT_GUN_TIPI)
-                    penalties.append(eksik * WEIGHT_GUN_TIPI)
+                    penalties.append(fazla * WEIGHT_GUN_TIPI * plan_penalty_multiplier)
+                    penalties.append(eksik * WEIGHT_GUN_TIPI * plan_penalty_multiplier)
+
+        # S2b. Esdeger gun tipi gecisi — asil tip doluysa esdeger tipe kayabilir
+        # Esdeger grup toplami (asil + esdeger) hedef toplamini karsilasin.
+        # Ceza: asil tipte kalmak 0 ceza, esdeger tipe gecmek dusuk ceza.
+        WEIGHT_ESDEGER_GECIS = WEIGHT_GUN_TIPI // 4  # Esdeger gecis cezasi dusuk
+        esdeger_isle = set()
+        for p in self.personel_listesi:
+            hedef = self.hedefler.get(p.id, {})
+            hedef_tipler = hedef.get('hedef_tipler', {})
+            for tip in GUN_TIPLERI:
+                tip_hedef = hedef_tipler.get(tip, 0)
+                if tip_hedef <= 0:
+                    continue
+                esdegerler = ESDEGER_TIP_GRUPLARI.get(tip, [])
+                if not esdegerler:
+                    continue
+                # Tekrar islemeyi onle (hici<->prs gibi ciftler)
+                pair_key = (p.id, tuple(sorted([tip] + esdegerler)))
+                if pair_key in esdeger_isle:
+                    continue
+                esdeger_isle.add(pair_key)
+
+                # Asil tip + esdeger tiplerin toplam atamasi
+                tum_gunler = list(self.gunler_by_tip.get(tip, []))
+                for es_tip in esdegerler:
+                    tum_gunler.extend(self.gunler_by_tip.get(es_tip, []))
+                if not tum_gunler:
+                    continue
+
+                # Grup toplam hedefi
+                grup_hedef = tip_hedef
+                for es_tip in esdegerler:
+                    grup_hedef += hedef_tipler.get(es_tip, 0)
+
+                grup_atama = sum(x[p.id, g, s] for g in tum_gunler for s in range(self.slot_sayisi))
+                grup_eksik = model.NewIntVar(0, self.gun_sayisi, f'esdeger_eksik_{p.id}_{tip}')
+                model.Add(grup_eksik >= grup_hedef - grup_atama)
+                # Esdeger grup toplami hedefi karsilamiyorsa ceza
+                penalties.append(grup_eksik * WEIGHT_ESDEGER_GECIS * plan_penalty_multiplier)
+
+                # Asil tipten esdeger tipe kayan miktar icin dusuk ek ceza
+                asil_gunler = self.gunler_by_tip.get(tip, [])
+                if asil_gunler:
+                    asil_atama = sum(x[p.id, g, s] for g in asil_gunler for s in range(self.slot_sayisi))
+                    kayma = model.NewIntVar(0, self.gun_sayisi, f'esdeger_kayma_{p.id}_{tip}')
+                    model.Add(kayma >= tip_hedef - asil_atama)
+                    # Kayma olursa cok dusuk ceza — tercih asil tipte kalmak
+                    penalties.append(kayma * (WEIGHT_ESDEGER_GECIS // 2))
         
-        # S3. Toplam hedef — HARD üst sınır + SOFT eksik cezası
+        # S3. Toplam hedef ? yetkili planda hard esitlik + SOFT eksik cezasi
         for p in self.personel_listesi:
             hedef = self.hedefler.get(p.id, {})
             hedef_toplam = hedef.get('hedef_toplam', 3)
             toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
-            # HARD: Hedefi aşamaz
-            model.Add(toplam_atama <= hedef_toplam)
-            # SOFT: Eksik kalırsa ceza
+            if self._plan_toplam_hard_mi():
+                model.Add(toplam_atama == hedef_toplam)
+            else:
+                model.Add(toplam_atama <= hedef_toplam)
             eksik = model.NewIntVar(0, self.gun_sayisi, f'toplam_eksik_{p.id}')
             model.Add(eksik >= hedef_toplam - toplam_atama)
-            penalties.append(eksik * WEIGHT_TOPLAM)
-        
+            penalties.append(eksik * WEIGHT_TOPLAM * plan_penalty_multiplier)
+
         # S4. Birlikte tutma (SOFT CONSTRAINT)
         # 1) Biri atanıp diğeri boş kalmasın (eski aynı-gün tercihi korunur)
         # 2) Aynı gün çalışıyorlarsa aynı/eşdeğer görev ailesinde olsunlar.
@@ -1264,93 +1589,94 @@ class NobetSolver:
                         model.Add(pencere_nobet >= 1).OnlyEnforceIf(buyuk_bosluk.Not())
                         penalties.append(buyuk_bosluk * WEIGHT_HOMOJEN * 5)
         
-        # S6. Yıllık dengeleme - Geçmiş ay eksiklerini bu ay tamamla
-        # yillik_gerceklesen: {'hici': 10, 'cmt': 5, ...} şeklinde geçmiş ayların toplamı
-        for p in self.personel_listesi:
-            if hasattr(p, 'yillik_gerceklesen') and p.yillik_gerceklesen:
-                # Yıllık ortalamayı hesapla
-                yillik_toplam = sum(p.yillik_gerceklesen.values())
-                
-                # Tüm personelin yıllık ortalaması
-                tum_yillik = [sum(pp.yillik_gerceklesen.values()) 
-                              for pp in self.personel_listesi 
-                              if hasattr(pp, 'yillik_gerceklesen') and pp.yillik_gerceklesen]
-                
-                if tum_yillik:
-                    ortalama = sum(tum_yillik) / len(tum_yillik)
-                    fark = yillik_toplam - ortalama
+        if not self._plan_aktif_mi():
+            # S6. Yıllık dengeleme - Geçmiş ay eksiklerini bu ay tamamla
+            # yillik_gerceklesen: {'hici': 10, 'cmt': 5, ...} şeklinde geçmiş ayların toplamı
+            for p in self.personel_listesi:
+                if hasattr(p, 'yillik_gerceklesen') and p.yillik_gerceklesen:
+                    # Yıllık ortalamayı hesapla
+                    yillik_toplam = sum(p.yillik_gerceklesen.values())
                     
-                    # Ortalamanın altındaysa daha fazla nöbet alsın
-                    # Ortalamanın üstündeyse daha az nöbet alsın
-                    if fark < -1:  # Ortalamadan 1+ eksik
-                        # Bu kişiye daha fazla nöbet ver (eksik sayısı kadar bonus)
-                        eksik_bonus = int(abs(fark))
-                        toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
-                        hedef = self.hedefler.get(p.id, {})
-                        hedef_toplam = hedef.get('hedef_toplam', 3)
-                        # Hedefin altında kalırsa ceza (eksik olanı doldur)
-                        eksik = model.NewIntVar(0, self.gun_sayisi, f'yillik_eksik_{p.id}')
-                        model.Add(eksik >= hedef_toplam - toplam_atama)
-                        penalties.append(eksik * WEIGHT_YILLIK * min(eksik_bonus, 3))
-                    elif fark > 1:  # Ortalamadan 1+ fazla
-                        # Bu kişiye daha az nöbet ver
-                        fazla_ceza = int(fark)
-                        toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
-                        hedef = self.hedefler.get(p.id, {})
-                        hedef_toplam = hedef.get('hedef_toplam', 3)
-                        # Hedefin üstüne çıkarsa ceza (fazla tutanı azalt)
-                        fazla = model.NewIntVar(0, self.gun_sayisi, f'yillik_fazla_{p.id}')
-                        model.Add(toplam_atama - hedef_toplam <= fazla)
-                        penalties.append(fazla * WEIGHT_YILLIK * min(fazla_ceza, 3))
+                    # Tüm personelin yıllık ortalaması
+                    tum_yillik = [sum(pp.yillik_gerceklesen.values()) 
+                                  for pp in self.personel_listesi 
+                                  if hasattr(pp, 'yillik_gerceklesen') and pp.yillik_gerceklesen]
+                    
+                    if tum_yillik:
+                        ortalama = sum(tum_yillik) / len(tum_yillik)
+                        fark = yillik_toplam - ortalama
+                        
+                        # Ortalamanın altındaysa daha fazla nöbet alsın
+                        # Ortalamanın üstündeyse daha az nöbet alsın
+                        if fark < -1:  # Ortalamadan 1+ eksik
+                            # Bu kişiye daha fazla nöbet ver (eksik sayısı kadar bonus)
+                            eksik_bonus = int(abs(fark))
+                            toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
+                            hedef = self.hedefler.get(p.id, {})
+                            hedef_toplam = hedef.get('hedef_toplam', 3)
+                            # Hedefin altında kalırsa ceza (eksik olanı doldur)
+                            eksik = model.NewIntVar(0, self.gun_sayisi, f'yillik_eksik_{p.id}')
+                            model.Add(eksik >= hedef_toplam - toplam_atama)
+                            penalties.append(eksik * WEIGHT_YILLIK * min(eksik_bonus, 3))
+                        elif fark > 1:  # Ortalamadan 1+ fazla
+                            # Bu kişiye daha az nöbet ver
+                            fazla_ceza = int(fark)
+                            toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
+                            hedef = self.hedefler.get(p.id, {})
+                            hedef_toplam = hedef.get('hedef_toplam', 3)
+                            # Hedefin üstüne çıkarsa ceza (fazla tutanı azalt)
+                            fazla = model.NewIntVar(0, self.gun_sayisi, f'yillik_fazla_{p.id}')
+                            model.Add(toplam_atama - hedef_toplam <= fazla)
+                            penalties.append(fazla * WEIGHT_YILLIK * min(fazla_ceza, 3))
 
-        # S6b. Özel görev yıllık dengeleme - Geçmiş görev dağılımını eşitle
-        gecmis_gorev_olan = [p for p in self.personel_listesi
-                            if hasattr(p, 'gecmis_gorevler') and p.gecmis_gorevler]
-        if len(gecmis_gorev_olan) >= 2:
-            # Tüm özel görev isimlerini topla
-            tum_gorev_isimleri = set()
-            for p in gecmis_gorev_olan:
-                tum_gorev_isimleri.update(p.gecmis_gorevler.keys())
+            # S6b. Özel görev yıllık dengeleme - Geçmiş görev dağılımını eşitle
+            gecmis_gorev_olan = [p for p in self.personel_listesi
+                                if hasattr(p, 'gecmis_gorevler') and p.gecmis_gorevler]
+            if len(gecmis_gorev_olan) >= 2:
+                # Tüm özel görev isimlerini topla
+                tum_gorev_isimleri = set()
+                for p in gecmis_gorev_olan:
+                    tum_gorev_isimleri.update(p.gecmis_gorevler.keys())
 
-            for gorev_adi in tum_gorev_isimleri:
-                # Bu görev için geçmişi olan personelleri bul
-                gecmis_list = [(p, p.gecmis_gorevler.get(gorev_adi, 0))
-                               for p in gecmis_gorev_olan
-                               if p.gecmis_gorevler.get(gorev_adi, 0) > 0 or
-                               p.gorev_kotalari.get(gorev_adi, 0) > 0]
-                if len(gecmis_list) < 2:
-                    continue
-
-                ort = sum(g for _, g in gecmis_list) / len(gecmis_list)
-
-                # Görev slotlarını bul
-                gorev_slotlari = [s for s, g in enumerate(self.gorevler)
-                                  if g.base_name == gorev_adi or g.ad == gorev_adi]
-                if not gorev_slotlari:
-                    continue
-
-                for p, gecmis in gecmis_list:
-                    fark = gecmis - ort
-                    if abs(fark) <= 1:
+                for gorev_adi in tum_gorev_isimleri:
+                    # Bu görev için geçmişi olan personelleri bul
+                    gecmis_list = [(p, p.gecmis_gorevler.get(gorev_adi, 0))
+                                   for p in gecmis_gorev_olan
+                                   if p.gecmis_gorevler.get(gorev_adi, 0) > 0 or
+                                   p.gorev_kotalari.get(gorev_adi, 0) > 0]
+                    if len(gecmis_list) < 2:
                         continue
 
-                    # Bu kişinin bu görevdeki atama sayısı
-                    gorev_atama = sum(x[p.id, g, s]
-                                      for g in range(1, self.gun_sayisi + 1)
-                                      for s in gorev_slotlari)
+                    ort = sum(g for _, g in gecmis_list) / len(gecmis_list)
 
-                    if fark < -1:  # Ortalamadan eksik - daha fazla ata
-                        eksik_bonus = min(int(abs(fark)), 3)
-                        kota = p.gorev_kotalari.get(gorev_adi, 1)
-                        eksik_var = model.NewIntVar(0, self.gun_sayisi, f'gorev_yillik_eksik_{p.id}_{gorev_adi}')
-                        model.Add(kota - gorev_atama <= eksik_var)
-                        penalties.append(eksik_var * WEIGHT_YILLIK * eksik_bonus)
-                    elif fark > 1:  # Ortalamadan fazla - daha az ata
-                        fazla_ceza = min(int(fark), 3)
-                        kota = p.gorev_kotalari.get(gorev_adi, 1)
-                        fazla_var = model.NewIntVar(0, self.gun_sayisi, f'gorev_yillik_fazla_{p.id}_{gorev_adi}')
-                        model.Add(gorev_atama - kota <= fazla_var)
-                        penalties.append(fazla_var * WEIGHT_YILLIK * fazla_ceza)
+                    # Görev slotlarını bul
+                    gorev_slotlari = [s for s, g in enumerate(self.gorevler)
+                                      if g.base_name == gorev_adi or g.ad == gorev_adi]
+                    if not gorev_slotlari:
+                        continue
+
+                    for p, gecmis in gecmis_list:
+                        fark = gecmis - ort
+                        if abs(fark) <= 1:
+                            continue
+
+                        # Bu kişinin bu görevdeki atama sayısı
+                        gorev_atama = sum(x[p.id, g, s]
+                                          for g in range(1, self.gun_sayisi + 1)
+                                          for s in gorev_slotlari)
+
+                        if fark < -1:  # Ortalamadan eksik - daha fazla ata
+                            eksik_bonus = min(int(abs(fark)), 3)
+                            kota = p.gorev_kotalari.get(gorev_adi, 1)
+                            eksik_var = model.NewIntVar(0, self.gun_sayisi, f'gorev_yillik_eksik_{p.id}_{gorev_adi}')
+                            model.Add(kota - gorev_atama <= eksik_var)
+                            penalties.append(eksik_var * WEIGHT_YILLIK * eksik_bonus)
+                        elif fark > 1:  # Ortalamadan fazla - daha az ata
+                            fazla_ceza = min(int(fark), 3)
+                            kota = p.gorev_kotalari.get(gorev_adi, 1)
+                            fazla_var = model.NewIntVar(0, self.gun_sayisi, f'gorev_yillik_fazla_{p.id}_{gorev_adi}')
+                            model.Add(gorev_atama - kota <= fazla_var)
+                            penalties.append(fazla_var * WEIGHT_YILLIK * fazla_ceza)
 
         # S7. Panik faktörü - Sıkışık kişilere öncelik
         # Mazereti çok olan ve hedefi yüksek olan kişilere öncelik ver
@@ -1412,6 +1738,7 @@ class NobetSolver:
             min_nobet = min(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
             max_nobet = max(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
             birlikte_grup_istatistikleri = self._hesapla_birlikte_grup_istatistikleri(atamalar)
+            plan_sapmalari = self._hesapla_plan_sapmalari(kisi_sayac, atamalar)
             
             # DEBUG: Kısıtlamalı personel bilgileri
             kisitli_debug = []
@@ -1445,6 +1772,16 @@ class NobetSolver:
                 'solver_wall_time_s': round(solver.WallTime(), 3),
                 'eliminated_vars': eliminated_vars,
                 'kalite_skoru': self._hesapla_kalite_skoru(kisi_sayac, atamalar, toplam_atama, toplam_slot),
+                'plan': {
+                    'aktif': self._plan_aktif_mi(),
+                    'plan_hash': self.plan_kontrati.get('plan_hash'),
+                    'kaynak': self.plan_kontrati.get('kaynak'),
+                    'olusturulan_ara_gun': self.plan_kontrati.get('olusturulan_ara_gun'),
+                    'uygulama': self.plan_uygulama,
+                    'gun_iskeleti_aktif': self._gun_iskeleti_aktif_mi(),
+                    'gun_iskeleti_uygulanabilir_ids': sorted(self._gun_iskeleti_uygulanabilir_ids()),
+                } if self.plan_kontrati else {},
+                'plan_sapmalari': plan_sapmalari,
                 'birlikte_gruplar': birlikte_grup_istatistikleri,
                 'birlikte_esdeger_aile': BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
                 'kisi_detay': [
@@ -1488,6 +1825,15 @@ class NobetSolver:
                                   'status': normalized_status,
                                   'solver_status_name': status_name,
                                   'ara_gun': self.ara_gun,
+                                  'plan': {
+                                      'aktif': self._plan_aktif_mi(),
+                                      'plan_hash': self.plan_kontrati.get('plan_hash'),
+                                      'kaynak': self.plan_kontrati.get('kaynak'),
+                                      'olusturulan_ara_gun': self.plan_kontrati.get('olusturulan_ara_gun'),
+                                      'uygulama': self.plan_uygulama,
+                                      'gun_iskeleti_aktif': self._gun_iskeleti_aktif_mi(),
+                                      'gun_iskeleti_uygulanabilir_ids': sorted(self._gun_iskeleti_uygulanabilir_ids()),
+                                  } if self.plan_kontrati else {},
                                   'ara_gun_1_dene': ara_gun_1_dene,
                                   'solver_num_conflicts': solver.NumConflicts(),
                                   'solver_num_branches': solver.NumBranches(),

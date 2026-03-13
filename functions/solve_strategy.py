@@ -18,7 +18,7 @@ def solve_with_diagnostics(
     gorev_havuzlari, kisitlama_istisnalari, birlikte_istisnalari,
     aragun_istisnalari, manuel_atamalar, hedefler,
     ara_gun, max_sure, yil, ay, resmi_tatiller, data,
-    ignore_manual_conflicts=False
+    ignore_manual_conflicts=False, plan_kontrati=None, plan_yenileyici=None
 ):
     """Akıllı teşhis tabanlı çözüm stratejisi.
 
@@ -36,6 +36,32 @@ def solve_with_diagnostics(
 
     sonuc = None
     kullanilan_ara_gun = ara_gun
+    aktif_plan_kontrati = plan_kontrati
+
+    def _plani_yenile(yeni_ara_gun):
+        nonlocal hedefler, aktif_plan_kontrati
+        if not plan_yenileyici:
+            return
+        try:
+            yeni_plan = plan_yenileyici(yeni_ara_gun)
+        except Exception as exc:
+            logger.exception("Plan yenileme basarisiz (ara_gun=%s): %s", yeni_ara_gun, exc)
+            tani_mesajlari.append(
+                f"Plan kontrati yenilenemedi (ara_gun={yeni_ara_gun}): {str(exc)[:120]}"
+            )
+            return
+        if not yeni_plan or not yeni_plan.get('basarili'):
+            return
+        yeni_hedefler = yeni_plan.get('hedefler_map')
+        if yeni_hedefler:
+            hedefler = yeni_hedefler
+        pk = yeni_plan.get('plan_kontrati')
+        if pk is not None:
+            aktif_plan_kontrati = pk.to_dict() if hasattr(pk, 'to_dict') else pk
+        tani_mesajlari.append(
+            f"Plan kontrati yenilendi (ara_gun={yeni_ara_gun}, plan_hash="
+            f"{(aktif_plan_kontrati or {}).get('plan_hash', 'yok')})"
+        )
 
     # ---- FAZ 1: Orijinal parametrelerle çöz ----
     logger.info("Faz 1: Orijinal parametrelerle cozum baslatiliyor (sure=%ds)", sure_ilk)
@@ -48,7 +74,8 @@ def solve_with_diagnostics(
         aragun_istisnalari=aragun_istisnalari,
         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
         ara_gun=ara_gun, max_sure_saniye=sure_ilk,
-        ignore_manual_conflicts=ignore_manual_conflicts
+        ignore_manual_conflicts=ignore_manual_conflicts,
+        plan_kontrati=aktif_plan_kontrati,
     )
     sonuc = solver.coz()
     logger.info("Faz 1 sonuc: basarili=%s, sure=%dms",
@@ -117,6 +144,7 @@ def solve_with_diagnostics(
                 for dene_ara_gun in range(aktif_ara_gun, 0, -1):
                     if dene_ara_gun == aktif_ara_gun and aktif_ara_gun == ara_gun:
                         continue  # İlk denemede zaten denendi
+                    _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                         personeller=personeller, gorevler=aktif_gorevler,
@@ -126,7 +154,8 @@ def solve_with_diagnostics(
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                         ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
-                        ignore_manual_conflicts=ignore_manual_conflicts
+                        ignore_manual_conflicts=ignore_manual_conflicts,
+                        plan_kontrati=aktif_plan_kontrati,
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -141,6 +170,7 @@ def solve_with_diagnostics(
             elif aksiyon == 'exclusive_gevset':
                 aktif_gorevler = gorevler_noexcl
                 for dene_ara_gun in range(aktif_ara_gun, 0, -1):
+                    _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                         personeller=personeller, gorevler=aktif_gorevler,
@@ -150,7 +180,8 @@ def solve_with_diagnostics(
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                         ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
-                        ignore_manual_conflicts=ignore_manual_conflicts
+                        ignore_manual_conflicts=ignore_manual_conflicts,
+                        plan_kontrati=aktif_plan_kontrati,
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -165,6 +196,7 @@ def solve_with_diagnostics(
                 # Ayrı kurallarını kaldır (birlikte korunur)
                 aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'ayri']
                 for dene_ara_gun in range(aktif_ara_gun, 0, -1):
+                    _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                         personeller=personeller, gorevler=aktif_gorevler,
@@ -174,7 +206,8 @@ def solve_with_diagnostics(
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                         ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
-                        ignore_manual_conflicts=ignore_manual_conflicts
+                        ignore_manual_conflicts=ignore_manual_conflicts,
+                        plan_kontrati=aktif_plan_kontrati,
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -188,6 +221,7 @@ def solve_with_diagnostics(
             elif aksiyon == 'birlikte_kaldir':
                 aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'birlikte']
                 for dene_ara_gun in range(aktif_ara_gun, 0, -1):
+                    _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                         personeller=personeller, gorevler=aktif_gorevler,
@@ -197,7 +231,8 @@ def solve_with_diagnostics(
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                         ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
-                        ignore_manual_conflicts=ignore_manual_conflicts
+                        ignore_manual_conflicts=ignore_manual_conflicts,
+                        plan_kontrati=aktif_plan_kontrati,
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -212,6 +247,7 @@ def solve_with_diagnostics(
                 aktif_kurallar = []
                 aktif_havuzlar = {}
                 for dene_ara_gun in range(max(1, aktif_ara_gun), 0, -1):
+                    _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
                         personeller=personeller, gorevler=gorevler_noexcl,
@@ -221,7 +257,8 @@ def solve_with_diagnostics(
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
                         ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
-                        ignore_manual_conflicts=ignore_manual_conflicts
+                        ignore_manual_conflicts=ignore_manual_conflicts,
+                        plan_kontrati=aktif_plan_kontrati,
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -250,6 +287,15 @@ def solve_with_diagnostics(
         basarili=sonuc.basarili, atamalar=sonuc.atamalar,
         istatistikler={
             **sonuc.istatistikler,
+            'plan': {
+                **((sonuc.istatistikler or {}).get('plan', {}) if isinstance(sonuc.istatistikler, dict) else {}),
+                **({
+                    'plan_hash': (aktif_plan_kontrati or {}).get('plan_hash'),
+                    'kaynak': (aktif_plan_kontrati or {}).get('kaynak'),
+                    'olusturulan_ara_gun': (aktif_plan_kontrati or {}).get('olusturulan_ara_gun'),
+                    'kontrat': aktif_plan_kontrati,
+                } if aktif_plan_kontrati else {}),
+            },
             'tani_mesajlari': tani_mesajlari,
             'gevsetme_bilgisi': gevsetme_bilgisi,
             'teshis': teshis_bilgisi,

@@ -19,6 +19,17 @@ SAAT_DEGERLERI = {
     'hici': 8, 'prs': 8, 'cum': 16, 'cmt': 24, 'pzr': 16
 }
 
+# Saat bazli esdeger gun tipi gecis haritasi.
+# Ayni saat degerine sahip tipler birbirine gecebilir (soft fallback).
+# hici <-> prs (8s), cum <-> pzr (16s), cmt -> cum/pzr (24s son care)
+ESDEGER_TIP_GRUPLARI = {
+    'hici': ['prs'],
+    'prs':  ['hici'],
+    'cum':  ['pzr'],
+    'pzr':  ['cum'],
+    'cmt':  ['cum', 'pzr'],
+}
+
 BIRLIKTE_ESDEGER_GOREV_AILESI = frozenset({
     'AMELIYATHANE',
     'MAVI KOD',
