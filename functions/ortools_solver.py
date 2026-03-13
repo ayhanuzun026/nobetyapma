@@ -388,7 +388,17 @@ class NobetSolver:
         # H7: Kısıtlı görev kuralı (taşma görevi de izinli)
         if p.kisitli_gorev and role != p.kisitli_gorev and role not in allowed_exception_roles:
             if not (p.tasma_gorevi and role == p.tasma_gorevi):
-                return False
+                # ignore_manual_conflicts: manuel atanan slotları engelleme
+                if self.ignore_manual_conflicts:
+                    is_manual_slot = any(
+                        find_matching_id(m.personel_id, self.personeller.keys()) == pid
+                        and m.slot_idx == slot_idx and m.gun == gun
+                        for m in self.manuel_atamalar
+                    )
+                    if not is_manual_slot:
+                        return False
+                else:
+                    return False
 
         # H8: Exclusive görevler (havuzsuz) - taşma görevi olan kişi de girebilir
         if role in exclusive_roles and p.kisitli_gorev != role and p.tasma_gorevi != role:
@@ -885,6 +895,13 @@ class NobetSolver:
                             if gorev.ad == p.tasma_gorevi or gorev.base_name == p.tasma_gorevi:
                                 tasma_slotlar.append(s)
                     izinli_slotlar = list(set(izinli_slotlar + tasma_slotlar))
+                # ignore_manual_conflicts: manuel atanan görevlerin slotlarını da izinli yap
+                if self.ignore_manual_conflicts:
+                    for m in self.manuel_atamalar:
+                        matched_pid = find_matching_id(m.personel_id, self.personeller.keys())
+                        if matched_pid == p.id and 0 <= m.slot_idx < self.slot_sayisi:
+                            if m.slot_idx not in izinli_slotlar:
+                                izinli_slotlar.append(m.slot_idx)
                 for g in range(1, self.gun_sayisi + 1):
                     allowed_exception_roles = self.kisitlama_istisna_map.get((p.id, g), set())
                     for s in range(self.slot_sayisi):
