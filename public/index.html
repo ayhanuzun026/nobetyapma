@@ -7859,7 +7859,7 @@ ta
     }
 
     // OR-Tools ile liste oluştur
-    async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
+    async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk, ignoreManualConflicts = false) {
       solverSorunRaporu = null;
       solverTeshisGuncelle();
       const ozelGorevler = getOzelGorevler();
@@ -7982,7 +7982,8 @@ ta
         birlikteIstisnalari: birlikteIstisnalariData,
         araGunIstisnalari: araGunIstisnalariData,
         kisitlamaExclusive: kisitlamaExclusive,
-        resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
+        resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip })),
+        ignoreManualConflicts: ignoreManualConflicts
       };
 
       console.log(
@@ -8016,8 +8017,26 @@ ta
         solverSorunRaporu = solverSorunRaporuHazirla(result, requestData);
         solverTeshisGuncelle();
 
-        // Çözüm bulunamadı - ara gün 1 ile tekrar denenebilir mi?
+        // Çözüm bulunamadı - manuel çakışma varsa kullanıcıya sor
         const istatistikler = result.istatistikler || {};
+        if (istatistikler.status === 'MANUAL_CONFLICT' && istatistikler.manual_conflicts?.length) {
+          const conflicts = istatistikler.manual_conflicts;
+          const onizleme = conflicts.slice(0, 10).map(c => `• ${c.mesaj || c.code}`).join('\n');
+          const devam = confirm(
+            `⚠️ Manuel atamalarda ${conflicts.length} çakışma bulundu:\n\n` +
+            `${onizleme}\n` +
+            (conflicts.length > 10 ? `\n...ve ${conflicts.length - 10} tane daha\n` : '') +
+            `\nBu çakışmaları yok sayıp çözüme devam etmek ister misiniz?\n\n` +
+            `[Tamam] = Çakışmalar görmezden gelinir, çözüm denenir\n` +
+            `[İptal] = İşlem durdurulur`
+          );
+          if (devam) {
+            console.log('Manuel çakışmalar kullanıcı onayıyla yok sayılıyor, tekrar deneniyor...');
+            return await listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk, true);
+          }
+        }
+
+        // Çözüm bulunamadı - ara gün 1 ile tekrar denenebilir mi?
         if (istatistikler.status === 'INFEASIBLE' && istatistikler.ara_gun_1_dene && araGun > 1) {
           const cevap = confirm(
             `⚠️ OR-Tools çözüm bulamadı (ara gün: ${araGun})\n\n` +

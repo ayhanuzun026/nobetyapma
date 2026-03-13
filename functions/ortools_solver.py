@@ -44,7 +44,8 @@ class NobetSolver:
                  aragun_istisnalari: List[Dict] = None,
                  manuel_atamalar: List[SolverAtama] = None,
                  hedefler: Dict[int, Dict] = None,
-                 ara_gun: int = 2, max_sure_saniye: int = 300):
+                 ara_gun: int = 2, max_sure_saniye: int = 300,
+                 ignore_manual_conflicts: bool = False):
         self.gun_sayisi = gun_sayisi
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
@@ -60,6 +61,7 @@ class NobetSolver:
         self.slot_sayisi = len(gorevler)
         self.manual_mazeret_override_days = set()
         self.manual_mazeret_override_slots = set()
+        self.ignore_manual_conflicts = ignore_manual_conflicts
         
         self.gunler_by_tip = {t: [] for t in GUN_TIPLERI}
         for g, tip in gun_tipleri.items():
@@ -739,7 +741,7 @@ class NobetSolver:
         model = cp.CpModel()
 
         manual_conflicts = self._manual_hard_conflict_diagnostics()
-        if manual_conflicts:
+        if manual_conflicts and not self.ignore_manual_conflicts:
             sure_ms = int((time.time() - baslangic) * 1000)
             preview = manual_conflicts[:50]
             return SolverSonuc(

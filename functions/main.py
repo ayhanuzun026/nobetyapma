@@ -304,6 +304,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
+        ignore_manual_conflicts = bool(data.get("ignoreManualConflicts", False))
 
         gun_sayisi = get_days_in_month(yil, ay)
         gun_tipleri = build_gun_tipleri(yil, ay, gun_sayisi, resmi_tatiller)
@@ -404,7 +405,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             aragun_istisnalari=aragun_istisnalari,
             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
             ara_gun=ara_gun, max_sure=max_sure,
-            yil=yil, ay=ay, resmi_tatiller=resmi_tatiller, data=data
+            yil=yil, ay=ay, resmi_tatiller=resmi_tatiller, data=data,
+            ignore_manual_conflicts=ignore_manual_conflicts
         )
 
         # Çizelge formatına dönüştür

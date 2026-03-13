@@ -17,7 +17,8 @@ def solve_with_diagnostics(
     gun_sayisi, gun_tipleri, personeller, gorevler, kurallar,
     gorev_havuzlari, kisitlama_istisnalari, birlikte_istisnalari,
     aragun_istisnalari, manuel_atamalar, hedefler,
-    ara_gun, max_sure, yil, ay, resmi_tatiller, data
+    ara_gun, max_sure, yil, ay, resmi_tatiller, data,
+    ignore_manual_conflicts=False
 ):
     """Akıllı teşhis tabanlı çözüm stratejisi.
 
@@ -46,7 +47,8 @@ def solve_with_diagnostics(
         birlikte_istisnalari=birlikte_istisnalari,
         aragun_istisnalari=aragun_istisnalari,
         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-        ara_gun=ara_gun, max_sure_saniye=sure_ilk
+        ara_gun=ara_gun, max_sure_saniye=sure_ilk,
+        ignore_manual_conflicts=ignore_manual_conflicts
     )
     sonuc = solver.coz()
     logger.info("Faz 1 sonuc: basarili=%s, sure=%dms",
@@ -123,7 +125,8 @@ def solve_with_diagnostics(
                         birlikte_istisnalari=birlikte_istisnalari,
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
+                        ignore_manual_conflicts=ignore_manual_conflicts
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -146,7 +149,8 @@ def solve_with_diagnostics(
                         birlikte_istisnalari=birlikte_istisnalari,
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
+                        ignore_manual_conflicts=ignore_manual_conflicts
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -169,7 +173,8 @@ def solve_with_diagnostics(
                         birlikte_istisnalari=birlikte_istisnalari,
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
+                        ignore_manual_conflicts=ignore_manual_conflicts
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -191,7 +196,8 @@ def solve_with_diagnostics(
                         birlikte_istisnalari=birlikte_istisnalari,
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
+                        ignore_manual_conflicts=ignore_manual_conflicts
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
@@ -214,7 +220,8 @@ def solve_with_diagnostics(
                         birlikte_istisnalari=birlikte_istisnalari,
                         aragun_istisnalari=aragun_istisnalari,
                         manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon
+                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
+                        ignore_manual_conflicts=ignore_manual_conflicts
                     )
                     sonuc = solver.coz()
                     if sonuc.basarili:
