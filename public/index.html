@@ -950,7 +950,7 @@ ta
             <i class="fa-solid fa-calendar-days"></i> Geçmiş Detay
           </button>
           <button class="btn btn-warning btn-sm" onclick="document.getElementById('gecmis-excel-upload').click()">
-            <i class="fas fa-file-upload"></i> Geçmiş Excel Yükle
+            <i class="fas fa-file-upload"></i> Geçmiş Nöbet Çeteleme Yükle
           </button>
           <input type="file" id="gecmis-excel-upload" hidden accept=".xlsx,.xls" onchange="gecmisExcelYukle(this)">
           <button class="btn btn-info btn-sm" onclick="document.getElementById('gorev-ceteleme-upload').click()">
@@ -2144,6 +2144,71 @@ ta
         return val;
       }
 
+      // Bir satırda ay başlıklarını tespit et
+      function ayBasliklariBul(sheet, satirNo) {
+        const ayBloklari = [];
+        const satir = sheet.getRow(satirNo);
+        const maxCol = sheet.columnCount || 200;
+        let col = 3; // C sütunundan başla
+        while (col <= maxCol) {
+          const cell = satir.getCell(col);
+          let val = hucreDegerAl(cell);
+          if (val == null || !String(val).trim()) { col++; continue; }
+          const strVal = String(val).trim().toLowerCase();
+          if (strVal === 'toplam' || strVal === 't.n' || strVal === 'top' || strVal === 'genel toplam') break;
+          const ayNo = AY_ESLESTIR[strVal];
+          if (ayNo) {
+            ayBloklari.push({ ay: ayNo, baslangicCol: col });
+            col += 6;
+          } else {
+            col++;
+          }
+        }
+        return ayBloklari;
+      }
+
+      // Sayfadaki tüm veri bloklarını otomatik tespit et
+      // Blok yapısı: başlık satırı → yıl+ay satırı → kolon başlıkları satırı → veri satırları
+      function bloklariBul(sheet) {
+        const bloklar = [];
+        const toplamSatir = sheet.rowCount || 500;
+
+        for (let r = 1; r <= toplamSatir; r++) {
+          const aVal = hucreDegerAl(sheet.getRow(r).getCell(1));
+          if (aVal == null) continue;
+          const parsed = parseInt(String(aVal));
+          // Yıl satırı bulundu (2000-2100 arası sayı)
+          if (parsed >= 2000 && parsed <= 2100) {
+            const ayBloklari = ayBasliklariBul(sheet, r);
+            if (ayBloklari.length > 0) {
+              // Veri başlangıcını bul: yıl satırından sonra "Sıra" veya "Ad Soyad" içeren satır + 1
+              let veriBaslangic = r + 2; // varsayılan: 2 satır sonra
+              for (let s = r + 1; s <= Math.min(r + 5, toplamSatir); s++) {
+                const bVal = hucreDegerAl(sheet.getRow(s).getCell(2));
+                if (bVal && normalizeAd(String(bVal)).includes('ad soyad')) {
+                  veriBaslangic = s + 1;
+                  break;
+                }
+              }
+              // Blok sonu: sonraki blok başlangıcı veya boş satırlar
+              let veriSon = toplamSatir;
+              for (let s = veriBaslangic; s <= toplamSatir; s++) {
+                const aCheck = hucreDegerAl(sheet.getRow(s).getCell(1));
+                // Yeni blok başlığı (başlık metni veya büyük yıl sayısı)
+                if (aCheck && typeof aCheck === 'string' && (
+                  normalizeAd(aCheck).includes('hastane') || normalizeAd(aCheck).includes('çeteleme') || normalizeAd(aCheck).includes('ceteleme')
+                )) {
+                  veriSon = s - 1;
+                  break;
+                }
+              }
+              bloklar.push({ yil: parsed, ayBloklari, veriBaslangic, veriSon });
+            }
+          }
+        }
+        return bloklar;
+      }
+
       try {
         const arrayBuffer = await file.arrayBuffer();
         const workbook = new ExcelJS.Workbook();
@@ -2155,131 +2220,135 @@ ta
         ) || workbook.worksheets[0];
         if (!sheet) { alert('Excel dosyasında sayfa bulunamadı.'); return; }
 
-        // A1'den yıl bilgisini oku
-        let yil = null;
-        const a1Val = hucreDegerAl(sheet.getRow(1).getCell(1));
-        if (a1Val != null) {
-          const parsed = parseInt(String(a1Val));
-          if (parsed >= 2000 && parsed <= 2100) yil = parsed;
+        // Tüm blokları tespit et
+        const bloklar = bloklariBul(sheet);
+
+        // Blok bulunamadıysa eski yöntemi dene (satır 1'de ay başlıkları)
+        if (bloklar.length === 0) {
+          // Eski format: A1=yıl, satır 1'de ay başlıkları, satır 4'ten veri
+          let yil = null;
+          const a1Val = hucreDegerAl(sheet.getRow(1).getCell(1));
+          if (a1Val != null) {
+            const parsed = parseInt(String(a1Val));
+            if (parsed >= 2000 && parsed <= 2100) yil = parsed;
+          }
+          const ayBloklari = ayBasliklariBul(sheet, 1);
+          if (ayBloklari.length > 0 && yil) {
+            bloklar.push({ yil, ayBloklari, veriBaslangic: 4, veriSon: sheet.rowCount || 500 });
+          }
         }
-        // Yıl bulunamadıysa kullanıcıdan sor
-        if (!yil) {
+
+        if (bloklar.length === 0) {
+          // Hiç blok bulunamadı — kullanıcıdan yıl sor ve satır 1'de ara
           const buYil = new Date().getFullYear();
-          const yilStr = prompt('Çeteleme yılı A1\'de bulunamadı. Hangi yıla ait?', String(buYil));
+          const yilStr = prompt('Çeteleme formatı otomatik tespit edilemedi.\nYılı girin:', String(buYil));
           if (!yilStr) { input.value = ''; return; }
-          yil = parseInt(yilStr);
+          const yil = parseInt(yilStr);
           if (isNaN(yil) || yil < 2000 || yil > 2100) {
             alert('Geçersiz yıl: ' + yilStr);
             input.value = '';
             return;
           }
-        }
-
-        // Satır 1, C1'den itibaren ay başlıklarını tespit et
-        // Yapı: A1=YIL, B1=boş, C1=OCAK(merge 6 sütun), I1=ŞUBAT(merge 6 sütun), ...
-        // Her ay bloğu tam 6 sütun: H.İÇİ, PRŞ, CUM, CMT, PZR, TP
-        // Merged cell'lerde ExcelJS tüm hücrelere aynı değeri verir, bu yüzden
-        // sadece ilk bulunan ay'ı kaydedip sonraki 5 sütunu atlıyoruz
-        const ayBloklari = []; // [ { ay: 1, baslangicCol: 3 }, ... ]
-        const satir1 = sheet.getRow(1);
-        const maxCol = sheet.columnCount || 200;
-
-        let col = 3; // C sütunundan (col 3) başla
-        while (col <= maxCol) {
-          const cell = satir1.getCell(col);
-          let val = hucreDegerAl(cell);
-          if (val == null || !String(val).trim()) { col++; continue; }
-          const strVal = String(val).trim().toLowerCase();
-
-          // "TOPLAM" bloğunu görünce dur
-          if (strVal === 'toplam' || strVal === 't.n' || strVal === 'top' || strVal === 'genel toplam') break;
-
-          const ayNo = AY_ESLESTIR[strVal];
-          if (ayNo) {
-            ayBloklari.push({ ay: ayNo, baslangicCol: col });
-            col += 6; // Bu ay bloğunun 6 sütununu atla, sonraki aya geç
-          } else {
-            col++;
+          // Tüm satırlarda ay başlığı ara
+          for (let r = 1; r <= Math.min(10, sheet.rowCount || 10); r++) {
+            const ayBloklari = ayBasliklariBul(sheet, r);
+            if (ayBloklari.length > 0) {
+              let veriBaslangic = r + 1;
+              for (let s = r + 1; s <= Math.min(r + 5, sheet.rowCount || 500); s++) {
+                const bVal = hucreDegerAl(sheet.getRow(s).getCell(2));
+                if (bVal && normalizeAd(String(bVal)).includes('ad soyad')) {
+                  veriBaslangic = s + 1;
+                  break;
+                }
+              }
+              bloklar.push({ yil, ayBloklari, veriBaslangic, veriSon: sheet.rowCount || 500 });
+              break;
+            }
+          }
+          if (bloklar.length === 0) {
+            alert('Çeteleme formatı tanınamadı: Ay başlıkları bulunamadı (OCAK, ŞUBAT, vb.).');
+            input.value = '';
+            return;
           }
         }
 
-        if (ayBloklari.length === 0) {
-          alert('Çeteleme formatı tanınamadı: Satır 1\'de ay başlıkları bulunamadı (OCAK, ŞUBAT, vb.).');
-          input.value = '';
-          return;
-        }
+        // Tespit edilen blokları göster
+        const yillar = [...new Set(bloklar.map(b => b.yil))];
+        const tumAylar = [...new Set(bloklar.flatMap(b => b.ayBloklari.map(a => a.ay)))].sort((a, b) => a - b);
 
         // Eski veriyi silme seçeneği
         const silSecim = confirm(
-          `${yil} yılı tespit edildi.\nAylar: ${ayBloklari.map(b => AY_ISIMLERI[b.ay]).join(', ')}\n\n` +
-          `Mevcut ${yil} geçmiş verilerini silip üzerine yazmak ister misiniz?\n\n` +
-          `[Tamam] = Eski ${yil} verisi silinir, sadece Excel'deki yüklenir\n` +
+          `Tespit edilen yıl: ${yillar.join(', ')}\nAylar: ${tumAylar.map(a => AY_ISIMLERI[a]).join(', ')}\nBlok sayısı: ${bloklar.length}\n\n` +
+          `Mevcut ${yillar.join('/')} geçmiş verilerini silip üzerine yazmak ister misiniz?\n\n` +
+          `[Tamam] = Eski veri silinir, sadece Excel'deki yüklenir\n` +
           `[İptal] = Eski verinin üzerine eklenir (var olan aylar güncellenir)`
         );
 
-        // Veri satırlarını oku (B4'ten aşağı)
+        // Tüm blokları işle
         let eslesenSayisi = 0;
         const eslesmeyenler = [];
-        const toplamSatir = sheet.rowCount || 500;
+        const eslesen = new Set(); // Aynı personel birden fazla blokta olabilir
 
-        for (let rowNum = 4; rowNum <= toplamSatir; rowNum++) {
-          const row = sheet.getRow(rowNum);
-          // B sütunu (col 2) = Ad Soyad
-          const adVal = hucreDegerAl(row.getCell(2));
-          if (!adVal || !String(adVal).trim()) continue;
-          const excelAd = String(adVal).trim();
+        bloklar.forEach(blok => {
+          const { yil, ayBloklari, veriBaslangic, veriSon } = blok;
 
-          // Personel eşleştir
-          const eslesme = personelListesi.find(p => normalizeAd(p.ad) === normalizeAd(excelAd));
-          if (!eslesme) {
-            eslesmeyenler.push(excelAd);
-            continue;
-          }
+          for (let rowNum = veriBaslangic; rowNum <= veriSon; rowNum++) {
+            const row = sheet.getRow(rowNum);
+            const adVal = hucreDegerAl(row.getCell(2));
+            if (!adVal || !String(adVal).trim()) continue;
+            const excelAd = String(adVal).trim();
 
-          // yillikGecmis yapısını hazırla
-          if (!eslesme.yillikGecmis) eslesme.yillikGecmis = {};
-          if (!eslesme.yillikGecmis[yil]) eslesme.yillikGecmis[yil] = {};
-          // Sil seçildiyse o yılın sadece GÜN TİPİ verilerini temizle (görevlere dokunma)
-          if (silSecim) {
-            Object.keys(eslesme.yillikGecmis[yil]).forEach(ay => {
-              const ayData = eslesme.yillikGecmis[yil][ay];
-              if (ayData) {
-                delete ayData.hici;
-                delete ayData.prs;
-                delete ayData.cum;
-                delete ayData.cmt;
-                delete ayData.pzr;
+            // "Sıra" veya "Ad Soyad" başlık satırını atla
+            if (normalizeAd(excelAd).includes('ad soyad') || normalizeAd(excelAd) === 'sıra') continue;
+
+            const eslesme = personelListesi.find(p => normalizeAd(p.ad) === normalizeAd(excelAd));
+            if (!eslesme) {
+              if (!eslesmeyenler.includes(excelAd)) eslesmeyenler.push(excelAd);
+              continue;
+            }
+
+            if (!eslesme.yillikGecmis) eslesme.yillikGecmis = {};
+            if (!eslesme.yillikGecmis[yil]) eslesme.yillikGecmis[yil] = {};
+            if (silSecim && !eslesen.has(eslesme.id + '_' + yil)) {
+              Object.keys(eslesme.yillikGecmis[yil]).forEach(ay => {
+                const ayData = eslesme.yillikGecmis[yil][ay];
+                if (ayData) {
+                  delete ayData.hici;
+                  delete ayData.prs;
+                  delete ayData.cum;
+                  delete ayData.cmt;
+                  delete ayData.pzr;
+                }
+              });
+              eslesen.add(eslesme.id + '_' + yil);
+            }
+
+            ayBloklari.forEach(ab => {
+              let hasData = false;
+              const gunVerileri = {};
+              GUN_TIPI_SIRA.forEach((tip, i) => {
+                const cellVal = hucreDegerAl(row.getCell(ab.baslangicCol + i));
+                const deger = parseInt(cellVal) || 0;
+                gunVerileri[tip] = deger;
+                if (deger > 0) hasData = true;
+              });
+              if (hasData) {
+                if (!eslesme.yillikGecmis[yil][ab.ay]) eslesme.yillikGecmis[yil][ab.ay] = {};
+                Object.assign(eslesme.yillikGecmis[yil][ab.ay], gunVerileri);
               }
             });
-          }
 
-          // Her ay bloğu için verileri oku
-          // Blok: baslangicCol+0=H.İÇİ, +1=PRŞ, +2=CUM, +3=CMT, +4=PZR, +5=TP(atla)
-          ayBloklari.forEach(blok => {
-            let hasData = false;
-            const gunVerileri = {};
-
-            GUN_TIPI_SIRA.forEach((tip, i) => {
-              const cellVal = hucreDegerAl(row.getCell(blok.baslangicCol + i));
-              const deger = parseInt(cellVal) || 0;
-              gunVerileri[tip] = deger;
-              if (deger > 0) hasData = true;
-            });
-
-            if (hasData) {
-              // Mevcut ay verisini koru (görevler silinmesin), sadece gün tiplerini yaz
-              if (!eslesme.yillikGecmis[yil][blok.ay]) eslesme.yillikGecmis[yil][blok.ay] = {};
-              Object.assign(eslesme.yillikGecmis[yil][blok.ay], gunVerileri);
+            if (!eslesen.has(eslesme.id)) {
+              eslesenSayisi++;
+              eslesen.add(eslesme.id);
             }
-          });
-
-          eslesenSayisi++;
-        }
+          }
+        });
 
         // Sonuç bildirimi
-        let mesaj = `${eslesenSayisi} personelin ${yil} yılı geçmiş verisi yüklendi.`;
-        mesaj += `\nAylar: ${ayBloklari.map(b => AY_ISIMLERI[b.ay]).join(', ')}`;
-        if (silSecim) mesaj += `\n(Eski ${yil} verisi silindi)`;
+        let mesaj = `${eslesenSayisi} personelin ${yillar.join('/')} yılı geçmiş verisi yüklendi.`;
+        mesaj += `\nAylar: ${tumAylar.map(a => AY_ISIMLERI[a]).join(', ')}`;
+        if (silSecim) mesaj += `\n(Eski veri silindi)`;
         if (eslesmeyenler.length > 0) {
           mesaj += `\n\nEşleşmeyen isimler (${eslesmeyenler.length}):\n` + eslesmeyenler.join(', ');
         }
