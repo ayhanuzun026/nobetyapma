@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from typing import Dict, List, Set
 import math
 import hashlib
+import re
 
 
 # ============================================
@@ -17,6 +18,18 @@ GUN_TIPLERI = ['hici', 'prs', 'cum', 'cmt', 'pzr']
 SAAT_DEGERLERI = {
     'hici': 8, 'prs': 8, 'cum': 16, 'cmt': 24, 'pzr': 16
 }
+
+BIRLIKTE_ESDEGER_GOREV_AILESI = frozenset({
+    'AMELIYATHANE',
+    'MAVI KOD',
+    'KVC',
+})
+BIRLIKTE_ESDEGER_GOREV_AILE_ADI = 'AMELIYATHANE_MAVI_KOD_KVC'
+
+_TURKCE_ASCII_TRANSLATION = str.maketrans({
+    'Ç': 'C', 'Ğ': 'G', 'İ': 'I', 'Ö': 'O', 'Ş': 'S', 'Ü': 'U',
+    'ç': 'C', 'ğ': 'G', 'ı': 'I', 'i': 'I', 'ö': 'O', 'ş': 'S', 'ü': 'U',
+})
 
 
 # ============================================
@@ -74,6 +87,33 @@ def find_matching_id(target_id, id_collection):
         if normalize_id(pid) == target_norm:
             return pid
     return None
+
+
+def canonicalize_role_name(role_name) -> str:
+    """Görev adını birlikte/eşdeğerlik kontrolleri için normalize et."""
+    if role_name is None:
+        return ""
+
+    raw = re.sub(r"\s+#\d+$", "", str(role_name)).strip()
+    if not raw:
+        return ""
+
+    upper = re.sub(r"\s+", " ", raw.upper().translate(_TURKCE_ASCII_TRANSLATION)).strip()
+    if upper == 'AMELIYATHANE':
+        return 'AMELIYATHANE'
+    if upper == 'MAVI KOD':
+        return 'MAVI KOD'
+    if upper == 'KVC':
+        return 'KVC'
+    return upper
+
+
+def birlikte_aile_anahtari(role_name) -> str:
+    """Birlikte kuralları için görev ailesi anahtarını döndür."""
+    canonical = canonicalize_role_name(role_name)
+    if canonical in BIRLIKTE_ESDEGER_GOREV_AILESI:
+        return BIRLIKTE_ESDEGER_GOREV_AILE_ADI
+    return canonical
 
 
 # ============================================

@@ -9,6 +9,8 @@ from typing import List, Dict
 from utils import (
     GUN_TIPLERI, SAAT_DEGERLERI,
     find_matching_id,
+    birlikte_aile_anahtari,
+    BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
 )
 from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
@@ -286,6 +288,8 @@ class HedefHesaplayici:
         n = len(self.personel_listesi)
         if n == 0:
             return HedefSonuc(False, [], [], {}, {}, "Personel yok")
+
+        self._sirala_birlikte_gruplari()
 
         # --- 1. HEDEF VE ORTALAMA ANALİZİ ---
 
@@ -819,9 +823,20 @@ class HedefHesaplayici:
                         gecerli_pids.append(p.id)
                 if len(grup_adlar) >= 2:
                     ortak = self._birlikte_ortak_musait_tipler(gecerli_pids)
+                    esdeger_aile_toplamlari = {}
+                    for pid in gecerli_pids:
+                        p = self.personeller.get(pid)
+                        if not p:
+                            continue
+                        esdeger_aile_toplamlari[p.ad] = sum(
+                            kota for gorev, kota in (p.gorev_kotalari or {}).items()
+                            if birlikte_aile_anahtari(gorev) == BIRLIKTE_ESDEGER_GOREV_AILE_ADI
+                        )
                     birlikte_bilgi.append({
                         'kisiler': grup_adlar,
-                        'ortak_kapasite': ortak
+                        'ortak_kapasite': ortak,
+                        'esdeger_gorevler': ['AMELİYATHANE', 'MAVİ KOD', 'KVC'],
+                        'esdeger_aile_toplamlari': esdeger_aile_toplamlari,
                     })
 
         gorev_kotalari = self._hesapla_gorev_kotalari()

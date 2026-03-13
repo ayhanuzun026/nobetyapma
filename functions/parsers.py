@@ -237,18 +237,20 @@ def parse_solver_gorevler_nobet_coz(data: Dict, slot_sayisi: int) -> List[Solver
     gorevler = []
     for idx, g_data in enumerate(data.get("gorevler", [])):
         if isinstance(g_data, dict):
+            gorev_id = g_data.get("id", idx)
             gorev_ad = g_data.get("ad", f"Nöbetçi {idx + 1}")
             base_name = g_data.get("baseName", gorev_ad.split(" #")[0] if " #" in gorev_ad else gorev_ad)
             exclusive = g_data.get("exclusive", False) or gorev_ad in exclusive_gorevler or base_name in exclusive_gorevler
             ayri_bina = bool(g_data.get("ayriBina", False))
         else:
+            gorev_id = idx
             gorev_ad = str(g_data)
             base_name = gorev_ad.split(" #")[0] if " #" in gorev_ad else gorev_ad
             exclusive = gorev_ad in exclusive_gorevler or base_name in exclusive_gorevler
             ayri_bina = False
 
         gorevler.append(SolverGorev(
-            id=idx,
+            id=gorev_id,
             ad=gorev_ad,
             slot_idx=idx,
             base_name=base_name,
@@ -477,10 +479,19 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
                     slot_idx = g.slot_idx
                     break
 
+        # slotIdx / gorevIdx fallback — bulunan slot'un base_name tutarlılığını doğrula
         if slot_idx is None:
-            slot_idx = _safe_int(m_data.get("slotIdx"), None)
+            _raw_slot = _safe_int(m_data.get("slotIdx"), None)
+            if _raw_slot is not None and 0 <= _raw_slot < len(gorevler):
+                _found_base = gorevler[_raw_slot].base_name or gorevler[_raw_slot].ad
+                if not gorev_base_adi or _found_base == gorev_base_adi:
+                    slot_idx = _raw_slot
         if slot_idx is None:
-            slot_idx = _safe_int(m_data.get("gorevIdx"), None)
+            _raw_slot = _safe_int(m_data.get("gorevIdx"), None)
+            if _raw_slot is not None and 0 <= _raw_slot < len(gorevler):
+                _found_base = gorevler[_raw_slot].base_name or gorevler[_raw_slot].ad
+                if not gorev_base_adi or _found_base == gorev_base_adi:
+                    slot_idx = _raw_slot
 
         if slot_idx is None and gorev_adi:
             exact_matches = [g.slot_idx for g in gorevler if g.ad == gorev_adi]
@@ -501,6 +512,7 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
                     slot_idx = g.slot_idx
                     break
 
+        # Son fallback: base_name ile ilk match — SADECE gorev_base_adi yoksa kullan
         if slot_idx is None and gorev_base_adi:
             for g in gorevler:
                 if g.base_name == gorev_base_adi or g.ad == gorev_base_adi:

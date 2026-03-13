@@ -4360,7 +4360,7 @@ ta
         const birlikteKurallar = kurallar.filter(k => k.tur === 'birlikte');
         const birlikteMap = {};
         birlikteKurallar.forEach(kural => {
-          const kisiler = kural.kisiler || [];
+          const kisiler = birlikteKuralUyeIds(kural);
           kisiler.forEach(id => {
             if (!birlikteMap[String(id)]) birlikteMap[String(id)] = [];
             kisiler.forEach(partnerId => {
@@ -4379,7 +4379,7 @@ ta
         const birlikteRezerveGunler = new Set(); // Birlikte tutulacaklar için ayrılan günler
 
         birlikteKurallar.forEach(kural => {
-          const kisilerIds = kural.kisiler || [];
+          const kisilerIds = birlikteKuralUyeIds(kural);
           const kisiler = kisilerIds.map(id => personelListesi.find(p => String(p.id) === String(id))).filter(Boolean);
 
           if (kisiler.length < 2) return;
@@ -4487,7 +4487,14 @@ ta
               if (simAtanan[gun][i] === undefined) bosSlotlar.push(i);
             }
 
-            if (bosSlotlar.length < kisiler.length) return;
+            const siraliBosSlotlar = siralaBosSlotlariBirlikteIcin(
+              bosSlotlar,
+              simAtanan[gun],
+              kisiler.map(p => p.id),
+              siraliGorevler
+            );
+
+            if (siraliBosSlotlar.length < kisiler.length) return;
 
             // Tüm kişiler bu güne atanabilir mi? (ara gün kontrolü)
             const hepsiAtanabilir = kisiler.every(p => {
@@ -4510,12 +4517,12 @@ ta
               if (Object.values(simAtanan[gun]).includes(p.id)) return;
 
               // Boş slot bul
-              while (slotIdx < bosSlotlar.length && simAtanan[gun][bosSlotlar[slotIdx]] !== undefined) {
+              while (slotIdx < siraliBosSlotlar.length && simAtanan[gun][siraliBosSlotlar[slotIdx]] !== undefined) {
                 slotIdx++;
               }
-              if (slotIdx >= bosSlotlar.length) return;
+              if (slotIdx >= siraliBosSlotlar.length) return;
 
-              const slot = bosSlotlar[slotIdx];
+              const slot = siraliBosSlotlar[slotIdx];
               simAtanan[gun][slot] = p.id;
               if (!simKisiAtama[p.id].gunler.includes(gun)) {
                 simKisiAtama[p.id].gunler.push(gun);
@@ -4742,8 +4749,7 @@ ta
         const exclusiveGorevler = new Set();
         gorevKisitlamalari.forEach(k => {
           // Kişi bazlı exclusive veya global exclusive aktifse
-          // Havuzlu görevleri hariç tut - havuz zaten kimin gidebileceğini kontrol ediyor
-          if ((k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0)) {
+          if (k.exclusive !== false || kisitlamaExclusive) {
             exclusiveGorevler.add(k.gorevAdi);
           }
         });
@@ -4751,7 +4757,7 @@ ta
         // EXCLUSIVE MOD için kişi başı limit hesapla
         const exclusiveLimitler = {}; // { personelId: maxNobet }
         // Sadece exclusive olan kısıtlamalar için hesapla
-        const exclusiveKisitlamalar = gorevKisitlamalari.filter(k => (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0));
+        const exclusiveKisitlamalar = gorevKisitlamalari.filter(k => (k.exclusive !== false || kisitlamaExclusive));
 
         if (exclusiveKisitlamalar.length > 0) {
           const gorevKisitlamaSayisi = {};
@@ -5557,7 +5563,7 @@ ta
 
       const birlikteKurallarKota = kurallar.filter(k => k.tur === 'birlikte');
       birlikteKurallarKota.forEach(kural => {
-        const kisiler = (kural.kisiler || []).map(id =>
+        const kisiler = birlikteKuralUyeIds(kural).map(id =>
           personelListesi.find(p => String(p.id) === String(id))
         ).filter(p => p);
 
@@ -5936,20 +5942,21 @@ ta
 
         // OR-Tools istatistiklerinden birlikte grup bilgisini al
         const istBirlikteGruplar = window.ortoolsIstatistikler?.birlikte_gruplar || [];
+        const gercekBirlikteMap = hesaplananListe
+          ? hesaplaGercekBirlikteGunMap(hesaplananListe.atanan, hesaplananListe.siraliGorevler)
+          : (window.birlikteGunMap || {});
 
         birlikteKurallar.forEach((kural, kIdx) => {
-          const uyeAdlari = (kural.personelIds || []).map(id => {
+          const uyeIds = birlikteKuralUyeIds(kural);
+          const grupKey = birlikteGrupAnahtari(uyeIds);
+          const uyeAdlari = uyeIds.map(id => {
             const p = personelListesi.find(x => String(x.id) === String(id));
             return p ? p.ad : '?';
           }).filter(a => a !== '?');
           if (uyeAdlari.length < 2) return;
 
-          // Birlikte günleri bul (OR-Tools sonuçlarından veya personel verilerinden)
-          let birlikteGunler = [];
-          const ilkUye = personelListesi.find(x => String(x.id) === String(kural.personelIds[0]));
-          if (ilkUye && ilkUye.birlikteGunler && ilkUye.birlikteGunler.length > 0) {
-            birlikteGunler = ilkUye.birlikteGunler;
-          }
+          const gercekBirlikte = gercekBirlikteMap[grupKey];
+          const birlikteGunler = gercekBirlikte?.gunler || [];
 
           // OR-Tools istatistiklerinden ortak kapasite bilgisini bul
           let ortakKapasite = null;
@@ -5959,10 +5966,13 @@ ta
           if (istGrup && istGrup.ortak_kapasite) {
             ortakKapasite = istGrup.ortak_kapasite;
           }
+          if (birlikteGunler.length === 0 && Array.isArray(istGrup?.gunler) && istGrup.gunler.length > 0) {
+            birlikteGunler.push(...istGrup.gunler);
+          }
 
           // Her uyenin hedefinden birlikte gun sayisini hesapla
           // Birlikte gruptaki herkesin toplam hedeflerinin minimumu = birlikte tutacaklari gun sayisi
-          const uyeHedefleri = (kural.personelIds || []).map(id => {
+          const uyeHedefleri = uyeIds.map(id => {
             const p = personelListesi.find(x => String(x.id) === String(id));
             if (!p || !p.hedef) return 0;
             return GUN_TIPLERI.reduce((s, t) => s + p.hedef[t], 0);
@@ -5971,15 +5981,16 @@ ta
 
           let detayHtml = '';
           if (birlikteGunler.length > 0) {
-            detayHtml = `<strong>${birlikteGunler.length}</strong> nobet birlikte tutacak | Gunler: ${birlikteGunler.join(', ')}`;
+            detayHtml = `<strong>${birlikteGunler.length}</strong> nobet birlikte sayildi | Gunler: ${birlikteGunler.join(', ')} | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>`;
           } else if (ortakKapasite) {
             const ortakToplam = Object.values(ortakKapasite).reduce((s, v) => s + v, 0);
             detayHtml = `Ortak kapasite: <strong>${ortakToplam}</strong> gun (H.Ici:${ortakKapasite.hici || 0}, Prs:${ortakKapasite.prs || 0}, Cum:${ortakKapasite.cum || 0}, Cmt:${ortakKapasite.cmt || 0}, Pzr:${ortakKapasite.pzr || 0})`;
             if (minHedef > 0) detayHtml += ` | Her biri en az <strong>${minHedef}</strong> nobet tutacak`;
+            detayHtml += ` | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>`;
           } else if (minHedef > 0) {
-            detayHtml = `Her biri en az <strong>${minHedef}</strong> nobet tutacak (spesifik gunler cozum sonrasi belirlenir)`;
+            detayHtml = `Her biri en az <strong>${minHedef}</strong> nobet tutacak (spesifik gunler cozum sonrasi belirlenir) | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>`;
           } else {
-            detayHtml = 'Hedef hesaplandiktan sonra birlikte gunler gorunecek';
+            detayHtml = 'Hedef hesaplandiktan sonra birlikte gunler gorunecek | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>';
           }
 
           birlikteHtml += `<div class="grup">
@@ -7010,11 +7021,11 @@ ta
 
       // Grupları zorluğa göre sırala (en mazeretli grup önce)
       const siraliKurallar = [...birlikteKurallar].sort((a, b) => {
-        const aMazeret = (a.kisiler || []).reduce((sum, id) => {
+        const aMazeret = birlikteKuralUyeIds(a).reduce((sum, id) => {
           const p = personelListesi.find(x => x.id == id);
           return sum + (p?.mazeretler?.length || 0);
         }, 0);
-        const bMazeret = (b.kisiler || []).reduce((sum, id) => {
+        const bMazeret = birlikteKuralUyeIds(b).reduce((sum, id) => {
           const p = personelListesi.find(x => x.id == id);
           return sum + (p?.mazeretler?.length || 0);
         }, 0);
@@ -7022,7 +7033,7 @@ ta
       });
 
       siraliKurallar.forEach(kural => {
-        const grupUyeleri = (kural.kisiler || [])
+        const grupUyeleri = birlikteKuralUyeIds(kural)
           .map(id => personelListesi.find(p => p.id == id))
           .filter(p => p);
 
@@ -7035,12 +7046,11 @@ ta
 
         // Grubun birlikte tuttuğu günleri bul
         let birlikteGunSayisi = 0;
+        const grupUyeIds = grupUyeleri.map(p => p.id);
 
         gunSirasi.forEach(({ gun }) => {
-          const buGunAtananlar = Object.values(atanan[gun]).filter(pid =>
-            grupUyeleri.some(p => p.id === pid)
-          );
-          if (buGunAtananlar.length >= 2) {
+          const detay = grupGunBirlikteDetayi(atanan[gun], grupUyeIds, siraliGorevler);
+          if (detay.uyumlu) {
             birlikteGunSayisi++;
           }
         });
@@ -7055,10 +7065,8 @@ ta
 
           for (const { gun, tip } of gunSirasi) {
             // Bu günde zaten birlikte mi?
-            const buGunAtananlar = Object.values(atanan[gun]).filter(pid =>
-              grupUyeleri.some(p => p.id === pid)
-            );
-            if (buGunAtananlar.length >= 2) continue; // Zaten birlikte
+            const mevcutDetay = grupGunBirlikteDetayi(atanan[gun], grupUyeIds, siraliGorevler);
+            if (mevcutDetay.uyumlu) continue; // Zaten birlikte
 
             // Tüm grup üyeleri müsait mi?
             const tumMusait = grupUyeleri.every(p => {
@@ -7078,6 +7086,13 @@ ta
               if (atanan[gun][i] === undefined) bosSlotlar.push(i);
             }
 
+            const siraliBosSlotlar = siralaBosSlotlariBirlikteIcin(
+              bosSlotlar,
+              atanan[gun],
+              grupUyeIds,
+              siraliGorevler
+            );
+
             // Zaten atanmış üyeleri say
             const zatenAtananUyeler = grupUyeleri.filter(p =>
               Object.values(atanan[gun]).includes(p.id)
@@ -7086,15 +7101,15 @@ ta
               !Object.values(atanan[gun]).includes(p.id)
             );
 
-            if (bosSlotlar.length < atanacakUyeler.length) continue;
+            if (siraliBosSlotlar.length < atanacakUyeler.length) continue;
 
             // Atanacak üyeleri bu güne ata
             let atamaBasarili = true;
             const geciciAtamalar = [];
 
-            for (let i = 0; i < atanacakUyeler.length && i < bosSlotlar.length; i++) {
+            for (let i = 0; i < atanacakUyeler.length && i < siraliBosSlotlar.length; i++) {
               const p = atanacakUyeler[i];
-              const slotIdx = bosSlotlar[i];
+              const slotIdx = siraliBosSlotlar[i];
               const gorev = siraliGorevler[slotIdx];
               const isOzelGorev = ozelGorevler.includes(gorev.ad);
 
@@ -7200,6 +7215,132 @@ ta
       return String(ad).replace(/ #\d+$/, '').trim();
     }
 
+    const BIRLIKTE_ESDEGER_AILE_ADI = 'AMELIYATHANE_MAVI_KOD_KVC';
+    const BIRLIKTE_ESDEGER_GOREVLER = new Set(['AMELIYATHANE', 'MAVI KOD', 'KVC']);
+
+    function turkceyiAsciiYap(metin) {
+      return String(metin || '')
+        .replace(/Ç/g, 'C').replace(/Ğ/g, 'G').replace(/İ/g, 'I')
+        .replace(/Ö/g, 'O').replace(/Ş/g, 'S').replace(/Ü/g, 'U')
+        .replace(/ç/g, 'C').replace(/ğ/g, 'G').replace(/ı/g, 'I')
+        .replace(/i/g, 'I').replace(/ö/g, 'O').replace(/ş/g, 'S').replace(/ü/g, 'U');
+    }
+
+    function canonicalizeBirlikteGorevAdi(ad) {
+      const normalized = normalizeGorevAdi(ad);
+      if (!normalized) return '';
+
+      const upper = turkceyiAsciiYap(normalized.toLocaleUpperCase('tr-TR')).replace(/\s+/g, ' ').trim();
+      if (upper === 'AMELIYATHANE') return 'AMELIYATHANE';
+      if (upper === 'MAVI KOD') return 'MAVI KOD';
+      if (upper === 'KVC') return 'KVC';
+      return upper;
+    }
+
+    function birlikteAileAnahtari(ad) {
+      const canonical = canonicalizeBirlikteGorevAdi(ad);
+      if (BIRLIKTE_ESDEGER_GOREVLER.has(canonical)) return BIRLIKTE_ESDEGER_AILE_ADI;
+      return canonical;
+    }
+
+    function birlikteKuralUyeIds(kural) {
+      const rawIds = Array.isArray(kural?.kisiler)
+        ? kural.kisiler
+        : Array.isArray(kural?.personelIds)
+          ? kural.personelIds
+          : [kural?.p1, kural?.p2, kural?.p3].filter(Boolean);
+      return [...new Set((rawIds || []).filter(Boolean).map(id => String(id)))];
+    }
+
+    function birlikteGrupAnahtari(uyeIds) {
+      return [...(uyeIds || [])].map(id => String(id)).sort().join('|');
+    }
+
+    function grupGunBirlikteDetayi(atananGun, grupUyeIds, siraliGorevler) {
+      const uyeSet = new Set((grupUyeIds || []).map(id => String(id)));
+      const tumAtamalar = [];
+
+      Object.entries(atananGun || {}).forEach(([slotIdxRaw, pid]) => {
+        if (!uyeSet.has(String(pid))) return;
+        const slotIdx = parseInt(slotIdxRaw, 10);
+        const gorev = siraliGorevler?.[slotIdx];
+        const gorevAdi = normalizeGorevAdi(gorev?.baseName || gorev?.ad || '');
+        tumAtamalar.push({
+          pid: String(pid),
+          slotIdx,
+          gorevAdi,
+          aile: birlikteAileAnahtari(gorevAdi)
+        });
+      });
+
+      const aileGruplari = {};
+      tumAtamalar.forEach(atama => {
+        if (!aileGruplari[atama.aile]) aileGruplari[atama.aile] = [];
+        aileGruplari[atama.aile].push(atama);
+      });
+
+      const eslesenAile = Object.keys(aileGruplari).find(aile => aileGruplari[aile].length >= 2) || null;
+      return {
+        uyumlu: !!eslesenAile,
+        eslesenAile,
+        eslesenAtamalar: eslesenAile ? aileGruplari[eslesenAile] : [],
+        tumAtamalar
+      };
+    }
+
+    function siralaBosSlotlariBirlikteIcin(bosSlotlar, atananGun, grupUyeIds, siraliGorevler) {
+      const mevcut = grupGunBirlikteDetayi(atananGun, grupUyeIds, siraliGorevler);
+      const hedefAile = mevcut.eslesenAile || mevcut.tumAtamalar[0]?.aile || null;
+
+      const slotPuani = (slotIdx) => {
+        const gorev = siraliGorevler?.[slotIdx];
+        const aile = birlikteAileAnahtari(gorev?.baseName || gorev?.ad || '');
+        let puan = 0;
+        if (aile === BIRLIKTE_ESDEGER_AILE_ADI) puan += 2;
+        if (hedefAile && aile === hedefAile) puan += 4;
+        return puan;
+      };
+
+      return [...bosSlotlar].sort((a, b) => slotPuani(b) - slotPuani(a));
+    }
+
+    function hesaplaGercekBirlikteGunMap(atanan, siraliGorevler) {
+      const map = {};
+      if (!atanan || !siraliGorevler) return map;
+
+      const { yil, ay } = getYilAy();
+      const gunSayisi = getGunSayisi(yil, ay);
+      const birlikteKurallar = kurallar.filter(k => k.tur === 'birlikte');
+
+      birlikteKurallar.forEach(kural => {
+        const uyeIds = birlikteKuralUyeIds(kural);
+        if (uyeIds.length < 2) return;
+
+        const key = birlikteGrupAnahtari(uyeIds);
+        const gunler = [];
+        const detaylar = [];
+
+        for (let gun = 1; gun <= gunSayisi; gun++) {
+          const detay = grupGunBirlikteDetayi(atanan[gun] || {}, uyeIds, siraliGorevler);
+          if (!detay.uyumlu) continue;
+
+          gunler.push(gun);
+          detaylar.push({
+            gun,
+            aile: detay.eslesenAile,
+            atamalar: detay.eslesenAtamalar.map(atama => ({
+              personelId: atama.pid,
+              gorevAdi: atama.gorevAdi
+            }))
+          });
+        }
+
+        map[key] = { gunler, detaylar };
+      });
+
+      return map;
+    }
+
     function araGunIhlaliVar(gun1, gun2, araGun) {
       const g1 = parseInt(gun1, 10);
       const g2 = parseInt(gun2, 10);
@@ -7286,7 +7427,7 @@ ta
       });
       const exclusiveRoles = new Set(
         gorevKisitlamalari
-          .filter(k => (k.exclusive !== false || kisitlamaExclusive) && !((gorevHavuzlari[k.gorevAdi] || []).length > 0))
+          .filter(k => (k.exclusive !== false || kisitlamaExclusive))
           .map(k => normalizeGorevAdi(k.gorevAdi))
       );
 
@@ -7646,7 +7787,7 @@ ta
         id: g.id,
         ad: g.ad,
         baseName: g.baseName || g.ad,
-        exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad)) && !(gorevHavuzlari[g.baseName || g.ad]?.length > 0),
+        exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad)),
         ayriBina: g.ayriBina === true
       }));
 
@@ -7666,7 +7807,7 @@ ta
       const gorevKisitData = gorevKisitlamalari.map(k => ({
         personelId: k.personelId,
         gorevAdi: k.gorevAdi,
-        exclusive: (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0),  // Kişi bazlı veya global, havuzlu görevler hariç
+        exclusive: (k.exclusive !== false || kisitlamaExclusive),  // Kişi bazlı veya global
         havuzIds: gorevHavuzlari[k.gorevAdi] || [],  // gorevHavuzlari'dan oku (görev bazlı)
         gunTipiDagilimi: k.gunTipiDagilimi || null,
         tasmaGorevi: k.tasmaGorevi || null
@@ -7940,7 +8081,7 @@ ta
       const gorevKisitlamalariData = gorevKisitlamalari.map(k => ({
         personelId: k.personelId,
         gorevAdi: k.gorevAdi,
-        exclusive: (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0),
+        exclusive: (k.exclusive !== false || kisitlamaExclusive),
         havuzIds: gorevHavuzlari[k.gorevAdi] || [],  // gorevHavuzlari'dan oku
         gunTipiDagilimi: k.gunTipiDagilimi || null,
         tasmaGorevi: k.tasmaGorevi || null
@@ -8005,7 +8146,10 @@ ta
       }
       if (result.istatistikler) {
         const ist = result.istatistikler;
-        console.log(`[SOLVER] İstatistik: doluluk=%${ist.doluluk_yuzde}, denge_farkı=${ist.denge_farki}, araGün=${ist.ara_gun}`);
+        const doluluk = ist.doluluk_yuzde ?? '-';
+        const dengeFarki = ist.denge_farki ?? '-';
+        const araGunBilgisi = ist.ara_gun ?? araGun;
+        console.log(`[SOLVER] İstatistik: doluluk=%${doluluk}, denge_farkı=${dengeFarki}, araGün=${araGunBilgisi}`);
       }
       solverDetayLogla(result, requestData);
 
@@ -8086,6 +8230,10 @@ ta
         console.log(`Çözüm süresi: ${result.sureMs}ms`);
         console.log(`Doluluk: %${result.istatistikler.doluluk_yuzde}`);
         console.log(`Denge farkı: ${result.istatistikler.denge_farki}`);
+        window.ortoolsIstatistikler = {
+          ...(window.ortoolsIstatistikler || {}),
+          ...result.istatistikler
+        };
       }
 
       // Devir listesi (eksik atamalar)
@@ -8275,7 +8423,7 @@ ta
       const gorevKisitlamalariData = gorevKisitlamalari.map(k => ({
         personelId: k.personelId,
         gorevAdi: k.gorevAdi,
-        exclusive: (k.exclusive !== false || kisitlamaExclusive) && !(gorevHavuzlari[k.gorevAdi]?.length > 0),
+        exclusive: (k.exclusive !== false || kisitlamaExclusive),
         havuzIds: gorevHavuzlari[k.gorevAdi] || [],  // gorevHavuzlari'dan oku
         gunTipiDagilimi: k.gunTipiDagilimi || null,
         tasmaGorevi: k.tasmaGorevi || null
@@ -8422,7 +8570,7 @@ ta
       const birlikteMap = {}; // { personelId: [partnerId1, partnerId2, ...] }
       const birlikteKurallarYerel = kurallar.filter(k => k.tur === 'birlikte');
       birlikteKurallarYerel.forEach(kural => {
-        const kisiler = kural.kisiler || [];
+        const kisiler = birlikteKuralUyeIds(kural);
         kisiler.forEach(id => {
           if (!birlikteMap[String(id)]) birlikteMap[String(id)] = [];
           kisiler.forEach(partnerId => {
@@ -8439,7 +8587,7 @@ ta
       const birlikteGrupBilgileriYerel = [];
 
       birlikteKurallarYerel.forEach(kural => {
-        const kisilerIds = kural.kisiler || [];
+        const kisilerIds = birlikteKuralUyeIds(kural);
         const kisiler = kisilerIds.map(id => personelListesi.find(p => String(p.id) === String(id))).filter(Boolean);
 
         if (kisiler.length < 2) return;
@@ -8657,7 +8805,14 @@ ta
             if (atanan[gun][i] === undefined) bosSlotlar.push(i);
           }
 
-          if (bosSlotlar.length < kisiler.length) return;
+          const siraliBosSlotlar = siralaBosSlotlariBirlikteIcin(
+            bosSlotlar,
+            atanan[gun],
+            kisiler.map(p => p.id),
+            siraliGorevler
+          );
+
+          if (siraliBosSlotlar.length < kisiler.length) return;
 
           // Tüm kişiler bu güne atanabilir mi?
           const hepsiAtanabilir = kisiler.every(p => {
@@ -8683,12 +8838,12 @@ ta
             if (Object.values(atanan[gun]).includes(p.id)) return;
 
             // Boş slot bul
-            while (slotIdx < bosSlotlar.length && atanan[gun][bosSlotlar[slotIdx]] !== undefined) {
+            while (slotIdx < siraliBosSlotlar.length && atanan[gun][siraliBosSlotlar[slotIdx]] !== undefined) {
               slotIdx++;
             }
-            if (slotIdx >= bosSlotlar.length) return;
+            if (slotIdx >= siraliBosSlotlar.length) return;
 
-            const slot = bosSlotlar[slotIdx];
+            const slot = siraliBosSlotlar[slotIdx];
             const gorev = siraliGorevler[slot];
             const isOzelGorev = ozelGorevler.includes(gorev.ad);
 
@@ -9016,15 +9171,48 @@ ta
         toplamAtanan += Object.keys(atanan[d]).length;
       }
 
+      const bosSlotlar = [];
+      for (let d = 1; d <= gunSayisi; d++) {
+        for (let idx = 0; idx < siraliGorevler.length; idx++) {
+          if (atanan[d][idx] === undefined) {
+            bosSlotlar.push({
+              gun: d,
+              gorev: siraliGorevler[idx]?.ad || `Slot ${idx + 1}`
+            });
+          }
+        }
+      }
+
+      const bosSlotSayisi = bosSlotlar.length;
+      const dolulukOrani = toplamSlot > 0 ? (toplamAtanan / toplamSlot) * 100 : 0;
+      const dolulukText = bosSlotSayisi === 0
+        ? `%${Math.round(dolulukOrani)}`
+        : `%${dolulukOrani.toFixed(1)}`;
+
       document.getElementById('stat-toplam').textContent = toplamAtanan;
-      document.getElementById('stat-doluluk').textContent = `%${Math.round(toplamAtanan / toplamSlot * 100)}`;
-      document.getElementById('stat-devir').textContent = devirListesi.length;
+      document.getElementById('stat-doluluk').textContent = dolulukText;
+      document.getElementById('stat-devir').textContent = bosSlotSayisi;
+      window.birlikteGunMap = hesaplaGercekBirlikteGunMap(atanan, siraliGorevler);
 
       // Eksik atama ve değişim kayıtları
       const devirDiv = document.getElementById('devir-listesi');
       const devirIcerik = document.getElementById('devir-icerik');
 
       let icerikHtml = '';
+
+      if (bosSlotSayisi > 0) {
+        icerikHtml += `
+      <div class="rule-box mb-3" style="background:#fee2e2; border-left:4px solid #dc2626;">
+        <strong>⚠️ Boş Kalan Slotlar (${bosSlotSayisi})</strong>
+        <div class="help mb-3">Çizelgede personele atanamayan görevler.</div>
+        <div style="max-height:150px; overflow-y:auto;">
+          ${bosSlotlar.map(x =>
+          `<div class="badge badge-warn" style="margin:2px;">${x.gun}. gün - ${x.gorev}</div>`
+        ).join('')}
+        </div>
+      </div>
+    `;
+      }
 
       // Gün tipi değişim kayıtları
       if (gunTipiDegisimKayitlari.length > 0) {
@@ -9088,11 +9276,13 @@ ta
     `;
       }
 
-      if (devirListesi.length > 0 || gunTipiDegisimKayitlari.length > 0) {
+      if (bosSlotSayisi > 0 || devirListesi.length > 0 || gunTipiDegisimKayitlari.length > 0 || (window.bosSlotAnaliz && window.bosSlotAnaliz.length > 0)) {
         devirDiv.style.display = 'block';
-        devirDiv.querySelector('h4').textContent = devirListesi.length > 0
-          ? `⚠️ Eksik Atamalar (${devirListesi.length})`
-          : '✅ Tüm Hedefler Karşılandı';
+        devirDiv.querySelector('h4').textContent = bosSlotSayisi > 0
+          ? `⚠️ Eksik Atamalar (${bosSlotSayisi})`
+          : devirListesi.length > 0
+            ? `⚠️ Hedef Açıkları (${devirListesi.length})`
+            : '✅ Tüm Hedefler Karşılandı';
         devirIcerik.innerHTML = icerikHtml;
       } else {
         devirDiv.style.display = 'none';

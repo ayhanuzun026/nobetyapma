@@ -10,6 +10,8 @@ import math
 from utils import (
     GUN_TIPLERI, SAAT_DEGERLERI,
     find_matching_id,
+    birlikte_aile_anahtari,
+    BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
 )
 from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
@@ -74,6 +76,14 @@ class NobetSolver:
             if base not in self.role_slots:
                 self.role_slots[base] = []
             self.role_slots[base].append(s)
+
+        self.birlikte_family_slots = {}
+        for s, gorev in enumerate(gorevler):
+            role_name = gorev.base_name if gorev.base_name else gorev.ad
+            family_key = birlikte_aile_anahtari(role_name)
+            if family_key not in self.birlikte_family_slots:
+                self.birlikte_family_slots[family_key] = []
+            self.birlikte_family_slots[family_key].append(s)
 
         # Role bazli havuz ID'lerini mevcut personel ID'lerine normalize et
         normalized_havuzlar = {}
@@ -157,6 +167,84 @@ class NobetSolver:
         gorev = self.gorevler[slot_idx]
         return gorev.base_name if gorev.base_name else gorev.ad
 
+    def _hesapla_birlikte_grup_istatistikleri(self, atamalar: List[Dict]) -> List[Dict]:
+        daily_assignments = {}
+        for atama in atamalar:
+            gun = atama.get('gun')
+            pid = atama.get('personel_id')
+            role = atama.get('gorev_base') or atama.get('gorev_ad') or ''
+            if gun is None or pid is None:
+                continue
+            daily_assignments.setdefault(gun, {})[pid] = {
+                'role': role,
+                'family': birlikte_aile_anahtari(role),
+            }
+
+        birlikte_gruplar = []
+        for kural in self.kurallar:
+            if kural.tur != 'birlikte':
+                continue
+
+            valid_ids = []
+            for raw_pid in kural.kisiler:
+                matched_pid = find_matching_id(raw_pid, self.personeller.keys())
+                if matched_pid is not None:
+                    valid_ids.append(matched_pid)
+
+            if len(valid_ids) < 2:
+                continue
+
+            uyumlu_gunler = []
+            gun_detaylari = []
+            for g in range(1, self.gun_sayisi + 1):
+                gun_atamalari = daily_assignments.get(g, {})
+                entries = []
+                for pid in valid_ids:
+                    info = gun_atamalari.get(pid)
+                    if info:
+                        entries.append({
+                            'personel_id': pid,
+                            'personel_ad': self.personeller[pid].ad,
+                            'role': info['role'],
+                            'family': info['family'],
+                        })
+
+                if len(entries) < 2:
+                    continue
+
+                family_groups = {}
+                for entry in entries:
+                    family_groups.setdefault(entry['family'], []).append(entry)
+
+                matched_family = next((family for family, members in family_groups.items() if len(members) >= 2), None)
+                if matched_family is None:
+                    continue
+
+                uyumlu_gunler.append(g)
+                gun_detaylari.append({
+                    'gun': g,
+                    'aile': matched_family,
+                    'atamalar': [
+                        {
+                            'personel_id': entry['personel_id'],
+                            'personel_ad': entry['personel_ad'],
+                            'gorev': entry['role'],
+                        }
+                        for entry in family_groups[matched_family]
+                    ]
+                })
+
+            birlikte_gruplar.append({
+                'kisiler': [self.personeller[pid].ad for pid in valid_ids],
+                'personel_ids': valid_ids,
+                'gunler': uyumlu_gunler,
+                'uyumlu_gun_sayisi': len(uyumlu_gunler),
+                'gun_detaylari': gun_detaylari,
+                'esdeger_aile': BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
+            })
+
+        return birlikte_gruplar
+
     def _manual_hard_conflict_diagnostics(self) -> List[Dict]:
         """Model kurulmadan önce hard çakışmaları yakala."""
         conflicts = []
@@ -193,8 +281,7 @@ class NobetSolver:
         for gorev in self.gorevler:
             if gorev.exclusive:
                 base = gorev.base_name if gorev.base_name else gorev.ad
-                if base not in self.gorev_havuzlari:
-                    exclusive_gorevler.add(base)
+                exclusive_gorevler.add(base)
 
         per_person_day = {}
         per_slot_day = {}
@@ -263,18 +350,23 @@ class NobetSolver:
                 })
 
             if role in exclusive_gorevler and p.kisitli_gorev != role and p.tasma_gorevi != role:
-                # YENI KURAL: Eger bu kisiye bu gorev icin hedef kota verilmisse exclusive bloklamasini gec
-                hedef = self.hedefler.get(pid, {})
-                gorev_kotalari = hedef.get('gorev_kotalari', {})
-                if gorev_kotalari.get(role, 0) == 0:
-                    conflicts.append({
-                        "code": "EXCLUSIVE_IHLALI",
-                        "mesaj": f"{p.ad} exclusive goreve manuel atanmis",
-                        "personel_id": pid,
-                        "personel_ad": p.ad,
-                        "gun": m.gun,
-                        "gorev": role
-                    })
+                # Havuz üyesi ise exclusive ihlali değil
+                havuz_ids = self.gorev_havuzlari.get(role)
+                if havuz_ids is not None and pid in havuz_ids:
+                    pass  # Havuz üyesi — exclusive ihlali yok
+                else:
+                    # YENI KURAL: Eger bu kisiye bu gorev icin hedef kota verilmisse exclusive bloklamasini gec
+                    hedef = self.hedefler.get(pid, {})
+                    gorev_kotalari = hedef.get('gorev_kotalari', {})
+                    if gorev_kotalari.get(role, 0) == 0:
+                        conflicts.append({
+                            "code": "EXCLUSIVE_IHLALI",
+                            "mesaj": f"{p.ad} exclusive goreve manuel atanmis",
+                            "personel_id": pid,
+                            "personel_ad": p.ad,
+                            "gun": m.gun,
+                            "gorev": role
+                        })
 
             if role in self.gorev_havuzlari and pid not in self.gorev_havuzlari[role]:
                 # Bug fix: kısıtlı kişiler veya taşma görevi olan kişiler havuz dışı sayılmaz
@@ -356,8 +448,7 @@ class NobetSolver:
         for gorev in self.gorevler:
             if gorev.exclusive:
                 base = gorev.base_name if gorev.base_name else gorev.ad
-                if base not in self.gorev_havuzlari:
-                    roles.add(base)
+                roles.add(base)
         return roles
 
     def _birlikte_uye_ids(self) -> Set[int]:
@@ -400,9 +491,11 @@ class NobetSolver:
                 else:
                     return False
 
-        # H8: Exclusive görevler (havuzsuz) - taşma görevi olan kişi de girebilir
+        # H8: Exclusive görevler - taşma görevi veya havuz üyesi olan kişi de girebilir
         if role in exclusive_roles and p.kisitli_gorev != role and p.tasma_gorevi != role:
-            return False
+            havuz_ids = self.gorev_havuzlari.get(role)
+            if havuz_ids is None or pid not in havuz_ids:
+                return False
 
         # H10: Görev havuzu
         allowed_ids = self.gorev_havuzlari.get(role)
@@ -910,22 +1003,25 @@ class NobetSolver:
                             model.Add(x[p.id, g, s] == 0)
         
         # H8. Exclusive görevler - kısıtlı OLMAYAN kişi exclusive slotlara gidemez
-        # Hangi görevlerin exclusive olduğunu bul (görevin exclusive flag'i true ise)
-        # AMA: Havuzu olan görevleri hariç tut - H10 zaten havuz kontrolü yapıyor
+        # Havuzlu görevlerde havuz üyeleri de girebilir
         exclusive_gorevler = set()
         for gorev in self.gorevler:
             if gorev.exclusive:
                 base = gorev.base_name if gorev.base_name else gorev.ad
-                if base not in self.gorev_havuzlari:
-                    exclusive_gorevler.add(base)
-        
+                exclusive_gorevler.add(base)
+
         # Kısıtlı olmayan kişiler exclusive slotlara gidemez
         # Veya farklı bir göreve kısıtlı kişiler de exclusive slotlara gidemez
         # Taşma görevi olarak bu göreve atanmış kişiler de girebilir
+        # Havuz üyeleri de girebilir
         for p in self.personel_listesi:
             for exclusive_gorev in exclusive_gorevler:
                 # Bu kişi bu exclusive göreve kısıtlı mı veya taşma görevi mi?
                 if p.kisitli_gorev != exclusive_gorev and p.tasma_gorevi != exclusive_gorev:
+                    # Havuz üyesi mi?
+                    havuz_ids = self.gorev_havuzlari.get(exclusive_gorev)
+                    if havuz_ids is not None and p.id in havuz_ids:
+                        continue  # Havuz üyesi — girebilir
                     # Hayır - bu exclusive göreve gidemez
                     exclusive_slotlar = self.role_slots.get(exclusive_gorev, [])
                     for g in range(1, self.gun_sayisi + 1):
@@ -1038,8 +1134,11 @@ class NobetSolver:
             model.Add(eksik >= hedef_toplam - toplam_atama)
             penalties.append(eksik * WEIGHT_TOPLAM)
         
-        # S4. Birlikte tutma (SOFT CONSTRAINT - Aynı gün ikisi de atanmalı tercih edilir)
-        WEIGHT_BIRLIKTE = 500  # Yüksek ağırlık ama hard değil
+        # S4. Birlikte tutma (SOFT CONSTRAINT)
+        # 1) Biri atanıp diğeri boş kalmasın (eski aynı-gün tercihi korunur)
+        # 2) Aynı gün çalışıyorlarsa aynı/eşdeğer görev ailesinde olsunlar.
+        #    AMELİYATHANE / MAVİ KOD / KVC birlikte üyeleri için tek aile kabul edilir.
+        WEIGHT_BIRLIKTE_AILE = 1000
         for kural in self.kurallar:
             if kural.tur == 'birlikte':
                 # Normalize edilmiş ID eşleştirme
@@ -1060,16 +1159,44 @@ class NobetSolver:
                             # Her iki kişinin de müsait olduğu günleri bul
                             ortak_gunler = p1_obj.musait_gunler & p2_obj.musait_gunler
 
-                            for g in range(1, self.gun_sayisi + 1):
+                            for g in ortak_gunler:
                                 p1_atama = sum(x[p1_id, g, s] for s in range(self.slot_sayisi))
                                 p2_atama = sum(x[p2_id, g, s] for s in range(self.slot_sayisi))
 
-                                if g in ortak_gunler:
-                                    # SOFT: Ortak günlerde birlikte atama tercih et
-                                    fark = model.NewIntVar(0, 2, f'birlikte_fark_{p1_id}_{p2_id}_{g}')
-                                    model.Add(p1_atama - p2_atama <= fark)
-                                    model.Add(p2_atama - p1_atama <= fark)
-                                    penalties.append(fark * WEIGHT_BIRLIKTE)
+                                # Eski davranışı koru: biri atanıp diğeri boş kalıyorsa ceza
+                                fark = model.NewIntVar(0, 1, f'birlikte_fark_{p1_id}_{p2_id}_{g}')
+                                model.Add(p1_atama - p2_atama <= fark)
+                                model.Add(p2_atama - p1_atama <= fark)
+                                penalties.append(fark * WEIGHT_BIRLIKTE)
+
+                                same_day = model.NewBoolVar(f'birlikte_same_day_{p1_id}_{p2_id}_{g}')
+                                model.Add(p1_atama + p2_atama == 2).OnlyEnforceIf(same_day)
+                                model.Add(p1_atama + p2_atama <= 1).OnlyEnforceIf(same_day.Not())
+
+                                same_family_vars = []
+                                for family_idx, slot_list in enumerate(self.birlikte_family_slots.values()):
+                                    p1_family_atama = sum(x[p1_id, g, s] for s in slot_list)
+                                    p2_family_atama = sum(x[p2_id, g, s] for s in slot_list)
+                                    same_family = model.NewBoolVar(
+                                        f'birlikte_aile_{p1_id}_{p2_id}_{g}_{family_idx}'
+                                    )
+                                    model.Add(p1_family_atama + p2_family_atama == 2).OnlyEnforceIf(same_family)
+                                    model.Add(p1_family_atama + p2_family_atama <= 1).OnlyEnforceIf(same_family.Not())
+                                    same_family_vars.append(same_family)
+
+                                birlikte_uyumlu = model.NewBoolVar(f'birlikte_uyumlu_{p1_id}_{p2_id}_{g}')
+                                if same_family_vars:
+                                    model.Add(sum(same_family_vars) == birlikte_uyumlu)
+                                else:
+                                    model.Add(birlikte_uyumlu == 0)
+
+                                # Aynı gün çalışıp farklı aileye düşerlerse ekstra ceza
+                                uyumsuz_ayni_gun = model.NewBoolVar(f'birlikte_uyumsuz_{p1_id}_{p2_id}_{g}')
+                                model.Add(birlikte_uyumlu <= same_day)
+                                model.Add(uyumsuz_ayni_gun >= same_day - birlikte_uyumlu)
+                                model.Add(uyumsuz_ayni_gun <= same_day)
+                                model.Add(uyumsuz_ayni_gun + birlikte_uyumlu <= 1)
+                                penalties.append(uyumsuz_ayni_gun * WEIGHT_BIRLIKTE_AILE)
         
         # S5. Homojen dağılım - Nöbetleri ay geneline yay (haftada ~1 nöbet hedefi)
         # Mazeretler izin veriyorsa yay, vermiyorsa sıkışık tutulabilir
@@ -1284,6 +1411,7 @@ class NobetSolver:
             toplam_slot = self.gun_sayisi * self.slot_sayisi
             min_nobet = min(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
             max_nobet = max(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
+            birlikte_grup_istatistikleri = self._hesapla_birlikte_grup_istatistikleri(atamalar)
             
             # DEBUG: Kısıtlamalı personel bilgileri
             kisitli_debug = []
@@ -1317,6 +1445,8 @@ class NobetSolver:
                 'solver_wall_time_s': round(solver.WallTime(), 3),
                 'eliminated_vars': eliminated_vars,
                 'kalite_skoru': self._hesapla_kalite_skoru(kisi_sayac, atamalar, toplam_atama, toplam_slot),
+                'birlikte_gruplar': birlikte_grup_istatistikleri,
+                'birlikte_esdeger_aile': BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
                 'kisi_detay': [
                     {'personel_id': str(p.id), 'personel_ad': p.ad, 'toplam': kisi_sayac[p.id]['toplam'],
                      'tipler': kisi_sayac[p.id]['tipler'], 'gorevler': kisi_sayac[p.id]['gorevler']}
