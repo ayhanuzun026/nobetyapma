@@ -1,7 +1,7 @@
 """
-Çözüm Stratejisi — Akıllı teşhis tabanlı retry + relaxation döngüsü.
-Faz 1: Orijinal parametrelerle çöz
-Faz 2: INFEASIBLE ise akıllı teşhis ve otomatik gevşetme
+Cozum Stratejisi � Akilli teshis tabanli retry + relaxation dongusu.
+Faz 1: Orijinal parametrelerle cozum
+Faz 2: INFEASIBLE ise akilli teshis ve otomatik gevsetme
 """
 
 import time as _time
@@ -9,8 +9,54 @@ import logging
 
 from solver_models import SolverGorev, SolverSonuc
 from ortools_solver import NobetSolver
+from utils import find_matching_id
 
 logger = logging.getLogger(__name__)
+
+
+def _sirala_birlikte_kurallari(kurallar, personeller, hedefler):
+    personel_map = {p.id: p for p in personeller}
+    birlikte_kurallari = []
+
+    for kural in kurallar:
+        if getattr(kural, 'tur', None) != 'birlikte':
+            continue
+
+        valid_ids = []
+        for raw_pid in getattr(kural, 'kisiler', []) or []:
+            matched_id = find_matching_id(raw_pid, personel_map.keys())
+            if matched_id is not None and matched_id not in valid_ids:
+                valid_ids.append(matched_id)
+
+        if len(valid_ids) < 2:
+            continue
+
+        ortak_gunler = None
+        for pid in valid_ids:
+            musait_gunler = set(getattr(personel_map[pid], 'musait_gunler', set()) or set())
+            ortak_gunler = musait_gunler if ortak_gunler is None else (ortak_gunler & musait_gunler)
+
+        min_hedef = min(
+            int((hedefler or {}).get(pid, {}).get('hedef_toplam', 0) or 0)
+            for pid in valid_ids
+        )
+
+        birlikte_kurallari.append({
+            'kural': kural,
+            'valid_ids': valid_ids,
+            'ortak_gun_sayisi': len(ortak_gunler or set()),
+            'min_hedef': min_hedef,
+            'grup_boyutu': len(valid_ids),
+        })
+
+    birlikte_kurallari.sort(
+        key=lambda item: (
+            item['ortak_gun_sayisi'],
+            -item['grup_boyutu'],
+            item['min_hedef'],
+        )
+    )
+    return birlikte_kurallari
 
 
 def solve_with_diagnostics(
@@ -87,6 +133,41 @@ def solve_with_diagnostics(
         tani_mesajlari.append("Ilk deneme basarisiz, teshis baslatiliyor...")
         logger.info("Faz 1 basarisiz, teshis baslatiliyor...")
 
+        # --- PLAN GEVSETME (erken deneme) ---
+        # Plan kontratindaki sert esitlemeler cozumu kilitliyorsa, once yumsatarak tekrar dene.
+        try:
+            if isinstance(aktif_plan_kontrati, dict) and aktif_plan_kontrati:
+                _uyg = dict(aktif_plan_kontrati.get("uygulama", {}) or {})
+                _uyg["toplam_hard"] = False
+                _uyg["gun_tipi_toleransi"] = max(int(_uyg.get("gun_tipi_toleransi", 0)), 2)
+                _uyg["gorev_kota_toleransi"] = max(int(_uyg.get("gorev_kota_toleransi", 0)), 2)
+                _uyg["gun_iskeleti_toleransi"] = max(int(_uyg.get("gun_iskeleti_toleransi", 0)), 2)
+                aktif_plan_kontrati = { **aktif_plan_kontrati, "uygulama": _uyg }
+                solver = NobetSolver(
+                    gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                    personeller=personeller, gorevler=gorevler,
+                    kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+                    kisitlama_istisnalari=kisitlama_istisnalari,
+                    birlikte_istisnalari=birlikte_istisnalari,
+                    aragun_istisnalari=aragun_istisnalari,
+                    manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                    ara_gun=ara_gun, max_sure_saniye=max(5, int(max_sure*0.2)),
+                    ignore_manual_conflicts=ignore_manual_conflicts,
+                    plan_kontrati=aktif_plan_kontrati,
+                )
+                _relaxed = solver.coz()
+                if _relaxed and _relaxed.basarili:
+                    tani_mesajlari.append("Plan gevsetilerek cozum bulundu (toplam_hard=False, tolerans=2)")
+                    sonuc = _relaxed
+                    kullanilan_ara_gun = ara_gun
+                    # Bu noktada basari bulunduysa tanilari kaydederek cikilir
+                    return SolverSonuc(
+                        basarili=sonuc.basarili, atamalar=sonuc.atamalar,
+                        istatistikler={ **sonuc.istatistikler, 'tani_mesajlari': tani_mesajlari },
+                        sure_ms=sonuc.sure_ms, mesaj=sonuc.mesaj
+                    ), {}, teshis_bilgisi, kullanilan_ara_gun
+        except Exception as _exc:
+            logger.warning("Plan gevsetme denemesi atlandi: %s", _exc)
         # Teşhis: Neden INFEASIBLE olduğunu analiz et
         diagnostics = solver._build_feasibility_diagnostics()
         aksiyonlar = solver._diagnose_infeasible(diagnostics)
@@ -165,10 +246,11 @@ def solve_with_diagnostics(
                             f"Ara gun {ara_gun}->{dene_ara_gun} gevsetilerek cozum bulundu"
                         )
                         break
-                aktif_ara_gun = 0  # Sonraki aksiyonlarda ara gün=0 kullan
+                aktif_ara_gun = 1  # Sonraki aksiyonlarda ara gün=1 ile dene
 
             elif aksiyon == 'exclusive_gevset':
                 aktif_gorevler = gorevler_noexcl
+                aktif_havuzlar = {}  # H10 havuz kısıtını da gevşet
                 for dene_ara_gun in range(aktif_ara_gun, 0, -1):
                     _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
@@ -219,28 +301,40 @@ def solve_with_diagnostics(
                         break
 
             elif aksiyon == 'birlikte_kaldir':
-                aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'birlikte']
-                for dene_ara_gun in range(aktif_ara_gun, 0, -1):
-                    _plani_yenile(dene_ara_gun)
-                    solver = NobetSolver(
-                        gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
-                        personeller=personeller, gorevler=aktif_gorevler,
-                        kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
-                        kisitlama_istisnalari=kisitlama_istisnalari,
-                        birlikte_istisnalari=birlikte_istisnalari,
-                        aragun_istisnalari=aragun_istisnalari,
-                        manuel_atamalar=manuel_atamalar, hedefler=hedefler,
-                        ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
-                        ignore_manual_conflicts=ignore_manual_conflicts,
-                        plan_kontrati=aktif_plan_kontrati,
-                    )
-                    sonuc = solver.coz()
-                    if sonuc.basarili:
-                        kullanilan_ara_gun = dene_ara_gun
-                        gevsetme_bilgisi['birlikte_kaldirildi'] = True
-                        tani_mesajlari.append(
-                            "Birlikte kurallari kaldirildiktan sonra cozum bulundu"
+                base_kurallar = [k for k in aktif_kurallar if k.tur != 'birlikte']
+                birlikte_sirali = _sirala_birlikte_kurallari(aktif_kurallar, personeller, hedefler)
+
+                for kaldirilan_sayi in range(1, len(birlikte_sirali) + 1):
+                    kalan_birlikte = [
+                        item['kural'] for item in birlikte_sirali[kaldirilan_sayi:]
+                    ]
+                    aktif_kurallar = base_kurallar + kalan_birlikte
+
+                    for dene_ara_gun in range(aktif_ara_gun, 0, -1):
+                        _plani_yenile(dene_ara_gun)
+                        solver = NobetSolver(
+                            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                            personeller=personeller, gorevler=aktif_gorevler,
+                            kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
+                            kisitlama_istisnalari=kisitlama_istisnalari,
+                            birlikte_istisnalari=birlikte_istisnalari,
+                            aragun_istisnalari=aragun_istisnalari,
+                            manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                            ara_gun=dene_ara_gun, max_sure_saniye=sure_per_aksiyon,
+                            ignore_manual_conflicts=ignore_manual_conflicts,
+                            plan_kontrati=aktif_plan_kontrati,
                         )
+                        sonuc = solver.coz()
+                        if sonuc.basarili:
+                            kullanilan_ara_gun = dene_ara_gun
+                            gevsetme_bilgisi['birlikte_kaldirildi'] = True
+                            gevsetme_bilgisi['kaldirilan_birlikte_kural_sayisi'] = kaldirilan_sayi
+                            tani_mesajlari.append(
+                                f"{kaldirilan_sayi} birlikte kurali kademeli kaldirilarak cozum bulundu"
+                            )
+                            break
+
+                    if sonuc.basarili:
                         break
 
             elif aksiyon == 'tum_soft_kaldir':
@@ -313,3 +407,4 @@ def solve_with_diagnostics(
     )
 
     return sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun
+

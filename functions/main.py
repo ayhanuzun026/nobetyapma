@@ -1,10 +1,10 @@
-"""
-Nöbet Yapma — Firebase Cloud Functions giriş noktası.
+﻿"""
+NÃ¶bet Yapma â€” Firebase Cloud Functions giriÅŸ noktasÄ±.
 5 endpoint: nobet_dagit, nobet_kapasite, nobet_hedef_hesapla, nobet_coz, debug_event_log
 """
 
 from firebase_functions import https_fn
-from firebase_admin import initialize_app, storage
+from firebase_admin import initialize_app
 from datetime import datetime, timedelta
 import logging
 import time
@@ -14,10 +14,10 @@ from utils import (
     normalize_id,
     _find_duplicate_personel_ids,
 )
-from excel_export import create_excel
 from kapasite import kapasite_hesapla
 from http_helpers import _cors_preflight, _json_response, _error_response
 from solve_strategy import solve_with_diagnostics
+from preflight_analyzer import analyze_preflight
 from firestore_logger import log_session
 from planlayici import (
     frontend_gorev_kota_override_topla,
@@ -53,7 +53,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "Veri gönderilmedi"}, status=400)
+            return _json_response({"error": "Veri gÃ¶nderilmedi"}, status=400)
 
         try:
             yil = _safe_int(data.get("yil", 2025), 2025)
@@ -61,12 +61,12 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             slot_sayisi = _safe_int(data.get("gunlukSayi") or data.get("slotSayisi", 5), 5)
             ara_gun = _safe_int(data.get("araGun", 2), 2)
         except (ValueError, TypeError) as ve:
-            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz parametre deÄŸeri: {ve}", "error_type": "ValueError"}, status=400)
 
         if not (1 <= ay <= 12):
-            return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz ay deÄŸeri: {ay}"}, status=400)
         if not (2000 <= yil <= 2100):
-            return _json_response({"error": f"Geçersiz yıl değeri: {yil}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz yÄ±l deÄŸeri: {yil}"}, status=400)
 
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
@@ -112,6 +112,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             kilitli_hedefler=kilitli_hedefler,
             gorev_kota_overrides=gorev_kota_overrides,
             kaynak="nobet_dagit_ortak_plan",
+            gorev_havuzlari=gorev_havuzlari,
         )
         hedefler = planlama.get("hedefler_map", {})
         plan_kontrati = planlama.get("plan_kontrati")
@@ -170,6 +171,9 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
                     }
                 })
 
+        from excel_export import create_excel
+        from firebase_admin import storage
+
         excel_file = create_excel(yil, ay, cizelge, gorevler, personeller, hedefler, gun_sayisi)
         bucket = storage.bucket()
         dosya_adi = f"sonuclar/nobet_{yil}_{ay}_{int(datetime.now().timestamp())}.xlsx"
@@ -190,6 +194,18 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_dagit", data, cikti, sure_ms,
                     frontend_loglar=data.get("frontendLoglar"))
+        # Hazırlık Analizi ekle
+        try:
+            _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
+            _haz = analyze_preflight(
+                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
+                gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+                manuel_atamalar=manuel_atamalar, ara_gun=ara_gun, plan_kontrati=_plan_dict,
+                kisitlama_istisnalari=kisitlama_istisnalari, max_preview=30
+            )
+            cikti['hazirlikAnalizi'] = _haz
+        except Exception as _e:
+            cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod':'ANALIZ_HATA','oneri': str(_e)[:120]}]}
         return _json_response(cikti)
 
     except Exception as e:
@@ -213,17 +229,17 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "Veri gönderilmedi"}, status=400)
+            return _json_response({"error": "Veri gÃ¶nderilmedi"}, status=400)
 
         try:
             yil = _safe_int(data.get("yil", 2025), 2025)
             ay = _safe_int(data.get("ay", 1), 1)
             slot_sayisi = _safe_int(data.get("slotSayisi", 5), 5)
         except (ValueError, TypeError) as ve:
-            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz parametre deÄŸeri: {ve}", "error_type": "ValueError"}, status=400)
 
         if not (1 <= ay <= 12):
-            return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz ay deÄŸeri: {ay}"}, status=400)
 
         resmi_tatiller = data.get("resmiTatiller", [])
 
@@ -267,7 +283,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "Veri gönderilmedi"}, status=400)
+            return _json_response({"error": "Veri gÃ¶nderilmedi"}, status=400)
 
         try:
             gun_sayisi = _safe_int(data.get("gunSayisi", 31), 31)
@@ -275,10 +291,10 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             gun_tipleri = {int(k): v for k, v in gun_tipleri_raw.items()}
             ara_gun = _safe_int(data.get("araGun", 2), 2)
         except (ValueError, TypeError) as ve:
-            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz parametre deÄŸeri: {ve}", "error_type": "ValueError"}, status=400)
 
         if gun_sayisi < 1 or gun_sayisi > 31:
-            return _json_response({"error": f"Geçersiz gün sayısı: {gun_sayisi}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz gÃ¼n sayÄ±sÄ±: {gun_sayisi}"}, status=400)
 
         saat_degerleri = data.get("saatDegerleri", None)
 
@@ -301,6 +317,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari = parse_gorev_kisitlamalari(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
+        gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
 
         planlama = ortak_plan_uret(
             gun_sayisi=gun_sayisi,
@@ -315,6 +332,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             saat_degerleri=saat_degerleri,
             kilitli_hedefler=kilitli_hedefler,
             kaynak="nobet_hedef_hesapla_ortak_plan",
+            gorev_havuzlari=gorev_havuzlari,
         )
         sonuc = planlama.get("hedef_sonuc")
         plan_kontrati = planlama.get("plan_kontrati")
@@ -353,7 +371,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
     try:
         data = req.get_json(silent=True)
         if not data:
-            return _json_response({"error": "Veri gönderilmedi"}, status=400)
+            return _json_response({"error": "Veri gÃ¶nderilmedi"}, status=400)
 
         try:
             yil = _safe_int(data.get("yil", 2025), 2025)
@@ -362,16 +380,16 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             ara_gun = _safe_int(data.get("araGun", 2), 2)
             max_sure = _safe_int(data.get("maxSure", 300), 300)
         except (ValueError, TypeError) as ve:
-            return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz parametre deÄŸeri: {ve}", "error_type": "ValueError"}, status=400)
 
         if not (1 <= ay <= 12):
-            return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz ay deÄŸeri: {ay}"}, status=400)
         if not (2000 <= yil <= 2100):
-            return _json_response({"error": f"Geçersiz yıl değeri: {yil}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz yÄ±l deÄŸeri: {yil}"}, status=400)
         if slot_sayisi < 1:
-            return _json_response({"error": f"Geçersiz slot sayısı: {slot_sayisi}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz slot sayÄ±sÄ±: {slot_sayisi}"}, status=400)
         if ara_gun < 0:
-            return _json_response({"error": f"Geçersiz ara gün değeri: {ara_gun}"}, status=400)
+            return _json_response({"error": f"GeÃ§ersiz ara gÃ¼n deÄŸeri: {ara_gun}"}, status=400)
 
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
@@ -387,11 +405,11 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                      len(gorevler) if gorevler else 0)
 
         if not personeller:
-            return _json_response({"error": "Personel listesi boş. En az 1 personel gereklidir."}, status=400)
+            return _json_response({"error": "Personel listesi boÅŸ. En az 1 personel gereklidir."}, status=400)
         if not gorevler:
-            return _json_response({"error": "Görev listesi boş. En az 1 görev tanımı gereklidir."}, status=400)
+            return _json_response({"error": "GÃ¶rev listesi boÅŸ. En az 1 gÃ¶rev tanÄ±mÄ± gereklidir."}, status=400)
         if len(personeller) < slot_sayisi:
-            logger.warning("Personel sayısı (%d) slot sayısından (%d) az — boş slotlar olabilir.",
+            logger.warning("Personel sayÄ±sÄ± (%d) slot sayÄ±sÄ±ndan (%d) az â€” boÅŸ slotlar olabilir.",
                            len(personeller), slot_sayisi)
 
         duplicate_ids = _find_duplicate_personel_ids(personeller)
@@ -425,6 +443,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 saat_degerleri=saat_degerleri,
                 kilitli_hedefler=kilitli_hedefler,
                 gorev_kota_overrides=gorev_kota_overrides,
+                gorev_havuzlari=gorev_havuzlari,
             )
         except Exception as hedef_err:
             logger.exception("Ortak planlama basarisiz: %s", hedef_err)
@@ -461,6 +480,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 kilitli_hedefler=kilitli_hedefler,
                 gorev_kota_overrides=gorev_kota_overrides,
                 kaynak=(plan_kontrati.kaynak if plan_kontrati else None),
+                gorev_havuzlari=gorev_havuzlari,
             )
 
         sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(
@@ -478,7 +498,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             plan_yenileyici=_plan_yenileyici,
         )
 
-        # Çizelge formatına dönüştür
+        # Ã‡izelge formatÄ±na dÃ¶nÃ¼ÅŸtÃ¼r
         cizelge = {}
         for g in range(1, gun_sayisi + 1):
             cizelge[str(g)] = [None] * len(gorevler)
@@ -496,7 +516,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 'mazeret_sayisi': len(p.mazeret_gunleri)
             })
 
-        # Kalite uyarıları oluştur
+        # Kalite uyarÄ±larÄ± oluÅŸtur
         kalite_uyarilari = []
         kalite_skoru = sonuc.istatistikler.get('kalite_skoru', {})
         if kalite_skoru:
@@ -540,6 +560,18 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_coz", data, cikti, sure_ms,
                     frontend_loglar=data.get("frontendLoglar"))
+        # Hazırlık Analizi ekle
+        try:
+            _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
+            _haz = analyze_preflight(
+                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
+                gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+                manuel_atamalar=manuel_atamalar, ara_gun=ara_gun, plan_kontrati=_plan_dict,
+                kisitlama_istisnalari=kisitlama_istisnalari, max_preview=30
+            )
+            cikti['hazirlikAnalizi'] = _haz
+        except Exception as _e:
+            cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod':'ANALIZ_HATA','oneri': str(_e)[:120]}]}
         return _json_response(cikti)
 
     except Exception as e:
@@ -581,3 +613,4 @@ def debug_event_log(req: https_fn.Request) -> https_fn.Response:
     except Exception as e:
         logger.warning("debug_event_log hatasi: %s", e)
         return _json_response({"ok": False, "error": str(e)[:200]}, status=500)
+

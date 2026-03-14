@@ -5585,8 +5585,24 @@ ta
       const birlikteEsitlemeMuaf = (personel, gorevAdi) => {
         const meta = ozelGorevMeta[gorevAdi] || {};
         const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(personel.id));
-        if (kisitlama) return true;
-        if (meta.ayriBina || meta.havuzlu || meta.kisitli) return true;
+        const normalizeRole = ad => normalizeGorevAdi(ad || '');
+        const hedefRol = normalizeRole(gorevAdi);
+        const kisitliRol = normalizeRole(kisitlama?.gorevAdi);
+        const tasmaRol = normalizeRole(kisitlama?.tasmaGorevi);
+
+        if (meta.ayriBina) return true;
+
+        if (kisitlama && hedefRol !== kisitliRol && hedefRol !== tasmaRol) {
+          return true;
+        }
+
+        const havuz = gorevHavuzlari[gorevAdi] || [];
+        if (havuz.length > 0 && !havuz.some(id => String(id) === String(personel.id))) {
+          if (hedefRol !== kisitliRol && hedefRol !== tasmaRol) {
+            return true;
+          }
+        }
+
         return false;
       };
 
@@ -6014,10 +6030,10 @@ ta
           } else if (ortakKapasite) {
             const ortakToplam = Object.values(ortakKapasite).reduce((s, v) => s + v, 0);
             detayHtml = `Ortak kapasite: <strong>${ortakToplam}</strong> gun (H.Ici:${ortakKapasite.hici || 0}, Prs:${ortakKapasite.prs || 0}, Cum:${ortakKapasite.cum || 0}, Cmt:${ortakKapasite.cmt || 0}, Pzr:${ortakKapasite.pzr || 0})`;
-            if (minHedef > 0) detayHtml += ` | Her biri en az <strong>${minHedef}</strong> nobet tutacak`;
+            if (minHedef > 0) detayHtml += ` | Hedeflenen birlikte gun sayisi: <strong>${minHedef}</strong>`;
             detayHtml += ` | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>`;
           } else if (minHedef > 0) {
-            detayHtml = `Her biri en az <strong>${minHedef}</strong> nobet tutacak (spesifik gunler cozum sonrasi belirlenir) | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>`;
+            detayHtml = `Hedeflenen birlikte gun sayisi: <strong>${minHedef}</strong> (spesifik gunler cozum sonrasi belirlenir) | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>`;
           } else {
             detayHtml = 'Hedef hesaplandiktan sonra birlikte gunler gorunecek | <em>AMELİYATHANE / MAVİ KOD / KVC ayni aile kabul edilir</em>';
           }

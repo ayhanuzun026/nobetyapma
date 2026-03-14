@@ -236,6 +236,44 @@ class NobetSolver:
             }
         return normalized
 
+    def _birlikte_gecerli_ids(self, kural: SolverKural) -> List[int]:
+        valid_ids = []
+        for raw_pid in getattr(kural, "kisiler", []) or []:
+            matched_id = find_matching_id(raw_pid, self.personeller.keys())
+            if matched_id is not None and matched_id not in valid_ids:
+                valid_ids.append(matched_id)
+        return valid_ids
+
+    def _birlikte_tercih_hedefi(self, valid_ids: List[int]) -> int:
+        if len(valid_ids) < 2:
+            return 0
+
+        hedef_toplamlar = [
+            int(self.hedefler.get(pid, {}).get('hedef_toplam', 0) or 0)
+            for pid in valid_ids
+        ]
+        hedef_toplamlar = [val for val in hedef_toplamlar if val > 0]
+        if not hedef_toplamlar:
+            return 0
+
+        min_hedef = min(hedef_toplamlar)
+        # Mümkün olduğunca beraber: ayrı binaya giden 1 nöbet hariç geri kalanı birlikte
+        heuristik_hedef = max(1, min_hedef - 1)
+
+        plan_hedef = 0
+        planlanan_gunler_map = self._planlanan_gunler_map() if self._gun_iskeleti_aktif_mi() else {}
+        if planlanan_gunler_map:
+            ortak_planlar = []
+            for i in range(len(valid_ids)):
+                for j in range(i + 1, len(valid_ids)):
+                    p1_days = planlanan_gunler_map.get(valid_ids[i], set())
+                    p2_days = planlanan_gunler_map.get(valid_ids[j], set())
+                    ortak_planlar.append(len(p1_days & p2_days))
+            if ortak_planlar:
+                plan_hedef = min(ortak_planlar)
+
+        return min(min_hedef, max(heuristik_hedef, plan_hedef))
+
     def _planlanan_rol_gunleri_map(self) -> Dict[int, Dict[int, str]]:
         """Plan kontratından kişi-gün-rol mapping'ini al."""
         if not isinstance(self.plan_kontrati, dict):
@@ -377,11 +415,7 @@ class NobetSolver:
             if kural.tur != 'birlikte':
                 continue
 
-            valid_ids = []
-            for raw_pid in kural.kisiler:
-                matched_pid = find_matching_id(raw_pid, self.personeller.keys())
-                if matched_pid is not None:
-                    valid_ids.append(matched_pid)
+            valid_ids = self._birlikte_gecerli_ids(kural)
 
             if len(valid_ids) < 2:
                 continue
@@ -429,6 +463,7 @@ class NobetSolver:
             birlikte_gruplar.append({
                 'kisiler': [self.personeller[pid].ad for pid in valid_ids],
                 'personel_ids': valid_ids,
+                'hedef_gun_sayisi': self._birlikte_tercih_hedefi(valid_ids),
                 'gunler': uyumlu_gunler,
                 'uyumlu_gun_sayisi': len(uyumlu_gunler),
                 'gun_detaylari': gun_detaylari,
@@ -667,6 +702,13 @@ class NobetSolver:
 
         role = self._role_name_by_slot(slot_idx)
         allowed_exception_roles = self.kisitlama_istisna_map.get((pid, gun), set())
+        # Manuel atama varsa rol/havuz/exclusive engellerini bu slot icin gorme (bos birakmayi tercih edelim)
+        is_manual_slot = any(
+            (find_matching_id(m.personel_id, self.personeller.keys()) == pid) and m.slot_idx == slot_idx and m.gun == gun
+            for m in self.manuel_atamalar
+        )
+        if is_manual_slot:
+            return True
 
         # H7: Kısıtlı görev kuralı (taşma görevi de izinli)
         if p.kisitli_gorev and role != p.kisitli_gorev and role not in allowed_exception_roles:
@@ -911,15 +953,42 @@ class NobetSolver:
         # --- KURAL 4: Birlikte kuralları (genellikle sorun değil ama bazen) ---
         birlikte_kurallari = [k for k in self.kurallar if k.tur == 'birlikte']
         if birlikte_kurallari:
-            aksiyonlar.append({
-                'aksiyon': 'birlikte_kaldir',
-                'puan': 50,
-                'neden': (
+            dusuk_ortaklik = []
+            for kural in birlikte_kurallari:
+                valid_ids = self._birlikte_gecerli_ids(kural)
+                if len(valid_ids) < 2:
+                    continue
+                ortak_gunler = None
+                for pid in valid_ids:
+                    musait = set(self.personeller[pid].musait_gunler)
+                    ortak_gunler = musait if ortak_gunler is None else (ortak_gunler & musait)
+                hedef = self._birlikte_tercih_hedefi(valid_ids)
+                if hedef > 0 and ortak_gunler is not None and len(ortak_gunler) < hedef:
+                    dusuk_ortaklik.append({
+                        'kisi_sayisi': len(valid_ids),
+                        'ortak_gun': len(ortak_gunler),
+                        'hedef': hedef,
+                    })
+
+            if dusuk_ortaklik or len(birlikte_kurallari) > 4:
+                puan = 55 if dusuk_ortaklik else 35
+                neden = (
                     f"{len(birlikte_kurallari)} birlikte kurali var, "
-                    "bunlar model karmasikligini artirabilir"
-                ),
-                'detay': {'kural_sayisi': len(birlikte_kurallari)}
-            })
+                    "ortak musaitlik bazi gruplarda hedefin altinda"
+                    if dusuk_ortaklik else
+                    f"{len(birlikte_kurallari)} birlikte kurali var, "
+                    "son care olarak kademeli gevsetme gerekebilir"
+                )
+                aksiyonlar.append({
+                    'aksiyon': 'birlikte_kaldir',
+                    'puan': puan,
+                    'neden': neden,
+                    'detay': {
+                        'kural_sayisi': len(birlikte_kurallari),
+                        'dusuk_ortaklik_sayisi': len(dusuk_ortaklik),
+                        'ornekler': dusuk_ortaklik[:5],
+                    }
+                })
 
         # --- KURAL 5: Genel kapasite krizi ---
         # Çok fazla zero-candidate varsa durumu çok kötü
@@ -1121,7 +1190,7 @@ class NobetSolver:
             for g1 in range(1, self.gun_sayisi + 1):
                 if g1 in p.mazeret_gunleri and (p.id, g1) not in self.manual_mazeret_override_days:
                     continue  # Mazeret gunu zaten 0, constraint gereksiz
-                for g2 in range(g1 + 1, min(g1 + self.ara_gun, self.gun_sayisi + 1)):
+                for g2 in range(g1 + 1, min(g1 + self.ara_gun + 1, self.gun_sayisi + 1)):
                     if g2 in p.mazeret_gunleri and (p.id, g2) not in self.manual_mazeret_override_days:
                         continue  # Mazeret gunu zaten 0, constraint gereksiz
                     if (p.id, g1, g2) not in self.aragun_istisna_set:
@@ -1223,10 +1292,10 @@ class NobetSolver:
                             model.Add(x[p.id, g, s] == 0)
 
         # H9. Ayrı bina slotları + birlikte kuralı üyeleri
-        #     YENİ FORMÜL: ceil(hedef/2) nöbet birlikte, geri kalanı serbest (ayrı binaya gidebilir)
+        #     Birlikte üyeleri en fazla 1 nöbet ayrı binaya yazılabilir
         #     3 nöbet → 2 birlikte, max 1 ayrı bina
-        #     4 nöbet → 2 birlikte, max 2 ayrı bina
-        #     5 nöbet → 3 birlikte, max 2 ayrı bina
+        #     4 nöbet → 3 birlikte, max 1 ayrı bina
+        #     5 nöbet → 4 birlikte, max 1 ayrı bina
         ayri_bina_slotlar = [
             s for s, gorev in enumerate(self.gorevler)
             if getattr(gorev, 'ayri_bina', False)
@@ -1246,11 +1315,8 @@ class NobetSolver:
                 hedef = self.hedefler.get(pid, {})
                 hedef_toplam = hedef.get('hedef_toplam', 3)
 
-                # floor(hedef/2) birlikte minimum, geri kalanı ayrı binaya gidebilir
-                birlikte_minimum = math.floor(hedef_toplam / 2)
-                ayri_bina_max = hedef_toplam - birlikte_minimum
-                # En az 1 izin ver (tamamen sıfır olmasın)
-                ayri_bina_max = max(ayri_bina_max, 1)
+                # En fazla 1 nöbet ayrı binaya yazılabilir, geri kalanı birlikte olmalı
+                ayri_bina_max = 1
 
                 toplam_ayri_bina_atamasi = []
                 for g in range(1, self.gun_sayisi + 1):
@@ -1463,17 +1529,14 @@ class NobetSolver:
         # 1) Biri atanıp diğeri boş kalmasın (eski aynı-gün tercihi korunur)
         # 2) Aynı gün çalışıyorlarsa aynı/eşdeğer görev ailesinde olsunlar.
         #    AMELİYATHANE / MAVİ KOD / KVC birlikte üyeleri için tek aile kabul edilir.
-        WEIGHT_BIRLIKTE_AILE = 1000
+        WEIGHT_BIRLIKTE_AILE = 2000
+        WEIGHT_BIRLIKTE_HEDEF = 6000
         for kural in self.kurallar:
             if kural.tur == 'birlikte':
-                # Normalize edilmiş ID eşleştirme
-                valid_ids = []
-                for pid in kural.kisiler:
-                    matched_id = find_matching_id(pid, self.personeller.keys())
-                    if matched_id is not None:
-                        valid_ids.append(matched_id)
+                valid_ids = self._birlikte_gecerli_ids(kural)
                 
                 if len(valid_ids) >= 2:
+                    birlikte_tercih_hedefi = self._birlikte_tercih_hedefi(valid_ids)
                     # SOFT: Birlikte çalışma tercihi - all-pairs karşılaştırma
                     for i in range(len(valid_ids)):
                         for j in range(i + 1, len(valid_ids)):
@@ -1483,6 +1546,7 @@ class NobetSolver:
                             p2_obj = self.personeller[p2_id]
                             # Her iki kişinin de müsait olduğu günleri bul
                             ortak_gunler = p1_obj.musait_gunler & p2_obj.musait_gunler
+                            uyumlu_gunler = []
 
                             for g in ortak_gunler:
                                 p1_atama = sum(x[p1_id, g, s] for s in range(self.slot_sayisi))
@@ -1522,6 +1586,15 @@ class NobetSolver:
                                 model.Add(uyumsuz_ayni_gun <= same_day)
                                 model.Add(uyumsuz_ayni_gun + birlikte_uyumlu <= 1)
                                 penalties.append(uyumsuz_ayni_gun * WEIGHT_BIRLIKTE_AILE)
+                                uyumlu_gunler.append(birlikte_uyumlu)
+
+                            if birlikte_tercih_hedefi > 0 and uyumlu_gunler:
+                                birlikte_eksik = model.NewIntVar(
+                                    0, birlikte_tercih_hedefi,
+                                    f'birlikte_hedef_eksik_{p1_id}_{p2_id}'
+                                )
+                                model.Add(birlikte_eksik >= birlikte_tercih_hedefi - sum(uyumlu_gunler))
+                                penalties.append(birlikte_eksik * WEIGHT_BIRLIKTE_HEDEF)
         
         # S5. Homojen dağılım - Nöbetleri ay geneline yay (haftada ~1 nöbet hedefi)
         # Mazeretler izin veriyorsa yay, vermiyorsa sıkışık tutulabilir

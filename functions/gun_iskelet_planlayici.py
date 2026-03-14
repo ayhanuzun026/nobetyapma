@@ -13,7 +13,15 @@ from itertools import combinations
 from typing import Dict, List, Optional, Set, Tuple
 
 from solver_models import SolverAtama, SolverGorev, SolverKural, SolverPersonel
-from utils import GUN_TIPLERI, SAAT_DEGERLERI, ESDEGER_TIP_GRUPLARI, find_matching_id, normalize_id
+from utils import (
+    BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
+    ESDEGER_TIP_GRUPLARI,
+    GUN_TIPLERI,
+    SAAT_DEGERLERI,
+    birlikte_aile_anahtari,
+    find_matching_id,
+    normalize_id,
+)
 
 
 class GunIskeletPlanlayici:
@@ -28,6 +36,7 @@ class GunIskeletPlanlayici:
         manuel_atamalar: Optional[List[SolverAtama]] = None,
         ara_gun: int = 2,
         gorev_kisitlamalari: Optional[Dict[int, dict]] = None,
+        gorev_havuzlari: Optional[Dict[str, Set[int]]] = None,
     ):
         self.gun_sayisi = gun_sayisi
         self.gun_tipleri = gun_tipleri
@@ -39,7 +48,15 @@ class GunIskeletPlanlayici:
         self.manuel_atamalar = manuel_atamalar or []
         self.ara_gun = ara_gun
         self.gorev_kisitlamalari = gorev_kisitlamalari or {}
+        self.gorev_havuzlari = gorev_havuzlari or {}
         self.gunluk_kapasite = max(len(gorevler), 1)
+
+        # Exclusive görev setini hazırla
+        self.exclusive_gorevler: Set[str] = set()
+        for gorev in gorevler:
+            if getattr(gorev, 'exclusive', False):
+                base = gorev.base_name if gorev.base_name else gorev.ad
+                self.exclusive_gorevler.add(base)
 
         self.planlanan_gunler: Dict[int, Set[int]] = {normalize_id(p.id): set() for p in personeller}
         self.kilitli_gunler: Dict[int, Set[int]] = {normalize_id(p.id): set() for p in personeller}
@@ -53,6 +70,10 @@ class GunIskeletPlanlayici:
         for idx, gorev in enumerate(gorevler):
             base = gorev.base_name if gorev.base_name else gorev.ad
             self.role_slots.setdefault(base, []).append(idx)
+        self.role_families: Dict[str, str] = {
+            role: birlikte_aile_anahtari(role)
+            for role in self.role_slots.keys()
+        }
         self.personel_rol_gunleri: Dict[int, Dict[int, str]] = {
             normalize_id(p.id): {} for p in personeller
         }
@@ -194,6 +215,68 @@ class GunIskeletPlanlayici:
     def _gun_kapasitesi_var_mi(self, gun: int, eklenecek: int = 1) -> bool:
         return len(self.gun_yuku[gun]) + eklenecek <= self.gunluk_kapasite
 
+    def _personel_rol_kisitlari(self, pid: int) -> Tuple[Optional[str], Optional[str]]:
+        personel = self.personeller.get(pid)
+        if personel is None:
+            return None, None
+
+        kisit = self.gorev_kisitlamalari.get(pid, {})
+        kisitli_gorev = kisit.get("gorevAdi") if kisit else getattr(personel, "kisitli_gorev", None)
+        tasma_gorevi = kisit.get("tasmaGorevi") if kisit else getattr(personel, "tasma_gorevi", None)
+        return kisitli_gorev, tasma_gorevi
+
+    def _role_personel_uygun_mu(self, pid: int, rol: str) -> bool:
+        if pid not in self.personeller:
+            return False
+
+        kisitli_gorev, tasma_gorevi = self._personel_rol_kisitlari(pid)
+
+        if kisitli_gorev and rol not in {kisitli_gorev, tasma_gorevi}:
+            return False
+
+        allowed_ids = self.gorev_havuzlari.get(rol)
+        if allowed_ids is not None and pid not in allowed_ids:
+            if rol not in {kisitli_gorev, tasma_gorevi}:
+                return False
+
+        if rol in self.exclusive_gorevler and rol not in {kisitli_gorev, tasma_gorevi}:
+            if allowed_ids is None or pid not in allowed_ids:
+                return False
+
+        return True
+
+    def _gun_icin_uygun_roller(
+        self,
+        pid: int,
+        gun: int,
+        kalan_kotalar: Optional[Dict[str, int]] = None,
+        aile: Optional[str] = None,
+    ) -> List[str]:
+        kisitli_gorev, tasma_gorevi = self._personel_rol_kisitlari(pid)
+        kalan_kotalar = kalan_kotalar or {}
+
+        roller = []
+        for rol in self.role_slots.keys():
+            if aile and self.role_families.get(rol) != aile:
+                continue
+            if not self._gun_rol_kapasitesi_var_mi(gun, rol):
+                continue
+            if not self._role_personel_uygun_mu(pid, rol):
+                continue
+            roller.append(rol)
+
+        def rol_onceligi(rol: str) -> Tuple[int, int, int, str]:
+            ana_gorev = 1 if kisitli_gorev and rol == kisitli_gorev else 0
+            tasma = 1 if tasma_gorevi and rol == tasma_gorevi else 0
+            kota = int(kalan_kotalar.get(rol, 0) or 0)
+            return (-ana_gorev, -kota, -tasma, str(rol))
+
+        roller.sort(key=rol_onceligi)
+        return roller
+
+    def _kisi_gunde_rol_bulabilir_mi(self, pid: int, gun: int) -> bool:
+        return len(self._gun_icin_uygun_roller(pid, gun)) > 0
+
     def _gun_uygun_mu(self, pid: int, gun: int, ignore_ayri: bool = False) -> bool:
         if gun in self.planlanan_gunler[pid]:
             return False
@@ -207,6 +290,8 @@ class GunIskeletPlanlayici:
         if self._ara_gun_ihlali_var_mi(pid, gun):
             return False
         if not ignore_ayri and self._ayri_ihlali_var_mi(pid, gun):
+            return False
+        if not self._kisi_gunde_rol_bulabilir_mi(pid, gun):
             return False
         return True
 
@@ -239,6 +324,73 @@ class GunIskeletPlanlayici:
                 gunler.append(gun)
         gunler.sort(key=lambda gun: (self._gun_skoru(pid, gun), gun))
         return gunler
+
+    def _birlikte_kaynak_tip_bul(
+        self,
+        pid: int,
+        gun_tipi: str,
+        allow_equivalent: bool = False,
+        allow_total_fallback: bool = False,
+    ):
+        if self.kalan_tipler[pid].get(gun_tipi, 0) > 0:
+            return gun_tipi
+
+        if allow_equivalent:
+            for kaynak_tip in GUN_TIPLERI:
+                if self.kalan_tipler[pid].get(kaynak_tip, 0) <= 0:
+                    continue
+                if gun_tipi in ESDEGER_TIP_GRUPLARI.get(kaynak_tip, []):
+                    return kaynak_tip
+
+        if allow_total_fallback and self.kalan_toplam.get(pid, 0) > 0:
+            return None
+
+        return False
+
+    def _birlikte_adaylari(
+        self,
+        grup: List[int],
+        allow_equivalent: bool = False,
+        allow_total_fallback: bool = False,
+    ) -> List[Tuple[Tuple[int, int, int], int, Dict[int, Optional[str]]]]:
+        adaylar = []
+        for gun in range(1, self.gun_sayisi + 1):
+            tip = self.gun_tipleri.get(gun)
+            if not self._gun_kapasitesi_var_mi(gun, len(grup)):
+                continue
+
+            kaynak_tipleri: Dict[int, Optional[str]] = {}
+            uygun = True
+            for pid in grup:
+                if not self._gun_uygun_mu(pid, gun):
+                    uygun = False
+                    break
+                kaynak_tip = self._birlikte_kaynak_tip_bul(
+                    pid,
+                    tip,
+                    allow_equivalent=allow_equivalent,
+                    allow_total_fallback=allow_total_fallback,
+                )
+                if kaynak_tip is False:
+                    uygun = False
+                    break
+                kaynak_tipleri[pid] = kaynak_tip
+
+            if not uygun:
+                continue
+
+            skor = (
+                len(self.gun_yuku[gun]),
+                sum(
+                    self._hafta_indexi(gun) == self._hafta_indexi(g)
+                    for pid in grup
+                    for g in self.planlanan_gunler[pid]
+                ),
+                gun,
+            )
+            adaylar.append((skor, gun, kaynak_tipleri))
+
+        return adaylar
 
     def _gune_ata(self, pid: int, gun: int, kilitli: bool = False,
                   kaynak_tip: Optional[str] = None) -> bool:
@@ -277,28 +429,22 @@ class GunIskeletPlanlayici:
             hedef = min(self.kalan_toplam.get(pid, 0) for pid in grup)
             yerlesen: List[int] = []
             while len(yerlesen) < hedef:
-                adaylar = []
-                for gun in range(1, self.gun_sayisi + 1):
-                    tip = self.gun_tipleri.get(gun)
-                    if not self._gun_kapasitesi_var_mi(gun, len(grup)):
-                        continue
-                    if any(not self._gun_uygun_mu(pid, gun) for pid in grup):
-                        continue
-                    if any(self.kalan_tipler[pid].get(tip, 0) <= 0 for pid in grup):
-                        continue
-                    skor = (
-                        len(self.gun_yuku[gun]),
-                        sum(self._hafta_indexi(gun) == self._hafta_indexi(g) for pid in grup for g in self.planlanan_gunler[pid]),
-                        gun,
+                adaylar = self._birlikte_adaylari(grup)
+                if not adaylar:
+                    adaylar = self._birlikte_adaylari(grup, allow_equivalent=True)
+                if not adaylar:
+                    adaylar = self._birlikte_adaylari(
+                        grup,
+                        allow_equivalent=True,
+                        allow_total_fallback=True,
                     )
-                    adaylar.append((skor, gun))
 
                 if not adaylar:
                     break
 
-                _, secilen_gun = min(adaylar, key=lambda item: item[0])
+                _, secilen_gun, kaynak_tipleri = min(adaylar, key=lambda item: item[0])
                 for pid in grup:
-                    self._gune_ata(pid, secilen_gun)
+                    self._gune_ata(pid, secilen_gun, kaynak_tip=kaynak_tipleri.get(pid))
                 yerlesen.append(secilen_gun)
 
             self.birlikte_raporu.append({
@@ -424,6 +570,16 @@ class GunIskeletPlanlayici:
             return
 
         rol_isimleri = list(self.role_slots.keys())
+        kalan_kotalar_map: Dict[int, Dict[str, int]] = {
+            normalize_id(p.id): dict(self.kalan_gorev_kotalari.get(normalize_id(p.id), {}))
+            for p in self.personel_listesi
+        }
+        birlikte_gun_map: Dict[Tuple[int, int], List[int]] = {}
+        for rapor in self.birlikte_raporu:
+            grup = [normalize_id(pid) for pid in rapor.get("kisiler", [])]
+            for gun in rapor.get("yerlesen", []) or []:
+                for pid in grup:
+                    birlikte_gun_map[(pid, gun)] = grup
 
         for p in self.personel_listesi:
             pid = normalize_id(p.id)
@@ -431,52 +587,62 @@ class GunIskeletPlanlayici:
             if not gunler:
                 continue
 
-            # Kişinin kısıtlı görevi ve taşma görevi
-            kisit = self.gorev_kisitlamalari.get(pid, {})
-            kisitli_gorev = kisit.get("gorevAdi") if kisit else (
-                getattr(p, "kisitli_gorev", None)
-            )
-            tasma_gorevi = kisit.get("tasmaGorevi") if kisit else (
-                getattr(p, "tasma_gorevi", None)
-            )
-
-            kalan_kotalar = dict(self.kalan_gorev_kotalari.get(pid, {}))
+            kisitli_gorev, tasma_gorevi = self._personel_rol_kisitlari(pid)
+            kalan_kotalar = kalan_kotalar_map.setdefault(pid, {})
 
             for gun in gunler:
-                # Manuel atama zaten işlendi, atla
                 if gun in self.personel_rol_gunleri.get(pid, {}):
                     continue
 
                 atanan_rol = None
+                grup = birlikte_gun_map.get((pid, gun), [])
+                if len(grup) >= 2:
+                    mevcut_aileler = []
+                    for diger_pid in grup:
+                        rol = self.personel_rol_gunleri.get(diger_pid, {}).get(gun)
+                        if rol:
+                            mevcut_aileler.append(self.role_families.get(rol))
 
-                # 1. kisitli_gorev varsa, kotası dolmamış ve günlük kapasitesi varsa
-                if kisitli_gorev and kisitli_gorev in self.role_slots:
+                    tercih_edilen_aileler = []
+                    if mevcut_aileler:
+                        tercih_edilen_aileler.extend(mevcut_aileler)
+                    if BIRLIKTE_ESDEGER_GOREV_AILE_ADI not in tercih_edilen_aileler:
+                        tercih_edilen_aileler.append(BIRLIKTE_ESDEGER_GOREV_AILE_ADI)
+
+                    for hedef_aile in tercih_edilen_aileler:
+                        uygun_roller = self._gun_icin_uygun_roller(
+                            pid,
+                            gun,
+                            kalan_kotalar=kalan_kotalar,
+                            aile=hedef_aile,
+                        )
+                        if uygun_roller:
+                            atanan_rol = uygun_roller[0]
+                            break
+
+                if atanan_rol is None and kisitli_gorev and kisitli_gorev in self.role_slots:
                     if (kalan_kotalar.get(kisitli_gorev, 1) > 0
-                            and self._gun_rol_kapasitesi_var_mi(gun, kisitli_gorev)):
+                            and self._gun_rol_kapasitesi_var_mi(gun, kisitli_gorev)
+                            and self._role_personel_uygun_mu(pid, kisitli_gorev)):
                         atanan_rol = kisitli_gorev
                     elif tasma_gorevi and tasma_gorevi in self.role_slots:
                         if (kalan_kotalar.get(tasma_gorevi, 1) > 0
-                                and self._gun_rol_kapasitesi_var_mi(gun, tasma_gorevi)):
+                                and self._gun_rol_kapasitesi_var_mi(gun, tasma_gorevi)
+                                and self._role_personel_uygun_mu(pid, tasma_gorevi)):
                             atanan_rol = tasma_gorevi
 
-                # 2. Kısıtlı görev yoksa, kotası dolmamış VE günlük kapasitesi olan role öncelik
                 if atanan_rol is None:
-                    en_uygun = None
-                    en_uygun_kalan = -1
-                    for rol in rol_isimleri:
-                        if not self._gun_rol_kapasitesi_var_mi(gun, rol):
-                            continue
-                        kalan = kalan_kotalar.get(rol, 0)
-                        if kalan > en_uygun_kalan:
-                            en_uygun_kalan = kalan
-                            en_uygun = rol
-                    if en_uygun is not None:
-                        atanan_rol = en_uygun
+                    uygun_roller = self._gun_icin_uygun_roller(
+                        pid,
+                        gun,
+                        kalan_kotalar=kalan_kotalar,
+                    )
+                    if uygun_roller:
+                        atanan_rol = uygun_roller[0]
 
-                # 3. Fallback: günlük kapasitesi olan herhangi bir rol
                 if atanan_rol is None:
                     for rol in rol_isimleri:
-                        if self._gun_rol_kapasitesi_var_mi(gun, rol):
+                        if self._gun_rol_kapasitesi_var_mi(gun, rol) and self._role_personel_uygun_mu(pid, rol):
                             atanan_rol = rol
                             break
 
