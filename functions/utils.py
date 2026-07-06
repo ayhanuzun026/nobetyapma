@@ -3,7 +3,7 @@ Ortak yardımcı fonksiyonlar — proje bağımlılığı yok (yaprak modül).
 """
 
 from datetime import date, timedelta
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 import math
 import hashlib
 import re
@@ -47,8 +47,8 @@ _TURKCE_ASCII_TRANSLATION = str.maketrans({
 # ID NORMALİZASYON
 # ============================================
 
-def normalize_id(pid) -> int:
-    """ID'yi int'e normalize et"""
+def normalize_id(pid) -> Optional[int]:
+    """ID'yi int'e normalize et. Geçersiz/None girdi için None döner."""
     if pid is None:
         return None
     if isinstance(pid, bool):

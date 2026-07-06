@@ -31,43 +31,48 @@ Frontend için derleme adımı yoktur — `public/index.html` doğrudan sunulur.
 
 ## Mimari
 
-### Çift Motorlu Çözücü Stratejisi
+### Tek Motorlu Çözücü + İki Aşamalı Planlama
 
-Sistemde otomatik geri dönüşlü iki bağımsız çizelgeleme motoru bulunur:
+Sistem, iki AYRI OR-Tools CP-SAT modeli kullanır (eski greedy motor kaldırılmıştır):
 
-1. **Greedy Motor** (`greedy_solver.py` → `NobetYoneticisi`) — Hızlı sezgisel çözücü, `/nobet_dagit` üzerinden hızlı önizleme için kullanılır
-2. **OR-Tools CP-SAT Motor** (`ortools_solver.py` → `NobetSolver`) — Optimal çözüm için kısıt programlama çözücüsü, `/nobet_coz` üzerinden kullanılır
+1. **Hedef Modeli** (`hedef_hesaplayici.py` → `HedefHesaplayici`) — "kim kaç nöbet tutacak" sorusunu (kişi başı adil hedef sayıları) çözen CP-SAT modeli
+2. **Çizelge Modeli** (`ortools_solver.py` → `NobetSolver`) — hedefleri gerçek takvime yerleştiren CP-SAT modeli ("kim, hangi gün, hangi slot")
 
-OR-Tools INFEASIBLE (çözümsüz) döndürürse, `solve_strategy.py` **tanılama tabanlı gevşetme döngüsü** çalıştırır: kök nedeni teşhis et → kısıtları otomatik gevşet (ör. `ara_gun` azalt) → tekrar dene. Hâlâ çözüm bulunamazsa `greedy_fallback.py` aracılığıyla greedy motora geri döner.
+Arada `gun_iskelet_planlayici.py` (sezgisel, OR-Tools kullanmaz) hedefleri günlere/rollere dağıtıp `PlanKontrati` üretir; bu, çizelge modeline yumuşak/sert "iskelet" kısıtları olarak beslenir. Üç endpoint de aynı planı `planlayici.ortak_plan_uret()` üzerinden üretir.
 
-### 4 Cloud Function Endpoint'i (main.py)
+`nobet_coz` INFEASIBLE dönerse, `solve_strategy.py` **tanılama tabanlı gevşetme döngüsü** çalıştırır: kök nedeni teşhis et → kısıtları otomatik gevşet (ör. `ara_gun` azalt; exclusive/ayrı/birlikte kurallarını kaldır) → tekrar dene. **Greedy geri dönüş YOKTUR**; son çare tüm yumuşak kısıtların kaldırılmasıdır (`tum_soft_kaldir`).
+
+### 5 Cloud Function Endpoint'i (main.py)
 
 | Endpoint | Amaç | Bellek | Zaman Aşımı |
 |---|---|---|---|
-| `nobet_dagit` | Greedy dağıtım | 1 GB | 540s |
+| `nobet_dagit` | OR-Tools hızlı önizleme (Excel + imzalı URL üretir) | 1 GB | 540s |
 | `nobet_kapasite` | Kapasite analizi | 512 MB | 60s |
 | `nobet_hedef_hesapla` | Hedef hesaplama (OR-Tools) | 1 GB | 300s |
-| `nobet_coz` | Optimal çözüm (OR-Tools + geri dönüş) | 2 GB | 540s |
+| `nobet_coz` | Optimal çözüm (OR-Tools + gevşetme döngüsü) | 2 GB | 540s |
+| `debug_event_log` | Frontend debug event → Firestore | 256 MB | 10s |
+
+Not: Frontend şu an yalnızca `nobet_coz` ve `nobet_hedef_hesapla`'yı çağırır; `nobet_dagit` ve `nobet_kapasite` deploy edilir ama frontend'den kullanılmaz. Girdi boyut üst sınırları (`main.py`): `MAX_SLOT_SAYISI=50`, `MAX_PERSONEL=1000`, `MAX_GOREV=300` (OOM/DoS koruması).
 
 ### Backend Modül Haritası (functions/)
 
-- **`main.py`** — Giriş noktası, 4 HTTP endpoint, Firebase başlatma
-- **`ortools_solver.py`** — `NobetSolver`: Üçlü denge (sayı/saat/hafta sonu) ve ağırlıklı ceza yöntemiyle CP-SAT modeli
-- **`greedy_solver.py`** — `NobetYoneticisi`: Gün tipi kotalarıyla sezgisel çizelgeleyici
-- **`hedef_hesaplayici.py`** — `HedefHesaplayici`: OR-Tools kullanarak kişi başı adil nöbet hedefi hesaplar
-- **`solve_strategy.py`** — Tanılama döngüsü: çöz → çözümsüzlüğü teşhis et → gevşet → tekrar dene → greedy geri dönüş
+- **`main.py`** — Giriş noktası, 5 HTTP endpoint, Firebase başlatma, girdi boyut doğrulama
+- **`ortools_solver.py`** — `NobetSolver`: Üçlü denge (sayı/saat/hafta sonu) ve ağırlıklı ceza yöntemiyle CP-SAT çizelge modeli
+- **`hedef_hesaplayici.py`** — `HedefHesaplayici`: Ayrı bir CP-SAT modeliyle kişi başı adil nöbet hedefi hesaplar
+- **`gun_iskelet_planlayici.py`** — `GunIskeletPlanlayici`: Hedefleri günlere/rollere dağıtan sezgisel iskelet planlayıcı (Faz 3); OR-Tools kullanmaz
+- **`planlayici.py`** — `ortak_plan_uret()`: Hedef + iskeleti `PlanKontrati`'ye paketleyen orkestratör (3 endpoint aynı planı kullansın diye)
+- **`solve_strategy.py`** — Tanılama döngüsü: çöz → çözümsüzlüğü teşhis et → gevşet → tekrar dene (greedy geri dönüş YOK)
 - **`parsers.py`** — Frontend JSON'unu backend veri modellerine dönüştürür; ID normalizasyonu yapar
 - **`utils.py`** — Ortak yardımcılar: `normalize_id()` (SHA1 tabanlı), takvim fonksiyonları, gün tipi sabitleri
-- **`models.py`** — Greedy çözücü veri sınıfları: `GorevTanim`, `Personel`
-- **`solver_models.py`** — OR-Tools veri sınıfları: `SolverPersonel`, `SolverGorev`, `SolverKural`, `SolverAtama`; ceza ağırlık sabitleri
-- **`greedy_fallback.py`** — OR-Tools sonuç formatını greedy formatına dönüştürür
+- **`solver_models.py`** — OR-Tools veri sınıfları: `SolverPersonel`, `SolverGorev`, `SolverKural`, `SolverAtama`, `PlanKontrati`; ceza ağırlık sabitleri
 - **`excel_export.py`** — OpenPyXL tabanlı Excel rapor üretimi
 - **`kapasite.py`** — Personel müsaitliği ve slot kapasitesi analizi
 - **`http_helpers.py`** — CORS preflight, JSON/hata yanıt yardımcıları
+- **`firestore_logger.py`** — Her backend çağrısını `debug_sessions`'a kaydeder (PII maskeli, 30 gün TTL)
 
 ### Frontend (public/index.html)
 
-Tüm CSS, JS ve HTML'i içeren 8.500+ satırlık tek monolitik dosya. Firebase SDK v9.6.1 (auth, Firestore, storage) kullanır. 6 adımlı sihirbaz arayüzü. Durum LocalStorage ile saklanır.
+Tüm CSS, JS ve HTML'i içeren ~9.900 satırlık tek monolitik dosya. Firebase SDK v9.6.1 (auth, Firestore) kullanır. 6 adımlı sihirbaz arayüzü. Durum çift katmanlı saklanır: LocalStorage (senkron) + Firestore bulut senkronizasyonu (`users/{uid}/months/{yil}_{ay}`, 2sn debounce; yalnızca Google kullanıcıları). Ayrı bir `public/admin.html` debug paneli `debug_sessions`'ı okur (Google giriş + `firestore.rules` admin allowlist ile korumalı).
 
 ## Alan Kavramları
 

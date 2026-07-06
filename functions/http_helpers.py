@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization'
 }
 
 
@@ -21,7 +21,14 @@ def _cors_preflight():
 
 
 def _json_response(payload: dict, status: int = 200):
-    return https_fn.Response(json.dumps(payload), status=status, headers=CORS_HEADERS)
+    # Content-Type + charset açıkça belirtilir (aksi halde text/html varsayılıyordu),
+    # ensure_ascii=False ile Türkçe karakterler \uXXXX yerine düz gönderilir.
+    headers = {**CORS_HEADERS, 'Content-Type': 'application/json; charset=utf-8'}
+    return https_fn.Response(
+        json.dumps(payload, ensure_ascii=False),
+        status=status,
+        headers=headers,
+    )
 
 
 def _error_response(e: Exception, context: str = ""):

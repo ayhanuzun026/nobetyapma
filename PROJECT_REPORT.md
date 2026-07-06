@@ -1,3 +1,9 @@
+> **⚠️ ESKİMİŞ (2026-02-21).** Bu rapor o tarihteki duruma aittir ve artık GEÇERSİZDİR:
+> çift-motorlu (greedy + OR-Tools) mimariyi anlatır, oysa greedy motor sonradan
+> kaldırılmıştır (sistem artık tek motorlu: iki ayrı OR-Tools modeli). Frontend satır
+> sayısı ve dosya haritası da değişmiştir. Güncel mimari için `CLAUDE.md`'ye bakın.
+> Tarihsel referans olarak saklanmaktadır.
+
 # Nöbet Robotu Pro v2 - Kapsamlı Proje İnceleme Raporu
 **Tarih:** 2026-02-21
 

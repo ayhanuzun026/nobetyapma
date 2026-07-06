@@ -1,32 +1,54 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // debug_sessions: yalnızca Cloud Functions (admin SDK) yazabilir,
-    // okuma şimdilik açık (geliştirme aşaması — sonra kısıtlanacak)
-    match /debug_sessions/{sessionId} {
-      allow read: if true;
-      allow write: if false;
 
-      match /payload/{part} {
-        allow read: if true;
-        allow write: if false;
-      }
+    // ---------------------------------------------------------------
+    // Yönetici allowlist — debug koleksiyonları KİŞİSEL VERİ içerir.
+    // Yalnızca aşağıdaki UID'ler debug kayıtlarını okuyabilir.
+    // KURULUM: Firebase Console > Authentication > Users ekranından kendi
+    // UID'nizi alıp 'ADMIN_UID_BURAYA_EKLE' yerine yazın, sonra rules'ı
+    // yeniden deploy edin. Liste boşken (placeholder) tüm admin okumaları
+    // reddedilir — bu bilinçli, fail-secure bir varsayılandır.
+    // ---------------------------------------------------------------
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.uid in [
+          'TJg6pfV9NdU4exBfRrqeaYRWigC3'
+        ];
     }
 
-    // debug_frontend_logs: JS'den doğrudan yazılır
-    match /debug_frontend_logs/{docId} {
-      allow read: if true;
-      allow write: if true;
-    }
-
-    // Kullanıcı verileri — sadece kendi verisini okuyup yazabilir
+    // Kullanıcı verileri — herkes yalnızca kendi verisini okuyup yazar
     match /users/{userId}/{document=**} {
       allow read, write: if request.auth != null && request.auth.uid == userId;
     }
 
-    // Diğer koleksiyonlar
+    // debug_sessions: yalnızca Cloud Functions (admin SDK) yazar (rules'ı bypass eder);
+    // istemci okuması admin allowlist'e kısıtlı. (Önceden okuma tamamen açıktı.)
+    match /debug_sessions/{sessionId} {
+      allow read: if isAdmin();
+      allow write: if false;
+
+      match /payload/{part} {
+        allow read: if isAdmin();
+        allow write: if false;
+      }
+    }
+
+    // debug_frontend_logs: girişli kullanıcı yazabilir (anonim/kimliksiz spam engellenir);
+    // okuma admin'e kısıtlı. (Önceden yazma da okuma da tamamen açıktı.)
+    match /debug_frontend_logs/{docId} {
+      allow read: if isAdmin();
+      allow create: if request.auth != null;
+      allow update, delete: if false;
+    }
+
+    // Yukarıda açıkça izin verilmeyen her şey: VARSAYILAN REDDET.
+    // (Eski "allow read, write: if request.auth != null" catch-all kaldırıldı —
+    //  o kural herhangi bir girişli kullanıcıya TÜM koleksiyonlara erişim veriyor,
+    //  ve Firestore'un izin-verici OR semantiği yüzünden debug kısıtlamalarını
+    //  etkisiz kılıyordu.)
     match /{document=**} {
-      allow read, write: if request.auth != null;
+      allow read, write: if false;
     }
   }
 }

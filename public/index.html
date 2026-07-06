@@ -1965,7 +1965,7 @@ ta
       <th>Saat</th>
   `;
       ozelGorevler.forEach(g => {
-        headerHtml += `<th style="background:#dbeafe; color:#1e40af; font-size:10px;">${g}</th>`;
+        headerHtml += `<th style="background:#dbeafe; color:#1e40af; font-size:10px;">${escapeHtml(g)}</th>`;
       });
       headerHtml += '</tr>';
       thead.innerHTML = headerHtml;
@@ -1976,7 +1976,7 @@ ta
         const toplam = yillikToplamHesapla(p);
         const tr = document.createElement('tr');
         let html = `
-      <td style="font-weight:700;">${p.ad || '(isimsiz)'}</td>
+      <td style="font-weight:700;">${escapeHtml(p.ad || '(isimsiz)')}</td>
       <td>${toplam.hici}</td>
       <td>${toplam.prs}</td>
       <td>${toplam.cum}</td>
@@ -2046,11 +2046,11 @@ ta
     <div style="margin-top:10px; display:flex; gap:20px; flex-wrap:wrap;">
       <div>
         <strong style="color:#16a34a;">📉 Az Tutanlar:</strong>
-        ${azTutanlar.map(y => `<div style="font-size:11px;">${y.ad}: ${y.toplam} nöbet</div>`).join('')}
+        ${azTutanlar.map(y => `<div style="font-size:11px;">${escapeHtml(y.ad)}: ${y.toplam} nöbet</div>`).join('')}
       </div>
       <div>
         <strong style="color:#dc2626;">📈 Çok Tutanlar:</strong>
-        ${cokTutanlar.map(y => `<div style="font-size:11px;">${y.ad}: ${y.toplam} nöbet</div>`).join('')}
+        ${cokTutanlar.map(y => `<div style="font-size:11px;">${escapeHtml(y.ad)}: ${y.toplam} nöbet</div>`).join('')}
       </div>
     </div>
   `;
@@ -2066,7 +2066,7 @@ ta
       // Personel select
       const personelSelect = document.getElementById('gecmis-personel');
       personelSelect.innerHTML = personelListesi.map(p =>
-        `<option value="${p.id}">${p.ad || '(isimsiz)'}</option>`
+        `<option value="${p.id}">${escapeHtml(p.ad || '(isimsiz)')}</option>`
       ).join('');
 
       // Yıl select
@@ -2622,7 +2622,7 @@ ta
       // Header
       let headerHtml = '<tr><th>Ay</th><th>H.İçi</th><th>Prş</th><th>Cum</th><th>Cmt</th><th>Pzr</th><th>Toplam</th>';
       ozelGorevler.forEach(g => {
-        headerHtml += `<th style="background:#dbeafe; color:#1e40af; font-size:10px;">${g}</th>`;
+        headerHtml += `<th style="background:#dbeafe; color:#1e40af; font-size:10px;">${escapeHtml(g)}</th>`;
       });
       headerHtml += '</tr>';
       thead.innerHTML = headerHtml;
@@ -2655,7 +2655,7 @@ ta
           const val = ayData.gorevler?.[g] || 0;
           gorevToplam[g] += val;
           html += `<td style="background:#eff6ff;"><input type="number" class="inp-cell" value="${val}" min="0" style="background:#eff6ff;"
-        onblur="gecmisGorevGuncelle(${personel.id}, ${yil}, ${ay}, '${g}', this.value)"></td>`;
+        onblur="gecmisGorevGuncelle(${personel.id}, ${yil}, ${ay}, '${escapeHtml(g)}', this.value)"></td>`;
         });
 
         tr.innerHTML = html;
@@ -2731,7 +2731,7 @@ ta
       const gorevSelect = document.getElementById('manuel-gorev');
       if (gorevSelect) {
         gorevSelect.innerHTML = gorevler.map((g, idx) =>
-          `<option value="${idx}">${g.ad}</option>`
+          `<option value="${idx}">${escapeHtml(g.ad)}</option>`
         ).join('');
       }
 
@@ -2740,13 +2740,13 @@ ta
       if (kisitlamaGorevSelect) {
         const benzersizGorevler = getOzelGorevler();
         kisitlamaGorevSelect.innerHTML = '<option value="">Görev seçin...</option>' +
-          benzersizGorevler.map(g => `<option value="${g}">${g}</option>`).join('');
+          benzersizGorevler.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
 
         // Taşma görevi select'ini de doldur
         const tasmaSelect = document.getElementById('kisitlama-tasma');
         if (tasmaSelect) {
           tasmaSelect.innerHTML = '<option value="">Yok</option>' +
-            benzersizGorevler.map(g => `<option value="${g}">${g}</option>`).join('');
+            benzersizGorevler.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
         }
       }
       kisitlamaHavuzSecenekleriniGuncelle();
@@ -2756,7 +2756,7 @@ ta
       if (havuzGorevSelect) {
         const benzersizGorevler = getOzelGorevler();
         havuzGorevSelect.innerHTML = '<option value="">Görev seçin...</option>' +
-          benzersizGorevler.map(g => `<option value="${g}">${g}</option>`).join('');
+          benzersizGorevler.map(g => `<option value="${escapeHtml(g)}">${escapeHtml(g)}</option>`).join('');
       }
       havuzMevcutListeGuncelle();
 
@@ -2813,7 +2813,7 @@ ta
         const musaitParcalari = GUN_TIPLERI
           .filter(t => musaitGunler[t] > 0)
           .map(t => `${GUN_TIPI_LABEL[t]}: ${musaitGunler[t]} gün`);
-        bilgiEl.innerHTML = `📋 <strong>${personel.ad}</strong> toplam müsait: <strong>${toplamMusait} gün</strong> — ${musaitParcalari.join(', ')}${toplamHedef > 0 ? ` (mevcut hedef: ${toplamHedef})` : ''}`;
+        bilgiEl.innerHTML = `📋 <strong>${escapeHtml(personel.ad)}</strong> toplam müsait: <strong>${toplamMusait} gün</strong> — ${musaitParcalari.join(', ')}${toplamHedef > 0 ? ` (mevcut hedef: ${toplamHedef})` : ''}`;
       }
 
       // Gün tipi input'larını ön-doldur ve özet güncelle
@@ -2969,12 +2969,12 @@ ta
         if (k.tur === 'ayri') {
           const n1 = personelListesi.find(p => p.id == k.p1)?.ad || '?';
           const n2 = personelListesi.find(p => p.id == k.p2)?.ad || '?';
-          li.innerHTML = `<span style="flex:1;">🚫 ${n1} ↔ ${n2}</span>
+          li.innerHTML = `<span style="flex:1;">🚫 ${escapeHtml(n1)} ↔ ${escapeHtml(n2)}</span>
         <button class="btn btn-danger btn-sm" onclick="kuralSil(${idx})"><i class="fa-solid fa-trash"></i></button>`;
           ayriListe.appendChild(li);
         } else {
           const isimler = k.kisiler.map(id => personelListesi.find(p => p.id == id)?.ad || '?').join(' + ');
-          li.innerHTML = `<span style="flex:1;">🤝 ${isimler}</span>
+          li.innerHTML = `<span style="flex:1;">🤝 ${escapeHtml(isimler)}</span>
         <button class="btn btn-danger btn-sm" onclick="kuralSil(${idx})"><i class="fa-solid fa-trash"></i></button>`;
           birlikteListe.appendChild(li);
         }
@@ -3210,7 +3210,7 @@ ta
         const celiskiIcon = (celiskiVar || mazeretIstisnasi) ? '⚠️ ' : '📌 ';
         const notlar = [];
         if (celiskiVar) {
-          notlar.push(`<span style="font-size:10px; color:#b45309;" title="Bu kişi ${kisitlama.gorevAdi} görevine kısıtlı ama farklı göreve atandı">(KISIT ISTISNASI)</span>`);
+          notlar.push(`<span style="font-size:10px; color:#b45309;" title="Bu kişi ${escapeHtml(kisitlama.gorevAdi)} görevine kısıtlı ama farklı göreve atandı">(KISIT ISTISNASI)</span>`);
         }
         if (mazeretIstisnasi) {
           notlar.push('<span style="font-size:10px; color:#b45309;" title="Bu manuel atama mazeret/izin çakışmasına rağmen kullanıcı onayıyla kaydedildi">(MAZERET ONAYI)</span>');
@@ -3219,7 +3219,7 @@ ta
 
         return `
       <span class="badge badge-info" style="margin:2px; ${badgeStyle}">
-        ${celiskiIcon}${personel?.ad || '?'} → ${m.gun}. gün (${tipLabel}) - ${m.gorevAdi}${notHtml}
+        ${celiskiIcon}${escapeHtml(personel?.ad || '?')} → ${m.gun}. gün (${tipLabel}) - ${escapeHtml(m.gorevAdi)}${notHtml}
         <button onclick="manuelAtamaSil(${idx})" style="background:none; border:none; cursor:pointer; margin-left:4px;">✕</button>
       </span>
     `;
@@ -3320,7 +3320,7 @@ ta
               style="background:none; border:none; font-size:20px; cursor:pointer; color:#6b7280;">✕</button>
           </div>
           <div class="modal-body">
-            <p style="margin-bottom:10px;"><strong>${personel.ad}</strong> için girdiğiniz değerler müsait gün sayısını aşıyor.</p>
+            <p style="margin-bottom:10px;"><strong>${escapeHtml(personel.ad)}</strong> için girdiğiniz değerler müsait gün sayısını aşıyor.</p>
             ${toplamUyari}
             ${detayHTML}
             <div style="margin:12px 0;">
@@ -3465,7 +3465,7 @@ ta
           const bilgi = bilgiParcalari.length > 0 ? bilgiParcalari.join(' + ') : 'Hedef yok';
           gunTipiHTML = `
         <div class="help" style="margin-top:6px; color:#6d28d9;">
-          📊 ${k.gorevAdi} görevine atanacak: ${bilgi}
+          📊 ${escapeHtml(k.gorevAdi)} görevine atanacak: ${bilgi}
         </div>
       `;
         }
@@ -3565,7 +3565,7 @@ ta
       <div style="background:#f5f3ff; border:1px solid #c4b5fd; border-radius:10px; padding:12px; margin-bottom:10px; box-shadow:0 1px 3px rgba(124,58,237,0.1);">
         <div class="flex justify-between items-center">
           <div>
-            <strong style="color:#7c3aed;">${personel?.ad || '?'}</strong>
+            <strong style="color:#7c3aed;">${escapeHtml(personel?.ad || '?')}</strong>
             <span style="color:#6b7280;"> → sadece </span>
             <strong style="color:#7c3aed;">${escapeHtml(k.gorevAdi)}</strong>
             <span class="badge badge-info" style="margin-left:8px;">${toplamHedef} nöbet</span>
@@ -4040,13 +4040,13 @@ ta
     </div>`;
 
       if (enCokMazeretli.length > 0) {
-        html += `<div style="font-size:11px; color:#94a3b8; margin-bottom:4px;">En cok mazeretli: ${enCokMazeretli.map(k => `<strong style="color:#e2e8f0;">${k.ad}</strong> (${k.toplam} gun)`).join(', ')}</div>`;
+        html += `<div style="font-size:11px; color:#94a3b8; margin-bottom:4px;">En cok mazeretli: ${enCokMazeretli.map(k => `<strong style="color:#e2e8f0;">${escapeHtml(k.ad)}</strong> (${k.toplam} gun)`).join(', ')}</div>`;
       }
 
       if (cakismalar.length > 0) {
         html += `<div class="ozet-cakisma">
       <div style="font-weight:700; color:#fca5a5; margin-bottom:4px;">&#9888; Manuel Atama Cakismalari: ${cakismalar.length} uyari</div>
-      ${cakismalar.map(c => `<div class="ozet-cakisma-item">&#8226; ${c.ad}: ${c.gun}. gun ${c.izinTuru.toLowerCase()} ama nobet atanmis (${c.gorev})${c.onayli ? ' [onayli]' : ''}</div>`).join('')}
+      ${cakismalar.map(c => `<div class="ozet-cakisma-item">&#8226; ${escapeHtml(c.ad)}: ${c.gun}. gun ${c.izinTuru.toLowerCase()} ama nobet atanmis (${escapeHtml(c.gorev)})${c.onayli ? ' [onayli]' : ''}</div>`).join('')}
     </div>`;
       }
 
@@ -5935,7 +5935,7 @@ ta
           ${manuelAtamalar.map(m => {
           const p = personelListesi.find(x => String(x.id) === String(m.personelId));
           const tip = getGunTipi(yil, ay, m.gun);
-          return `<span class="badge badge-info" style="margin:2px;">${p?.ad || '?'} → ${m.gun}. gün (${GUN_TIPI_LABEL[tip]}) - ${m.gorevAdi}</span>`;
+          return `<span class="badge badge-info" style="margin:2px;">${escapeHtml(p?.ad || '?')} → ${m.gun}. gün (${GUN_TIPI_LABEL[tip]}) - ${escapeHtml(m.gorevAdi)}</span>`;
         }).join('')}
         </div>
       </div>
@@ -5957,7 +5957,7 @@ ta
         <div class="mt-3">
           ${fazlaAtamalar.map(p => {
           const toplam = GUN_TIPLERI.reduce((s, t) => s + p.hedef[t], 0);
-          return `<span class="badge badge-warn" style="margin:2px;">${p.ad}: ${toplam} nöbet</span>`;
+          return `<span class="badge badge-warn" style="margin:2px;">${escapeHtml(p.ad)}: ${toplam} nöbet</span>`;
         }).join('')}
         </div>
       </div>
@@ -6023,7 +6023,7 @@ ta
           }
 
           birlikteHtml += `<div class="grup">
-        <div class="isimler">${uyeAdlari.join(' + ')}</div>
+        <div class="isimler">${escapeHtml(uyeAdlari.join(' + '))}</div>
         <div class="detay">${detayHtml}</div>
       </div>`;
         });
@@ -6084,7 +6084,7 @@ ta
         const kilitBtnHtml = `<button class="kilit-btn ${kilitli ? 'aktif' : ''}" onclick="hedefKilitToggle(${idx})" title="${kilitli ? 'Kilidi ac - yeniden hesaplamada degisir' : 'Kilitle - yeniden hesaplamada degismez'}">${kilitli ? '&#128274;' : '&#128275;'}</button>`;
         tr.innerHTML = `
       <td style="font-weight:700;">
-        ${kilitBtnHtml} ${p.ad || '(isimsiz)'}${manuelHtml}
+        ${kilitBtnHtml} ${escapeHtml(p.ad || '(isimsiz)')}${manuelHtml}
         <div style="margin-top:2px;">${weWdHtml} ${yillikHtml}</div>
       </td>
       ${GUN_TIPLERI.map(t => `
@@ -6604,11 +6604,11 @@ ta
           return `
             <div style="background:#0f172a; border-radius:6px; padding:8px 12px; margin-bottom:6px; border-left:3px solid ${durumRenk};">
               <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:4px;">
-                <span style="color:#e2e8f0; font-weight:600;">${k.gorevAdi}</span>
+                <span style="color:#e2e8f0; font-weight:600;">${escapeHtml(k.gorevAdi)}</span>
                 <span style="background:${durumBg}; color:${durumRenk}; padding:2px 8px; border-radius:4px; font-size:10px; font-weight:600;">${durumText}</span>
               </div>
               <div style="font-size:10px; color:#94a3b8; margin-top:4px;">
-                Havuz: ${k.havuzBuyuklugu} kisi (${k.havuzPersonelAdlari.slice(0, 5).join(', ')}${k.havuzPersonelAdlari.length > 5 ? '...' : ''}) |
+                Havuz: ${k.havuzBuyuklugu} kisi (${escapeHtml(k.havuzPersonelAdlari.slice(0, 5).join(', '))}${k.havuzPersonelAdlari.length > 5 ? '...' : ''}) |
                 Gunluk ihtiyac: ${k.gunlukIhtiyac} slot
               </div>
             </div>
@@ -6768,44 +6768,44 @@ ta
         return `
       <div class="rule-box" style="background:#eff6ff; border:1px solid #bfdbfe; margin-bottom:10px;">
         <div class="flex justify-between items-center">
-          <strong style="color:#1e40af;">${g}</strong>
+          <strong style="color:#1e40af;">${escapeHtml(g)}</strong>
           <span class="badge ${cls}">${top} / ${ayar.toplam} atandı</span>
         </div>
         <div class="form-grid mt-3" style="grid-template-columns: repeat(6, 1fr); gap:8px;">
           <div class="input-group">
             <label style="font-size:10px;">H.İçi (${vars.hici})</label>
             <input type="number" class="inp-cell" value="${ayar.hici}" min="0" 
-              data-gorev="${g}" data-tip="hici"
-              onblur="gorevKapasiteDegistir('${g}', 'hici', this.value)" style="padding:4px;">
+              data-gorev="${escapeHtml(g)}" data-tip="hici"
+              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'hici', this.value)" style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Prş (${vars.prs})</label>
             <input type="number" class="inp-cell" value="${ayar.prs}" min="0"
-              data-gorev="${g}" data-tip="prs"
-              onblur="gorevKapasiteDegistir('${g}', 'prs', this.value)" style="padding:4px;">
+              data-gorev="${escapeHtml(g)}" data-tip="prs"
+              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'prs', this.value)" style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Cum (${vars.cum})</label>
             <input type="number" class="inp-cell" value="${ayar.cum}" min="0"
-              data-gorev="${g}" data-tip="cum"
-              onblur="gorevKapasiteDegistir('${g}', 'cum', this.value)" style="padding:4px;">
+              data-gorev="${escapeHtml(g)}" data-tip="cum"
+              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'cum', this.value)" style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Cmt (${vars.cmt})</label>
             <input type="number" class="inp-cell" value="${ayar.cmt}" min="0"
-              data-gorev="${g}" data-tip="cmt"
-              onblur="gorevKapasiteDegistir('${g}', 'cmt', this.value)" style="padding:4px;">
+              data-gorev="${escapeHtml(g)}" data-tip="cmt"
+              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'cmt', this.value)" style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Pzr (${vars.pzr})</label>
             <input type="number" class="inp-cell" value="${ayar.pzr}" min="0"
-              data-gorev="${g}" data-tip="pzr"
-              onblur="gorevKapasiteDegistir('${g}', 'pzr', this.value)" style="padding:4px;">
+              data-gorev="${escapeHtml(g)}" data-tip="pzr"
+              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'pzr', this.value)" style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">TOPLAM</label>
             <input type="number" class="inp-cell" value="${ayar.toplam}" readonly 
-              data-gorev="${g}" data-tip="toplam"
+              data-gorev="${escapeHtml(g)}" data-tip="toplam"
               style="padding:4px; background:#e2e8f0; font-weight:700;">
           </div>
         </div>
@@ -6825,7 +6825,7 @@ ta
         const ayar = gorevKapasiteAyar[g] || varsayilanKapasite[g];
         const top = gorevToplam[g];
         const cls = top === ayar.toplam ? 'badge-ok' : (top > ayar.toplam ? 'badge-bad' : 'badge-warn');
-        return `<th style="background:#dbeafe; color:#1e40af;">${g}<br><span class="badge ${cls}" style="font-size:9px;">${top}/${ayar.toplam}</span></th>`;
+        return `<th style="background:#dbeafe; color:#1e40af;">${escapeHtml(g)}<br><span class="badge ${cls}" style="font-size:9px;">${top}/${ayar.toplam}</span></th>`;
       }).join('')}
     </tr>
   `;
@@ -6844,7 +6844,7 @@ ta
       ${ozelGorevler.map(g => {
         const ayar = gorevKapasiteAyar[g] || varsayilanKapasite[g];
         const top = gorevToplam[g];
-        return `<td data-gorev="${g}" style="color:${top === ayar.toplam ? '#16a34a' : '#f59e0b'}">${top}/${ayar.toplam}</td>`;
+        return `<td data-gorev="${escapeHtml(g)}" style="color:${top === ayar.toplam ? '#16a34a' : '#f59e0b'}">${top}/${ayar.toplam}</td>`;
       }).join('')}
     </tr>
   `;
@@ -6856,13 +6856,13 @@ ta
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-      <td style="font-weight:700;">${p.ad || '(isimsiz)'}</td>
+      <td style="font-weight:700;">${escapeHtml(p.ad || '(isimsiz)')}</td>
       <td><span class="badge ${toplamKota === toplamHedef ? 'badge-ok' : 'badge-warn'}">${toplamKota}/${toplamHedef}</span></td>
       ${ozelGorevler.map(g => `
         <td style="background:#eff6ff;">
           <input type="number" class="inp-cell" value="${p.gorevKotalari?.[g] || 0}" min="0"
             style="background:#eff6ff;"
-            onblur="gorevKotasiDegistir(${idx}, '${g}', this.value)">
+            onblur="gorevKotasiDegistir(${idx}, '${escapeHtml(g)}', this.value)">
         </td>
       `).join('')}
     `;
@@ -7187,6 +7187,20 @@ ta
     const BACKEND_URL_HEDEF = 'https://us-central1-nobetyap-29acf.cloudfunctions.net/nobet_hedef_hesapla';
     const BACKEND_URL_DEBUG_EVENT = 'https://us-central1-nobetyap-29acf.cloudfunctions.net/debug_event_log';
 
+    // Backend çağrılarına Firebase kimlik token'ı (Authorization: Bearer) ekleyen sarmalayıcı.
+    // Anonim (misafir) kullanıcılar dahil çalışır; token alınamazsa header'sız devam eder
+    // (bu durumda backend 401 döner). Tüm backend fetch'leri bundan geçmeli.
+    async function authFetch(url, options = {}) {
+      const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      try {
+        if (typeof auth !== 'undefined' && auth && auth.currentUser) {
+          const token = await auth.currentUser.getIdToken();
+          headers['Authorization'] = 'Bearer ' + token;
+        }
+      } catch (e) { /* token alınamadı — header'sız devam */ }
+      return fetch(url, { ...options, headers });
+    }
+
     // ============================================
     // CONSOLE INTERCEPTOR — Debug log buffer
     // ============================================
@@ -7229,9 +7243,8 @@ ta
     }
 
     function _logFrontendEvent(tip, detay) {
-      fetch(BACKEND_URL_DEBUG_EVENT, {
+      authFetch(BACKEND_URL_DEBUG_EVENT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tip, detay }),
       }).catch(() => {});
     }
@@ -7875,9 +7888,8 @@ ta
 
       console.log(`[HEDEF] OR-Tools hedef isteği: ${personelData.length} personel, ${gunSayisi} gün, ${gorevData.length} görev, ${kuralData.length} kural`);
 
-      const response = await fetch(BACKEND_URL_HEDEF, {
+      const response = await authFetch(BACKEND_URL_HEDEF, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestData)
       });
 
@@ -8162,9 +8174,8 @@ ta
         `manuel=${requestData.manuelAtamalar?.length || 0}, istisna=${requestData.kisitlamaIstisnalari?.length || 0}`
       );
 
-      const response = await fetch(BACKEND_URL_ORTOOLS, {
+      const response = await authFetch(BACKEND_URL_ORTOOLS, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestData)
       });
 
@@ -9300,7 +9311,7 @@ ta
         icerikHtml += `
       <div class="help mb-3">Bu kişilerin hedefi mazeret veya ara gün kuralı nedeniyle karşılanamadı.</div>
       ${devirListesi.map(d =>
-          `<div class="badge badge-warn" style="margin:2px;">${d.personel}: ${d.eksik}x ${d.tip}</div>`
+          `<div class="badge badge-warn" style="margin:2px;">${escapeHtml(d.personel)}: ${d.eksik}x ${d.tip}</div>`
         ).join('')}
     `;
       }
@@ -9325,7 +9336,7 @@ ta
     <tr>
       <th>Tarih</th>
       <th>Gün</th>
-      ${siraliGorevler.map(g => `<th>${g.ad}</th>`).join('')}
+      ${siraliGorevler.map(g => `<th>${escapeHtml(g.ad)}</th>`).join('')}
     </tr>
   `;
 
@@ -9348,7 +9359,7 @@ ta
         siraliGorevler.forEach((g, idx) => {
           const pid = atanan[d][idx];
           const personel = personelListesi.find(p => p.id === pid);
-          html += `<td class="${!personel ? 'preview-empty' : ''}">${personel?.ad || '-'}</td>`;
+          html += `<td class="${!personel ? 'preview-empty' : ''}">${escapeHtml(personel?.ad || '-')}</td>`;
         });
 
         tr.innerHTML = html;
@@ -9376,7 +9387,7 @@ ta
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-      <td style="font-weight:700;">${p.ad || '(isimsiz)'}</td>
+      <td style="font-weight:700;">${escapeHtml(p.ad || '(isimsiz)')}</td>
       ${GUN_TIPLERI.map(t => {
           const hedef = p.hedef[t];
           const gercek = atama.tipSayilari[t];
@@ -9417,10 +9428,10 @@ ta
 
       let metaHtml = '';
       if (sapmaData.plan_hash) {
-        metaHtml += `<span class="badge" style="background:#e0e7ff; color:#3730a3; margin-right:4px;">Plan: ${sapmaData.plan_hash}</span>`;
+        metaHtml += `<span class="badge" style="background:#e0e7ff; color:#3730a3; margin-right:4px;">Plan: ${escapeHtml(sapmaData.plan_hash)}</span>`;
       }
       if (sapmaData.kaynak) {
-        metaHtml += `<span class="badge" style="background:#fef3c7; color:#92400e; margin-right:4px;">${sapmaData.kaynak}</span>`;
+        metaHtml += `<span class="badge" style="background:#fef3c7; color:#92400e; margin-right:4px;">${escapeHtml(sapmaData.kaynak)}</span>`;
       }
       if (esdegerGecis > 0) {
         metaHtml += `<span class="badge badge-warn" style="margin-right:4px;">Eşdeğer geçiş: ${esdegerGecis}</span>`;
@@ -9457,7 +9468,7 @@ ta
         const durumClass = tamUyum ? 'badge-ok' : 'badge-warn';
 
         tr.innerHTML = `
-          <td style="font-weight:700;">${d.personel_ad || '?'}</td>
+          <td style="font-weight:700;">${escapeHtml(d.personel_ad || '?')}</td>
           <td>${d.hedef_toplam || 0}</td>
           <td>${d.gercek_toplam || 0}</td>
           <td><span class="badge ${farkClass}">${fark > 0 ? '+' : ''}${fark}</span></td>

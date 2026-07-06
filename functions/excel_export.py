@@ -85,7 +85,8 @@ def create_excel(yil, ay, cizelge, gorevler, personeller, hedefler, gun_sayisi,
         h = hedefler.get(p.id) or hedefler.get(pid) or {}
         hedef_toplam = h.get('hedef_toplam', 0)
         gerceklesen = kisi_sayac.get(p.ad, 0)
-        fark = gerceklesen - hedef_toplam
+        # main.py ile ayni konvansiyon: pozitif fark = eksik (hedefin altinda) atama.
+        fark = hedef_toplam - gerceklesen
         mazeret_sayisi = len(p.mazeret_gunleri) if hasattr(p, 'mazeret_gunleri') else 0
         ws_stat.append([p.ad, hedef_toplam, gerceklesen, fark, mazeret_sayisi])
 

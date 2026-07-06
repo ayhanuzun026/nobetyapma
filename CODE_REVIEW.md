@@ -1,3 +1,8 @@
+> **⚠️ ESKİMİŞ (2026-02-18).** Bu inceleme, refactor öncesi monolitik `main.py` +
+> greedy motor (`NobetYoneticisi`) dönemine aittir. O yapı artık YOKTUR (greedy motor
+> kaldırıldı, kod modüllere ayrıldı). Buradaki dosya/satır referansları güncel değildir.
+> Güncel mimari için `CLAUDE.md`'ye bakın. Tarihsel referans olarak saklanmaktadır.
+
 # Nobet Yapma - Kod Incelemesi ve Iyilestirme Plani
 **Tarih:** 2026-02-18
 

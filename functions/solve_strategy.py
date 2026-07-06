@@ -165,11 +165,13 @@ def solve_with_diagnostics(
                             f"Ara gun {ara_gun}->{dene_ara_gun} gevsetilerek cozum bulundu"
                         )
                         break
-                aktif_ara_gun = 0  # Sonraki aksiyonlarda ara gün=0 kullan
+                aktif_ara_gun = 0  # Sonraki aksiyonlar ara_gun=0'a kadar (0 dahil) dener
 
             elif aksiyon == 'exclusive_gevset':
                 aktif_gorevler = gorevler_noexcl
-                for dene_ara_gun in range(aktif_ara_gun, 0, -1):
+                # ara_gun=0 dahil: ara_gun_azalt sonrası aktif_ara_gun=0 olabilir,
+                # range(0, 0, -1) boş olacağından bu aksiyon hiç çalışmıyordu (bug).
+                for dene_ara_gun in range(aktif_ara_gun, -1, -1):
                     _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
@@ -195,7 +197,7 @@ def solve_with_diagnostics(
             elif aksiyon == 'ayri_gevset':
                 # Ayrı kurallarını kaldır (birlikte korunur)
                 aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'ayri']
-                for dene_ara_gun in range(aktif_ara_gun, 0, -1):
+                for dene_ara_gun in range(aktif_ara_gun, -1, -1):
                     _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
@@ -220,7 +222,7 @@ def solve_with_diagnostics(
 
             elif aksiyon == 'birlikte_kaldir':
                 aktif_kurallar = [k for k in aktif_kurallar if k.tur != 'birlikte']
-                for dene_ara_gun in range(aktif_ara_gun, 0, -1):
+                for dene_ara_gun in range(aktif_ara_gun, -1, -1):
                     _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
@@ -246,7 +248,7 @@ def solve_with_diagnostics(
             elif aksiyon == 'tum_soft_kaldir':
                 aktif_kurallar = []
                 aktif_havuzlar = {}
-                for dene_ara_gun in range(max(1, aktif_ara_gun), 0, -1):
+                for dene_ara_gun in range(aktif_ara_gun, -1, -1):
                     _plani_yenile(dene_ara_gun)
                     solver = NobetSolver(
                         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,

@@ -18,12 +18,6 @@ from solver_models import (
 # TAKVİM VE GÜN TİPLERİ
 # ============================================
 
-def build_takvim(yil: int, ay: int, resmi_tatiller: list) -> Dict[int, str]:
-    """Ay takvimi sözlüğü oluştur {gün_no: gün_adı}"""
-    days_in_month = get_days_in_month(yil, ay)
-    return {d: gun_adi_bul(yil, ay, d, resmi_tatiller) for d in range(1, days_in_month + 1)}
-
-
 def build_gun_tipleri(yil: int, ay: int, gun_sayisi: int, resmi_tatiller: list) -> Dict[int, str]:
     """Gün tipi haritası oluştur {gün_no: 'hici'|'prs'|'cum'|'cmt'|'pzr'}"""
     return {g: gun_tipi_hesapla(yil, ay, g, resmi_tatiller) for g in range(1, gun_sayisi + 1)}
@@ -107,7 +101,10 @@ def parse_solver_gorevler_nobet_coz(data: Dict, slot_sayisi: int) -> List[Solver
             ayri_bina=ayri_bina
         ))
 
-    while len(gorevler) < slot_sayisi:
+    # Defansif üst sınır (OOM backstop): main.py slot_sayisi'ni zaten doğruluyor,
+    # ama bu parser başka bir çağırandan devasa slot_sayisi alırsa bellek patlamasın.
+    _MAX_GENERATED_SLOTS = 200
+    while len(gorevler) < slot_sayisi and len(gorevler) < _MAX_GENERATED_SLOTS:
         idx = len(gorevler)
         gorevler.append(SolverGorev(
             id=idx,
@@ -244,35 +241,6 @@ def parse_kurallar(data: Dict, personeller) -> List[SolverKural]:
             kurallar.append(SolverKural(tur=tur, kisiler=kisiler))
 
     return kurallar
-
-
-def parse_birlikte_kurallar(data: Dict, personeller) -> List[SolverKural]:
-    """Sadece birlikte kurallarını parse et (nobet_hedef_hesapla için)"""
-    _cache = build_personel_lookup(personeller)
-    birlikte_kurallar = []
-    for k_data in data.get("kurallar", []):
-        if k_data.get("tur") != "birlikte":
-            continue
-
-        kisiler = []
-        for key in ['p1', 'p2', 'p3', 'kisiler']:
-            val = k_data.get(key)
-            if val is None:
-                continue
-
-            refs = val if (key == 'kisiler' and isinstance(val, list)) else [val]
-            for ref in refs:
-                pid = _resolve_personel_id(ref, personeller, require_existing=True, _cache=_cache)
-                if pid is not None and pid not in kisiler:
-                    kisiler.append(pid)
-
-        if len(kisiler) >= 2:
-            birlikte_kurallar.append(SolverKural(
-                tur="birlikte",
-                kisiler=kisiler
-            ))
-
-    return birlikte_kurallar
 
 
 def parse_gorev_kisitlamalari(data: Dict, personeller) -> Dict[int, dict]:

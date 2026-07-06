@@ -12,7 +12,11 @@
       "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: mazeret takviminde tumunu temizle butonu ekle\n\nCo-Authored-By: Claude Opus 4.6 \\(1M context\\) <noreply@anthropic.com>\nEOF\n\\)\")",
       "Bash(git commit:*)",
       "Bash(git fetch:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "WebSearch",
+      "Bash(python -m py_compile solve_strategy.py http_helpers.py ortools_solver.py excel_export.py utils.py)",
+      "Bash(python -m py_compile ortools_solver.py)",
+      "Bash(python -m py_compile main.py parsers.py firestore_logger.py)"
     ]
   }
 }

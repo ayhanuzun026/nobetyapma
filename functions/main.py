@@ -4,7 +4,7 @@ Nöbet Yapma — Firebase Cloud Functions giriş noktası.
 """
 
 from firebase_functions import https_fn
-from firebase_admin import initialize_app, storage
+from firebase_admin import initialize_app, storage, auth as fb_auth
 from datetime import datetime, timedelta
 import logging
 import time
@@ -25,7 +25,7 @@ from planlayici import (
     ortak_plan_uret,
 )
 from parsers import (
-    build_takvim, build_gun_tipleri,
+    build_gun_tipleri,
     parse_kapasite_personeller,
     parse_solver_gorevler, parse_solver_gorevler_nobet_coz,
     parse_solver_personeller_hedef, parse_solver_personeller_coz,
@@ -38,6 +38,50 @@ from parsers import (
 initialize_app()
 logger = logging.getLogger(__name__)
 
+# Girdi boyut üst sınırları — kimliksiz kaynak tükenmesi / OOM koruması.
+# Gerçekçi kullanımın çok üzerinde; milyonlarca slot/personel ile modelin
+# belleği patlatmasını (ör. parse_solver_gorevler_nobet_coz while döngüsü) engeller.
+MAX_SLOT_SAYISI = 50
+MAX_PERSONEL = 1000
+MAX_GOREV = 300
+
+
+def _validate_input_sizes(data: dict, slot_sayisi: int) -> None:
+    """Girdi boyutlarını üst sınırlara karşı doğrular; aşımda ValueError fırlatır."""
+    if slot_sayisi > MAX_SLOT_SAYISI:
+        raise ValueError(f"slotSayisi çok büyük: {slot_sayisi} (üst sınır {MAX_SLOT_SAYISI})")
+    n_personel = len(data.get("personeller") or [])
+    if n_personel > MAX_PERSONEL:
+        raise ValueError(f"Personel sayısı çok büyük: {n_personel} (üst sınır {MAX_PERSONEL})")
+    n_gorev = len(data.get("gorevler") or [])
+    if n_gorev > MAX_GOREV:
+        raise ValueError(f"Görev sayısı çok büyük: {n_gorev} (üst sınır {MAX_GOREV})")
+
+
+# Kimlik doğrulama: endpoint'ler geçerli bir Firebase ID token ister.
+# REQUIRE_AUTH=False yaparak (acil durum) geçici kapatılabilir. Anonim (misafir)
+# token'lar da kabul edilir — mevcut misafir akışını korumak için. Daha sıkı koruma
+# için anonim reddedilebilir veya Firebase App Check eklenebilir.
+REQUIRE_AUTH = True
+
+
+def _authorized(req) -> bool:
+    """Authorization: Bearer <Firebase ID token> başlığını doğrular."""
+    if not REQUIRE_AUTH:
+        return True
+    header = req.headers.get("Authorization", "") or ""
+    if not header.startswith("Bearer "):
+        return False
+    token = header[len("Bearer "):].strip()
+    if not token:
+        return False
+    try:
+        fb_auth.verify_id_token(token)
+        return True
+    except Exception as exc:
+        logger.warning("Geçersiz kimlik token'ı: %s", exc)
+        return False
+
 
 # ============================================
 # ENDPOINT: nobet_dagit (OR-Tools hizli onizleme)
@@ -47,6 +91,9 @@ logger = logging.getLogger(__name__)
 def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
+
+    if not _authorized(req):
+        return _json_response({"error": "Yetkilendirme gerekli (geçersiz veya eksik kimlik)."}, status=401)
 
     t0 = time.time()
     data = None
@@ -67,6 +114,11 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
         if not (2000 <= yil <= 2100):
             return _json_response({"error": f"Geçersiz yıl değeri: {yil}"}, status=400)
+
+        try:
+            _validate_input_sizes(data, slot_sayisi)
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "GirdiCokBuyuk"}, status=400)
 
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
@@ -208,6 +260,9 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
 
+    if not _authorized(req):
+        return _json_response({"error": "Yetkilendirme gerekli (geçersiz veya eksik kimlik)."}, status=401)
+
     t0 = time.time()
     data = None
     try:
@@ -261,6 +316,9 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
 def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
+
+    if not _authorized(req):
+        return _json_response({"error": "Yetkilendirme gerekli (geçersiz veya eksik kimlik)."}, status=401)
 
     t0 = time.time()
     data = None
@@ -348,6 +406,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
 
+    if not _authorized(req):
+        return _json_response({"error": "Yetkilendirme gerekli (geçersiz veya eksik kimlik)."}, status=401)
+
     t0 = time.time()
     data = None
     try:
@@ -372,6 +433,11 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": f"Geçersiz slot sayısı: {slot_sayisi}"}, status=400)
         if ara_gun < 0:
             return _json_response({"error": f"Geçersiz ara gün değeri: {ara_gun}"}, status=400)
+
+        try:
+            _validate_input_sizes(data, slot_sayisi)
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "GirdiCokBuyuk"}, status=400)
 
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
@@ -557,6 +623,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 def debug_event_log(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
+
+    if not _authorized(req):
+        return _json_response({"error": "Yetkilendirme gerekli (geçersiz veya eksik kimlik)."}, status=401)
 
     try:
         data = req.get_json(silent=True)

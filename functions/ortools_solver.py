@@ -710,7 +710,10 @@ class NobetSolver:
         secilen = 0
         son_gun = -10_000
         for g in sorted(gunler):
-            if g - son_gun > self.ara_gun:
+            # H4 kısıtı (satır ~1124) iki nöbet arası boşluğun >= ara_gun olmasına
+            # izin verir. Tahminci burada '>' kullanınca kapasiteyi bir eksik sayıp
+            # sahte "ara-gün kapasite eksiği" teşhisi üretiyordu. '>=' ile hizalandı.
+            if g - son_gun >= self.ara_gun:
                 secilen += 1
                 son_gun = g
         return secilen
@@ -1244,7 +1247,7 @@ class NobetSolver:
             for pid in birlikte_uye_ids:
                 # Kişinin hedef nöbet sayısını al
                 hedef = self.hedefler.get(pid, {})
-                hedef_toplam = hedef.get('hedef_toplam', 3)
+                hedef_toplam = hedef.get('hedef_toplam', 0)
 
                 # floor(hedef/2) birlikte minimum, geri kalanı ayrı binaya gidebilir
                 birlikte_minimum = math.floor(hedef_toplam / 2)
@@ -1449,7 +1452,10 @@ class NobetSolver:
         # S3. Toplam hedef ? yetkili planda hard esitlik + SOFT eksik cezasi
         for p in self.personel_listesi:
             hedef = self.hedefler.get(p.id, {})
-            hedef_toplam = hedef.get('hedef_toplam', 3)
+            # Varsayilan 0 (eleme asamasi 1066 ile ayni). Onceden burada 3 vardi;
+            # hedefi eksik kisi elenip 0'a sabitlenirken S3 onu 3 sayiyor,
+            # plan-hard modda model.Add(0 == 3) => dogrudan INFEASIBLE uretiyordu.
+            hedef_toplam = hedef.get('hedef_toplam', 0)
             toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
             if self._plan_toplam_hard_mi():
                 model.Add(toplam_atama == hedef_toplam)
@@ -1527,7 +1533,7 @@ class NobetSolver:
         # Mazeretler izin veriyorsa yay, vermiyorsa sıkışık tutulabilir
         for p in self.personel_listesi:
             hedef = self.hedefler.get(p.id, {})
-            hedef_toplam = hedef.get('hedef_toplam', 3)
+            hedef_toplam = hedef.get('hedef_toplam', 0)
 
             if hedef_toplam >= 2:
                 # İdeal aralık hesapla: ay_gunu / hedef_nobet
@@ -1613,7 +1619,7 @@ class NobetSolver:
                             eksik_bonus = int(abs(fark))
                             toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
                             hedef = self.hedefler.get(p.id, {})
-                            hedef_toplam = hedef.get('hedef_toplam', 3)
+                            hedef_toplam = hedef.get('hedef_toplam', 0)
                             # Hedefin altında kalırsa ceza (eksik olanı doldur)
                             eksik = model.NewIntVar(0, self.gun_sayisi, f'yillik_eksik_{p.id}')
                             model.Add(eksik >= hedef_toplam - toplam_atama)
@@ -1623,7 +1629,7 @@ class NobetSolver:
                             fazla_ceza = int(fark)
                             toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
                             hedef = self.hedefler.get(p.id, {})
-                            hedef_toplam = hedef.get('hedef_toplam', 3)
+                            hedef_toplam = hedef.get('hedef_toplam', 0)
                             # Hedefin üstüne çıkarsa ceza (fazla tutanı azalt)
                             fazla = model.NewIntVar(0, self.gun_sayisi, f'yillik_fazla_{p.id}')
                             model.Add(toplam_atama - hedef_toplam <= fazla)
@@ -1684,7 +1690,7 @@ class NobetSolver:
             mazeret_sayisi = len(p.mazeret_gunleri)
             musait_gun = self.gun_sayisi - mazeret_sayisi
             hedef = self.hedefler.get(p.id, {})
-            hedef_toplam = hedef.get('hedef_toplam', 3)
+            hedef_toplam = hedef.get('hedef_toplam', 0)
             
             if musait_gun > 0 and hedef_toplam > 0:
                 # Panik oranı = hedef / müsait gün

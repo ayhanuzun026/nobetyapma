@@ -8,6 +8,7 @@
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
   <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
   <script>
     const firebaseConfig = {
       apiKey: "AIzaSyC7w00A_jYCCBrnDASD1RjoYHjyKsKeLBI",
@@ -181,10 +182,25 @@
 
 <div class="topbar">
   <h1><i class="fa-solid fa-bug" style="margin-right:8px"></i>Debug Log Admin</h1>
-  <a href="/"><i class="fa-solid fa-arrow-left" style="margin-right:4px"></i>Ana Sayfa</a>
+  <div style="display:flex; align-items:center; gap:16px;">
+    <span id="user-email" style="font-size:13px; color:#cbd5e1;"></span>
+    <a href="#" id="logout-link" style="display:none;" onclick="cikisYap(); return false;"><i class="fa-solid fa-right-from-bracket" style="margin-right:4px"></i>Çıkış</a>
+    <a href="/"><i class="fa-solid fa-arrow-left" style="margin-right:4px"></i>Ana Sayfa</a>
+  </div>
 </div>
 
-<div class="container">
+<!-- Giriş kapısı: yetkilendirme yapılmadan içerik gösterilmez -->
+<div id="login-gate" style="display:none; max-width:420px; margin:80px auto; background:#fff; border-radius:16px; padding:40px 32px; text-align:center; box-shadow:0 10px 40px rgba(0,0,0,.12);">
+  <i class="fa-solid fa-lock" style="font-size:40px; color:#2563eb; margin-bottom:20px; display:block;"></i>
+  <h2 style="font-size:18px; margin-bottom:8px;">Yönetici Girişi Gerekli</h2>
+  <p style="font-size:13px; color:#64748b; margin-bottom:24px;">Debug kayıtları kişisel veri içerir. Görüntülemek için yetkili hesabınızla giriş yapın.</p>
+  <button onclick="girisYap()" style="padding:12px 24px; background:#2563eb; color:#fff; border:none; border-radius:10px; font-size:14px; font-weight:600; cursor:pointer;">
+    <i class="fa-brands fa-google" style="margin-right:8px"></i>Google ile Giriş
+  </button>
+  <p id="login-error" style="display:none; color:#dc2626; font-size:12px; margin-top:16px;"></p>
+</div>
+
+<div class="container" id="main-container" style="display:none;">
 
   <!-- Filtreler -->
   <div class="filters">
@@ -293,8 +309,39 @@
 
 <script>
   const db = firebase.firestore();
+  const auth = firebase.auth();
   let sessions = [];
   let aktifSession = null;
+
+  // --- Yetkilendirme kapısı: içerik yalnızca giriş sonrası gösterilir ---
+  function girisYap() {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    auth.signInWithPopup(provider).catch(e => {
+      const el = document.getElementById('login-error');
+      el.style.display = 'block';
+      el.textContent = 'Giriş başarısız: ' + (e.message || e);
+    });
+  }
+  function cikisYap() { auth.signOut(); }
+
+  auth.onAuthStateChanged(user => {
+    const gate = document.getElementById('login-gate');
+    const main = document.getElementById('main-container');
+    const logoutLink = document.getElementById('logout-link');
+    const userEmail = document.getElementById('user-email');
+    if (user) {
+      gate.style.display = 'none';
+      main.style.display = 'block';
+      logoutLink.style.display = 'inline';
+      userEmail.textContent = user.email || user.uid;
+      yukle();
+    } else {
+      gate.style.display = 'block';
+      main.style.display = 'none';
+      logoutLink.style.display = 'none';
+      userEmail.textContent = '';
+    }
+  });
 
   async function yukle() {
     document.getElementById('loading').style.display = 'block';
@@ -314,7 +361,11 @@
       renderTable();
     } catch (e) {
       console.error('Yükleme hatası:', e);
-      alert('Veriler yüklenemedi: ' + e.message);
+      if (e.code === 'permission-denied') {
+        alert('Bu hesabın debug kayıtlarını görüntüleme yetkisi yok.\n\nfirestore.rules içindeki isAdmin() allowlist\'ine UID\'nizin eklenmesi gerekir.');
+      } else {
+        alert('Veriler yüklenemedi: ' + e.message);
+      }
     } finally {
       document.getElementById('loading').style.display = 'none';
       document.getElementById('table-wrap').style.display = 'block';
@@ -512,8 +563,7 @@ ${s.id}`;
     if (e.target === this) modalKapat();
   });
 
-  // Sayfa yüklendiğinde otomatik yükle
-  yukle();
+  // Sayfa yüklemesi giriş sonrası onAuthStateChanged içinde tetiklenir.
 </script>
 </body>
 </html>
