@@ -1,4 +1,4 @@
-"""
+﻿"""
 Nöbet Yapma — Firebase Cloud Functions giriş noktası.
 5 endpoint: nobet_dagit, nobet_kapasite, nobet_hedef_hesapla, nobet_coz, debug_event_log
 """
@@ -14,10 +14,10 @@ from utils import (
     normalize_id,
     _find_duplicate_personel_ids,
 )
-from excel_export import create_excel
 from kapasite import kapasite_hesapla
 from http_helpers import _cors_preflight, _json_response, _error_response
 from solve_strategy import solve_with_diagnostics
+from preflight_analyzer import analyze_preflight
 from firestore_logger import log_session
 from planlayici import (
     frontend_gorev_kota_override_topla,
@@ -164,6 +164,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             kilitli_hedefler=kilitli_hedefler,
             gorev_kota_overrides=gorev_kota_overrides,
             kaynak="nobet_dagit_ortak_plan",
+            gorev_havuzlari=gorev_havuzlari,
         )
         hedefler = planlama.get("hedefler_map", {})
         plan_kontrati = planlama.get("plan_kontrati")
@@ -222,6 +223,9 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
                     }
                 })
 
+        from excel_export import create_excel
+        from firebase_admin import storage
+
         excel_file = create_excel(yil, ay, cizelge, gorevler, personeller, hedefler, gun_sayisi)
         bucket = storage.bucket()
         dosya_adi = f"sonuclar/nobet_{yil}_{ay}_{int(datetime.now().timestamp())}.xlsx"
@@ -242,6 +246,18 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_dagit", data, cikti, sure_ms,
                     frontend_loglar=data.get("frontendLoglar"))
+        # Hazırlık Analizi ekle
+        try:
+            _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
+            _haz = analyze_preflight(
+                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
+                gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+                manuel_atamalar=manuel_atamalar, ara_gun=ara_gun, plan_kontrati=_plan_dict,
+                kisitlama_istisnalari=kisitlama_istisnalari, max_preview=30
+            )
+            cikti['hazirlikAnalizi'] = _haz
+        except Exception as _e:
+            cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod':'ANALIZ_HATA','oneri': str(_e)[:120]}]}
         return _json_response(cikti)
 
     except Exception as e:
@@ -359,6 +375,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari = parse_gorev_kisitlamalari(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
+        gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
 
         planlama = ortak_plan_uret(
             gun_sayisi=gun_sayisi,
@@ -373,6 +390,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             saat_degerleri=saat_degerleri,
             kilitli_hedefler=kilitli_hedefler,
             kaynak="nobet_hedef_hesapla_ortak_plan",
+            gorev_havuzlari=gorev_havuzlari,
         )
         sonuc = planlama.get("hedef_sonuc")
         plan_kontrati = planlama.get("plan_kontrati")
@@ -491,6 +509,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 saat_degerleri=saat_degerleri,
                 kilitli_hedefler=kilitli_hedefler,
                 gorev_kota_overrides=gorev_kota_overrides,
+                gorev_havuzlari=gorev_havuzlari,
             )
         except Exception as hedef_err:
             logger.exception("Ortak planlama basarisiz: %s", hedef_err)
@@ -527,6 +546,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 kilitli_hedefler=kilitli_hedefler,
                 gorev_kota_overrides=gorev_kota_overrides,
                 kaynak=(plan_kontrati.kaynak if plan_kontrati else None),
+                gorev_havuzlari=gorev_havuzlari,
             )
 
         sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(
@@ -606,6 +626,18 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_coz", data, cikti, sure_ms,
                     frontend_loglar=data.get("frontendLoglar"))
+        # Hazırlık Analizi ekle
+        try:
+            _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
+            _haz = analyze_preflight(
+                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
+                gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+                manuel_atamalar=manuel_atamalar, ara_gun=ara_gun, plan_kontrati=_plan_dict,
+                kisitlama_istisnalari=kisitlama_istisnalari, max_preview=30
+            )
+            cikti['hazirlikAnalizi'] = _haz
+        except Exception as _e:
+            cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod':'ANALIZ_HATA','oneri': str(_e)[:120]}]}
         return _json_response(cikti)
 
     except Exception as e:
@@ -650,3 +682,4 @@ def debug_event_log(req: https_fn.Request) -> https_fn.Response:
     except Exception as e:
         logger.warning("debug_event_log hatasi: %s", e)
         return _json_response({"ok": False, "error": str(e)[:200]}, status=500)
+

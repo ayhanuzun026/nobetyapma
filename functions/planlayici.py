@@ -30,14 +30,14 @@ from utils import GUN_TIPLERI, normalize_id
 
 DEFAULT_PLAN_UYGULAMA = {
     "yetkili": True,
-    "toplam_hard": True,
+    "toplam_hard": False,
     "gun_tipi_toleransi": 1,
     "gorev_kota_toleransi": 1,
     "plan_sadakat_agirlik_carpani": 4,
     "gun_iskeleti_kullan": True,
     "gun_iskeleti_toleransi": 1,
     "gun_iskeleti_hard": False,
-    "gun_iskeleti_sadakat_agirligi": 2500,
+    "gun_iskeleti_sadakat_agirligi": 4000,
 }
 
 
@@ -261,6 +261,7 @@ def ortak_plan_uret(
     gorev_kota_overrides: Optional[Dict[int, Dict[str, int]]] = None,
     kaynak: Optional[str] = None,
     uygulama_override: Optional[Dict] = None,
+    gorev_havuzlari: Optional[Dict[str, set]] = None,
 ) -> Dict:
     kilitli_hedefler = dict(kilitli_hedefler or {})
     gorev_kota_overrides = dict(gorev_kota_overrides or {})
@@ -315,6 +316,7 @@ def ortak_plan_uret(
         manuel_atamalar=manuel_atamalar or [],
         ara_gun=ara_gun,
         gorev_kisitlamalari=gorev_kisitlamalari or {},
+        gorev_havuzlari=gorev_havuzlari or {},
     ).planla()
 
     plan_kontrati = plan_kontrati_olustur(

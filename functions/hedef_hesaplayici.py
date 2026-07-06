@@ -299,6 +299,14 @@ class HedefHesaplayici:
         for tip in GUN_TIPLERI:
             model.Add(sum(h[pid, tip] for pid in pids) == self.tip_slotlari[tip])
 
+        tip_esdeger_gruplari = []
+        saat_gruplari = {}
+        for tip in GUN_TIPLERI:
+            saat_gruplari.setdefault(self.saat.get(tip, 0), []).append(tip)
+        for tipler in saat_gruplari.values():
+            if len(tipler) >= 2:
+                tip_esdeger_gruplari.append(sorted(tipler))
+
         # --- 5. BİRLİKTE KURALLARI ---
         for kural in self.birlikte_kurallar:
             if kural.tur != 'birlikte':
@@ -327,6 +335,23 @@ class HedefHesaplayici:
                     abs_diff = model.NewIntVar(0, HARD_CAP, f'abs_birlikte_{p1_id}_{p2_id}')
                     model.AddAbsEquality(abs_diff, diff)
                     penalties.append(abs_diff * 500)
+
+                    for tip in GUN_TIPLERI:
+                        tip_diff = model.NewIntVar(-HARD_CAP, HARD_CAP, f'birlikte_tip_diff_{p1_id}_{p2_id}_{tip}')
+                        model.Add(h[p1_id, tip] - h[p2_id, tip] == tip_diff)
+                        abs_tip_diff = model.NewIntVar(0, HARD_CAP, f'abs_birlikte_tip_{p1_id}_{p2_id}_{tip}')
+                        model.AddAbsEquality(abs_tip_diff, tip_diff)
+                        penalties.append(abs_tip_diff * 250)
+
+                    for grup_idx, tipler in enumerate(tip_esdeger_gruplari):
+                        grup_diff = model.NewIntVar(-HARD_CAP, HARD_CAP, f'birlikte_esdeger_diff_{p1_id}_{p2_id}_{grup_idx}')
+                        model.Add(
+                            sum(h[p1_id, tip] for tip in tipler) -
+                            sum(h[p2_id, tip] for tip in tipler) == grup_diff
+                        )
+                        abs_grup_diff = model.NewIntVar(0, HARD_CAP, f'abs_birlikte_esdeger_{p1_id}_{p2_id}_{grup_idx}')
+                        model.AddAbsEquality(abs_grup_diff, grup_diff)
+                        penalties.append(abs_grup_diff * 175)
 
         # --- 6. ÇÖZÜM ---
         model.Minimize(sum(penalties))
