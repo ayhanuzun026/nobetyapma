@@ -171,6 +171,11 @@ def solve_with_diagnostics(
         # Teşhis: Neden INFEASIBLE olduğunu analiz et
         diagnostics = solver._build_feasibility_diagnostics()
         aksiyonlar = solver._diagnose_infeasible(diagnostics)
+        unsat_core_bilgisi = {}
+        sonuc_status = (sonuc.istatistikler or {}).get('status') if sonuc else None
+        if sonuc_status == 'INFEASIBLE':
+            core_sure = max(3, min(15, int(max_sure * 0.10)))
+            unsat_core_bilgisi = solver.diagnose_with_unsat_core(max_sure_saniye=core_sure)
 
         # Teşhis bilgisini kaydet
         teshis_bilgisi = {
@@ -181,7 +186,8 @@ def solve_with_diagnostics(
                 for a in aksiyonlar
             ],
             'zero_candidate_count': diagnostics.get('slot_day_zero_candidate_count', 0),
-            'kapasite_sorunlari': len(diagnostics.get('role_ara_gun_capacity_issues', []))
+            'kapasite_sorunlari': len(diagnostics.get('role_ara_gun_capacity_issues', [])),
+            'unsat_core': unsat_core_bilgisi,
         }
         tani_mesajlari.append(
             f"Teshis: Kok neden = {teshis_bilgisi['kok_neden']}, "
@@ -189,6 +195,12 @@ def solve_with_diagnostics(
         )
 
         # Gevşetme için kalan süreyi hesapla
+        if unsat_core_bilgisi.get('core_groups'):
+            core_ozet = ', '.join(
+                item.get('group', '?') for item in unsat_core_bilgisi.get('core_groups', [])[:5]
+            )
+            tani_mesajlari.append(f"Unsat-core gozlem: {core_ozet}")
+
         gecen_sure = _time.time() - baslangic_toplam
         kalan_sure = max(max_sure - gecen_sure, 5)
         aksiyon_sayisi = len(aksiyonlar)

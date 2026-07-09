@@ -1,0 +1,177 @@
+================================================================================
+  %100 (VEYA EN YAKIN) DOLULUK ANALIZI
+  Nobet Yapma Robotu Pro v2 - Cizelge Optimizasyonu
+  Tarih: 2026-07-08
+================================================================================
+
+
+1. DOLULUK SU ANDA NASIL BELIRLENIYOR?
+--------------------------------------------------------------------------------
+
+Doluluk tek yerde degil, IKI AYRI MODELIN zincirinde belirleniyor:
+
+  Hedef Modeli (hedef_hesaplayici.py)
+     -- "kim kac nobet tutacak" -> Toplam(hedef_toplam)
+          | HARD: Toplam(hedef) == toplam_slot            (satir 297)
+          | HARD: Toplam(hedef[tip]) == tip_slotlari[tip] (gun tipi talebi)
+          | Kisi tavani: min(musaitlik, HARD_CAP)         (satir 241)
+          v
+  Cizelge Modeli (ortools_solver.py)
+     -- "kim / hangi gun / hangi slot"
+          | SOFT: bos slot cezasi = 100000               (satir 1496)
+          | HARD: toplam_atama <= hedef_toplam           (satir 1686)
+          | HARD: ara_gun, ayri, kisitli, exclusive, havuz, ayri-bina
+          v
+     doluluk_yuzde = 100 * atama / (gun x slot)
+
+ONEMLI: Bos slot cezasi (100000), diger tum cezalardan (kota=1000, gun
+tipi=500...) kat kat buyuk. Yani cozucu HARD kisit izin verdigi surece her
+slotu doldurur. Bir slot bossa, bunun sebebi ceza dengesi DEGIL -- bir HARD
+kisit o slotu doldurmayi imkansiz kiliyor ya da hedef tavani buna izin
+vermiyordur.
+
+
+2. NEDEN %100 OLMUYOR? -- KOK NEDENLER
+--------------------------------------------------------------------------------
+
+[KOK NEDEN 1] -- Hedef modeli ara_gun'u tamamen yok sayiyor
+               (EN ONEMLI, EN GIZLI)
+
+  hedef_hesaplayici.py icinde ara_gun sadece saklaniyor (satir 53),
+  kapasite hesabinda hic kullanilmiyor. Kisi tavani yalnizca musaitlik +
+  HARD_CAP'e dayaniyor.
+
+  SONUC: Hedef modeli bir kisiye fiziksel olarak yerlestirilemeyecek bir
+  hedef verebilir.
+
+  ORNEK: 30 gunluk ay, ara_gun=2. Bir kisi ardisik olmadan en fazla
+  ceil(30/3)=10 nobet tutabilir. Ama hedef modeli musaitlige bakip ona
+  hedef_toplam=12 atarsa -> cizelge modeli o kisiyi 10'dan fazla
+  yerlestiremez -> 2 slot ZORUNLU BOS kalir ve bu bosluk hicbir gevsetmeyle
+  kapanmaz cunku hedef zaten yanlis.
+
+  Fiziksel tavan formulu hedef modeline hic girmiyor:
+     ara_gun_tavani(kisi) = ceil(musait_gun_sayisi / (ara_gun + 1))
+
+
+[KOK NEDEN 2] -- FEASIBLE ama bos slotlu cozum gevsetmeyi tetiklemiyor
+
+  solve_strategy.py gevsetme dongusu YALNIZCA "not sonuc.basarili"
+  (INFEASIBLE) durumunda calisiyor (satir 225-226). Ama _extract_solution
+  bos slot olsa bile basarili=True donduruyor.
+
+  SONUC: Cozucu %85 dolulukla FEASIBLE donerse, sistem "basarili" kabul edip
+  oylece kabul ediyor -- ara_gun'u gevsetip %100'e ulasmayi hic denemiyor.
+  Doluluk acigi sessizce geciyor.
+
+
+[KOK NEDEN 3] -- toplam_atama <= hedef_toplam esnekligi bloke ediyor
+
+  Cizelge modelinde (satir 1686, plan-disi mod) her kisi kendi hedefini
+  asamiyor. Bosta duran / az yuklu bir kisi, baska birinin dolduramadigi
+  slotu KAPATAMIYOR cunku kendi tavanina takili.
+
+  SONUC: Toplam fiziksel kapasite yetse bile, hedef dagilimi "kilitli"
+  oldugu icin doluluk Toplam(hedef) ile sinirli kaliyor. Model, bos slot
+  cezasi (100000) ugruna bile bir kisiyi hedefinin ustune cikaramiyor.
+
+
+[KOK NEDEN 4] -- HARD_CAP yogunlasmayi sinirliyor
+
+  HARD_CAP = ceil(avg)+1 (satir 119). Az sayida musait kisi cok slotu
+  kapatmak zorundaysa, bu tavan Toplam kapasiteyi toplam_slot'un altina
+  dusurup hedef modelini INFEASIBLE yapar -> gevsetme hedefleri dusurur ->
+  doluluk duser.
+
+
+[KOK NEDEN 5] -- Gercek kapasite acigi
+               (COZULEMEZ, DURUSTCE RAPORLANMALI)
+
+  Eger Toplam(musait kisi-gun) < talep, hicbir algoritma %100 yapamaz. Bu
+  durumda tek cozum: kisi ekle / musaitlik ac / talebi (slot sayisi) azalt.
+  Solver bunu net bir "X slot eksik" mesajiyla soylemeli.
+
+
+3. NE YAPILABILIR? -- ONCELIKLENDIRILMIS ONERILER
+--------------------------------------------------------------------------------
+
+  #  Oneri                                         KokNeden  Etki  Risk  Zorluk
+  -  --------------------------------------------  --------  ----  ----  ------
+  A  Hedef modeline ara_gun fiziksel tavani ekle   KN1       ***   Dusuk Orta
+  B  Bos slotlu FEASIBLE'da gevsetmeyi tetikle     KN2       ***   Dusuk Dusuk
+  C  Doluluk-oncelikli "ikinci gecis" (hedef gvs)  KN3       **    Orta  Orta
+  D  Kapasite acigini net raporla + oneri uret     KN5       -     Yok   Dusuk
+  E  HARD_CAP'i doluluk baskisi altinda esnet      KN4       **    Orta  Dusuk
+
+
+ONERI A -- Hedef modeline ara_gun tavani (EN YUKSEK GETIRI)
+
+  hedef_hesaplayici.py satir 241'deki kisi tavanina ucuncu bir sinir ekle:
+
+     ara_gun_tavani = math.ceil(len(musait_gunler) / (self.ara_gun + 1))
+     upper_bound = max(manuel_total,
+                       min(max_kapasite, HARD_CAP, ara_gun_tavani))
+
+  Boylece hedef modeli en bastan YERLESTIRILEBILIR hedefler uretir; cizelge
+  modeli bos slot birakmak zorunda kalmaz.
+  NOT: Bu, Toplam kapasiteyi dusurebileceginden INFEASIBLE'i artirabilir --
+  Oneri D ile birlikte gitmeli.
+
+
+ONERI B -- Bos slot -> gevsetme (EN UCUZ KAZANC)
+
+  solve_strategy.py'de basari kosulunu guclendir:
+
+     bos = (sonuc.istatistikler or {}).get('bos_slot_sayisi', 0)
+     doluluk_yetersiz = sonuc.basarili and bos > tolerans   # orn. tolerans=0
+     if sonuc.basarili and not doluluk_yetersiz:
+         return ...   # gercekten tam
+     # aksi halde ara_gun gevsetme gecisini calistir, en iyi dolulugu sakla
+
+  En yuksek dolulukluyu saklayip dondur ("best-so-far"). Kucuk degisiklik,
+  dogrudan etki.
+
+
+ONERI C -- Doluluk-oncelikli ikinci gecis
+
+  Ilk cozum bos slot birakirsa, hedef esitligini/tavanini YUMUSATAN bir model
+  daha kos: toplam_atama <= hedef_toplam + esnek ve esnek'e orta agirlikli
+  ceza. Boylece bosta duran kisiler acigi kapatir, adalet biraz bozulur ama
+  doluluk artar. Kullaniciya "%100 doluluk mu, tam adalet mi?" tercihi
+  sunulabilir.
+
+
+ONERI D -- Kapasite acigi raporu
+
+  Zaten hesaplanan darbogaz verisini (KN5) kullaniciya somut aksiyonla goster:
+     "3 slot acigi var. Cozum: 1 kisi daha ekleyin, veya X'in mazeretini
+      kaldirin, veya slot sayisini 5->4 yapin."
+  Bu, "neden dolmadi" sorusunu ortadan kaldirir.
+
+
+ONERI E -- HARD_CAP'i doluluk baskisi altinda esnet
+
+  Toplam kapasite yetmediginde HARD_CAP'i kademeli artir (ceil(avg)+1 ->
+  ceil(avg)+2 ...) ve yogunlasma cezasiyla dengele. Az kisiyle cok slotu
+  kapatmayi mumkun kilar; adalet cezayla korunur.
+
+
+4. ONERILEN YOL HARITASI
+--------------------------------------------------------------------------------
+
+  1. ONCE B + D (dusuk risk, hizli)
+     -> doluluk acigini hem KOVALA hem ACIKLA.
+
+  2. SONRA A (asil kok neden)
+     -> hedefleri en bastan yerlestirilebilir yap; D'nin raporlamasiyla
+        guvene al.
+
+  3. ISTEGE BAGLI C / E
+     -> "adaleti biraz feda et, dolulugu maksimize et" modunu kullanici
+        secenegi olarak sun.
+
+
+================================================================================
+  Not: Bu analiz kodu DEGISTIRMEDI -- yalnizca mevcut mimarinin haritasini
+  ve iyilestirme seceneklerini cikardi. Uygulama icin onay bekleniyor.
+================================================================================

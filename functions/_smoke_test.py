@@ -48,6 +48,22 @@ def senaryo_eksik_hedef():
     return gun_sayisi, gun_tipleri, personeller, gorevler, hedefler
 
 
+def senaryo_unsat_core_ara_gun():
+    """Faz 6A: plan hard hedefi ile ara gun kisiti cakisirsa core H4 + S3 icermeli."""
+    gun_sayisi = 2
+    gun_tipleri = {1: 'hici', 2: 'hici'}
+    gorevler = [SolverGorev(id=0, ad='Acil', slot_idx=0, base_name='Acil',
+                            exclusive=False, ayri_bina=False)]
+    personeller = [SolverPersonel(id=1, ad='TekKisi', mazeret_gunleri=set())]
+    hedefler = {
+        1: {
+            'hedef_toplam': 2,
+            'hedef_tipler': {'hici': 2, 'prs': 0, 'cum': 0, 'cmt': 0, 'pzr': 0},
+        }
+    }
+    return gun_sayisi, gun_tipleri, personeller, gorevler, hedefler
+
+
 def coz(baslik, veri):
     gun_sayisi, gun_tipleri, personeller, gorevler, hedefler = veri
     solver = NobetSolver(
@@ -78,5 +94,25 @@ if __name__ == '__main__':
     # HedefiYok kisisine atama YAPILMAMALI (hedef 0)
     yok_atama = [a for a in s2.atamalar if a.get('personel_ad') == 'HedefiYok']
     assert len(yok_atama) == 0, f"HedefiYok kisisine atama yapildi: {yok_atama}"
+
+    gun_sayisi, gun_tipleri, personeller, gorevler, hedefler = senaryo_unsat_core_ara_gun()
+    solver = NobetSolver(
+        gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler,
+        kurallar=[], gorev_havuzlari={},
+        kisitlama_istisnalari=[], birlikte_istisnalari=[],
+        aragun_istisnalari=[], manuel_atamalar=[], hedefler=hedefler,
+        ara_gun=1, max_sure_saniye=5,
+        ignore_manual_conflicts=False,
+        plan_kontrati={'uygulama': {'yetkili': True, 'toplam_hard': True}},
+    )
+    s3 = solver.coz()
+    core = solver.diagnose_with_unsat_core(max_sure_saniye=5)
+    core_groups = [g.get('group') for g in core.get('core_groups', [])]
+    print("\n=== Senaryo 3: unsat-core ara gun ===")
+    print(f"  basarili={s3.basarili} status={(s3.istatistikler or {}).get('status')} core={core_groups}")
+    assert not s3.basarili, "SENARYO 3 BASARILI DONDU - test infeasible olmali!"
+    assert 'H4_ARA_GUN' in core_groups, f"Unsat core H4_ARA_GUN icermiyor: {core_groups}"
+    assert 'S3_TOPLAM_HEDEF_PLAN' in core_groups, f"Unsat core S3_TOPLAM_HEDEF_PLAN icermiyor: {core_groups}"
 
     print("\n*** TUM SMOKE TESTLER GECTI ***")

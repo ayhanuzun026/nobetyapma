@@ -3,7 +3,8 @@ OR-Tools CP-SAT Nobet Cozucu v4.2
 Gorev kotalari + Gun tipi kotalari dahil
 """
 
-from typing import List, Dict, Set
+from dataclasses import dataclass
+from typing import Any, List, Dict, Set
 import time
 import math
 
@@ -36,6 +37,87 @@ def _get_cp_model():
                 _cp_model_module = _cm
     return _cp_model_module
 
+
+@dataclass
+class _SolveContext:
+    cp: Any
+    model: Any
+    x: Dict
+    kisi_gun_atama: Dict
+    bos_slotlar: List
+    penalties: List
+    eliminated_vars: int
+    unsat_registry: Any = None
+
+
+@dataclass
+class _AssumptionInfo:
+    group: str
+    action: str
+    label: str
+    detail: Dict
+
+
+class _UnsatCoreRegistry:
+    """CP-SAT assumption literal'lerini insan okunur kural gruplarina baglar."""
+
+    def __init__(self, model: Any):
+        self.model = model
+        self._literals = {}
+        self._infos = {}
+        self._order = []
+
+    @staticmethod
+    def _safe_name(value: str) -> str:
+        return ''.join(ch if ch.isalnum() else '_' for ch in value)[:80]
+
+    def guard(self, group: str, action: str, label: str, detail: Dict = None):
+        if group not in self._literals:
+            lit = self.model.NewBoolVar(f"assume_{len(self._order)}_{self._safe_name(group)}")
+            self.model.AddAssumption(lit)
+            self._literals[group] = lit
+            self._infos[group] = _AssumptionInfo(
+                group=group,
+                action=action,
+                label=label,
+                detail=detail or {},
+            )
+            self._order.append(group)
+        return self._literals[group]
+
+    def enforce(self, constraint: Any, group: str, action: str, label: str, detail: Dict = None):
+        constraint.OnlyEnforceIf(self.guard(group, action, label, detail))
+        return constraint
+
+    def describe_core(self, core_indexes: List[int]) -> Dict:
+        core_set = set(core_indexes or [])
+        core_items = []
+        for group in self._order:
+            lit = self._literals[group]
+            if lit.Index() not in core_set:
+                continue
+            info = self._infos[group]
+            core_items.append({
+                'group': info.group,
+                'action': info.action,
+                'label': info.label,
+                'detail': info.detail,
+                'literal_index': lit.Index(),
+            })
+
+        actions = []
+        for item in core_items:
+            action = item['action']
+            if action and action not in actions:
+                actions.append(action)
+
+        return {
+            'core_size': len(core_items),
+            'core_groups': core_items,
+            'suggested_actions': actions,
+            'raw_core_indexes': list(core_indexes or []),
+            'tracked_assumption_count': len(self._order),
+        }
 
 class NobetSolver:
     def __init__(self, gun_sayisi: int, gun_tipleri: Dict[int, str],
@@ -1102,31 +1184,35 @@ class NobetSolver:
             'kural_uyumu': kural_uyumu
         }
 
-    def coz(self) -> SolverSonuc:
-        baslangic = time.time()
-        cp = _get_cp_model()
-        model = cp.CpModel()
+    def _manual_conflict_result(self, baslangic: float, manual_conflicts: List[Dict]) -> SolverSonuc:
+        sure_ms = int((time.time() - baslangic) * 1000)
+        preview = manual_conflicts[:50]
+        return SolverSonuc(
+            basarili=False,
+            atamalar=[],
+            istatistikler={
+                'status': 'MANUAL_CONFLICT',
+                'manual_conflict_count': len(manual_conflicts),
+                'manual_conflicts': preview,
+                'ara_gun': self.ara_gun,
+                'ara_gun_1_dene': False,
+                'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
+                'feasibility_debug': self._build_feasibility_diagnostics(limit_preview=40)
+            },
+            sure_ms=sure_ms,
+            mesaj=f"Manuel atamalarda hard kisit cakismasi var ({len(manual_conflicts)} adet)"
+        )
 
-        manual_conflicts = self._manual_hard_conflict_diagnostics()
-        if manual_conflicts and not self.ignore_manual_conflicts:
-            sure_ms = int((time.time() - baslangic) * 1000)
-            preview = manual_conflicts[:50]
-            return SolverSonuc(
-                basarili=False,
-                atamalar=[],
-                istatistikler={
-                    'status': 'MANUAL_CONFLICT',
-                    'manual_conflict_count': len(manual_conflicts),
-                    'manual_conflicts': preview,
-                    'ara_gun': self.ara_gun,
-                    'ara_gun_1_dene': False,
-                    'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
-                    'feasibility_debug': self._build_feasibility_diagnostics(limit_preview=40)
-                },
-                sure_ms=sure_ms,
-                mesaj=f"Manuel atamalarda hard kisit cakismasi var ({len(manual_conflicts)} adet)"
-            )
-        
+
+    def _build_model(self, cp: Any, collect_unsat_core: bool = False) -> _SolveContext:
+        model = cp.CpModel()
+        unsat_registry = _UnsatCoreRegistry(model) if collect_unsat_core else None
+
+        def hard_add(constraint, group: str, action: str, label: str, detail: Dict = None):
+            if unsat_registry is not None:
+                return unsat_registry.enforce(constraint, group, action, label, detail)
+            return constraint
+
         # Pre-compute impossible slot assignments for each person
         exclusive_roles = self._exclusive_roles_without_pool()
         birlikte_uye_ids = self._birlikte_uye_ids()
@@ -1197,9 +1283,14 @@ class NobetSolver:
                     if g2 in p.mazeret_gunleri and (p.id, g2) not in self.manual_mazeret_override_days:
                         continue  # Mazeret gunu zaten 0, constraint gereksiz
                     if (p.id, g1, g2) not in self.aragun_istisna_set:
-                        model.Add(
-                            sum(x[p.id, g1, s] for s in range(self.slot_sayisi)) +
-                            sum(x[p.id, g2, s] for s in range(self.slot_sayisi)) <= 1
+                        hard_add(
+                            model.Add(
+                                sum(x[p.id, g1, s] for s in range(self.slot_sayisi)) +
+                                sum(x[p.id, g2, s] for s in range(self.slot_sayisi)) <= 1
+                            ),
+                            'H4_ARA_GUN',
+                            'ara_gun_azalt',
+                            'Minimum ara gun kisiti',
                         )
 
         # H5. Ayri tutma
@@ -1224,9 +1315,14 @@ class NobetSolver:
                                 # H5: Ayni gun AYNI GOREV TIPI (base_name) icinde birlikte olamazlar
                                 # Farkli gorev tiplerine (orn: Mavi Kod vs Ameliyathane) atanabilirler
                                 for base_name, slot_list in self.role_slots.items():
-                                    model.Add(
-                                        sum(x[p1_id, g, s] for s in slot_list) +
-                                        sum(x[p2_id, g, s] for s in slot_list) <= 1
+                                    hard_add(
+                                        model.Add(
+                                            sum(x[p1_id, g, s] for s in slot_list) +
+                                            sum(x[p2_id, g, s] for s in slot_list) <= 1
+                                        ),
+                                        'H5_AYRI_TUTMA',
+                                        'ayri_gevset',
+                                        'Ayni gorev tipinde ayri tutulacak personeller',
                                     )
         
         # H6. Manuel atamalar
@@ -1234,7 +1330,12 @@ class NobetSolver:
             matched_pid = find_matching_id(m.personel_id, self.personeller.keys())
             if matched_pid is not None and 0 <= m.slot_idx < self.slot_sayisi:
                 if 1 <= m.gun <= self.gun_sayisi:
-                    model.Add(x[matched_pid, m.gun, m.slot_idx] == 1)
+                    hard_add(
+                        model.Add(x[matched_pid, m.gun, m.slot_idx] == 1),
+                        'H6_MANUEL_ATAMA',
+                        'manuel_kontrol',
+                        'Manuel atamalar',
+                    )
         
         # H7. Kisitli gorev - kısıtlı kişi sadece kendi görevine (+ taşma görevine) gidebilir
         for p in self.personel_listesi:
@@ -1266,7 +1367,12 @@ class NobetSolver:
                     for s in range(self.slot_sayisi):
                         role = self._role_name_by_slot(s)
                         if s not in izinli_slotlar and role not in allowed_exception_roles:
-                            model.Add(x[p.id, g, s] == 0)
+                            hard_add(
+                                model.Add(x[p.id, g, s] == 0),
+                                'H7_KISITLI_GOREV',
+                                'gorev_kisitlamasi_kontrol',
+                                'Kisitli personel sadece izinli gorevlerine atanabilir',
+                            )
         
         # H8. Exclusive görevler - kısıtlı OLMAYAN kişi exclusive slotlara gidemez
         # Havuzlu görevlerde havuz üyeleri de girebilir
@@ -1292,7 +1398,12 @@ class NobetSolver:
                     exclusive_slotlar = self.role_slots.get(exclusive_gorev, [])
                     for g in range(1, self.gun_sayisi + 1):
                         for s in exclusive_slotlar:
-                            model.Add(x[p.id, g, s] == 0)
+                            hard_add(
+                                model.Add(x[p.id, g, s] == 0),
+                                'H8_EXCLUSIVE_GOREV',
+                                'exclusive_gevset',
+                                'Exclusive gorevlere sadece yetkili personel atanabilir',
+                            )
 
         # H9. Ayrı bina slotları + birlikte kuralı üyeleri
         #     Birlikte üyeleri en fazla 1 nöbet ayrı binaya yazılabilir
@@ -1329,7 +1440,12 @@ class NobetSolver:
                         toplam_ayri_bina_atamasi.append(x[pid, g, s])
 
                 if toplam_ayri_bina_atamasi:
-                    model.Add(sum(toplam_ayri_bina_atamasi) <= ayri_bina_max)
+                    hard_add(
+                        model.Add(sum(toplam_ayri_bina_atamasi) <= ayri_bina_max),
+                        'H9_BIRLIKTE_AYRI_BINA',
+                        'birlikte_kaldir',
+                        'Birlikte grubu ayri bina siniri',
+                    )
 
         # H10. Non-exclusive görev havuzu varsa sadece o havuzdan seçim yap
         for role, allowed_ids in self.gorev_havuzlari.items():
@@ -1344,7 +1460,12 @@ class NobetSolver:
                     continue
                 for g in range(1, self.gun_sayisi + 1):
                     for s in role_slotlari:
-                        model.Add(x[p.id, g, s] == 0)
+                        hard_add(
+                            model.Add(x[p.id, g, s] == 0),
+                            'H10_GOREV_HAVUZU',
+                            'exclusive_gevset',
+                            'Gorev havuzu disindaki personel atanamaz',
+                        )
 
         # H10b. Kişi-gün iskeleti — ön planlı günlere sadakat
         if self._gun_iskeleti_aktif_mi():
@@ -1361,7 +1482,12 @@ class NobetSolver:
                 hedef_toplam = int(hedef.get('hedef_toplam', len(planlanan_gunler)) or 0)
                 planlanan_hesap = sum(kisi_gun_atama[p.id, g] for g in planlanan_gunler)
                 alt_sinir = max(0, min(len(planlanan_gunler), hedef_toplam) - gun_tol)
-                model.Add(planlanan_hesap >= alt_sinir)
+                hard_add(
+                    model.Add(planlanan_hesap >= alt_sinir),
+                    'PLAN_GUN_ISKELETI',
+                    'plan_gevset',
+                    'Gun iskeleti hard alt siniri',
+                )
         
         # SOFT CONSTRAINTS
         penalties = []
@@ -1438,11 +1564,26 @@ class NobetSolver:
                 kota = gorev_kotalari.get(role, 0)
                 if self._plan_aktif_mi():
                     ust_sinir = kota if kota <= 0 else kota + plan_gorev_tol
-                    model.Add(role_atama <= ust_sinir)
+                    hard_add(
+                        model.Add(role_atama <= ust_sinir),
+                        'S1_GOREV_KOTA_PLAN',
+                        'plan_gevset',
+                        'Plan gorev kotasi ust siniri',
+                    )
                     if kota > 0:
-                        model.Add(role_atama >= max(0, kota - plan_gorev_tol))
+                        hard_add(
+                            model.Add(role_atama >= max(0, kota - plan_gorev_tol)),
+                            'S1_GOREV_KOTA_PLAN',
+                            'plan_gevset',
+                            'Plan gorev kotasi alt siniri',
+                        )
                 elif kota > 0:
-                    model.Add(role_atama <= kota)
+                    hard_add(
+                        model.Add(role_atama <= kota),
+                        'S1_GOREV_KOTA',
+                        'gorev_kota_kontrol',
+                        'Gorev kotasi ust siniri',
+                    )
 
                 eksik = model.NewIntVar(0, self.gun_sayisi * len(slot_list), f'role_eksik_{p.id}_{role}')
                 model.Add(eksik >= kota - role_atama)
@@ -1459,8 +1600,18 @@ class NobetSolver:
                 if tip_gunleri:
                     tip_atama = sum(x[p.id, g, s] for g in tip_gunleri for s in range(self.slot_sayisi))
                     if self._plan_aktif_mi():
-                        model.Add(tip_atama <= tip_hedef + plan_gun_tipi_tol)
-                        model.Add(tip_atama >= max(0, tip_hedef - plan_gun_tipi_tol))
+                        hard_add(
+                            model.Add(tip_atama <= tip_hedef + plan_gun_tipi_tol),
+                            'S2_GUN_TIPI_PLAN',
+                            'plan_gevset',
+                            'Plan gun tipi kotasi ust siniri',
+                        )
+                        hard_add(
+                            model.Add(tip_atama >= max(0, tip_hedef - plan_gun_tipi_tol)),
+                            'S2_GUN_TIPI_PLAN',
+                            'plan_gevset',
+                            'Plan gun tipi kotasi alt siniri',
+                        )
                     fazla = model.NewIntVar(0, len(tip_gunleri) * self.slot_sayisi, f'tip_fazla_{p.id}_{tip}')
                     eksik = model.NewIntVar(0, len(tip_gunleri) * self.slot_sayisi, f'tip_eksik_{p.id}_{tip}')
                     model.Add(tip_atama - tip_hedef == fazla - eksik)
@@ -1524,9 +1675,19 @@ class NobetSolver:
             hedef_toplam = hedef.get('hedef_toplam', 0)
             toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
             if self._plan_toplam_hard_mi():
-                model.Add(toplam_atama == hedef_toplam)
+                hard_add(
+                    model.Add(toplam_atama == hedef_toplam),
+                    'S3_TOPLAM_HEDEF_PLAN',
+                    'plan_gevset',
+                    'Plan toplam hedef hard esitligi',
+                )
             else:
-                model.Add(toplam_atama <= hedef_toplam)
+                hard_add(
+                    model.Add(toplam_atama <= hedef_toplam),
+                    'S3_TOPLAM_HEDEF',
+                    'hedef_kontrol',
+                    'Toplam hedef ust siniri',
+                )
             eksik = model.NewIntVar(0, self.gun_sayisi, f'toplam_eksik_{p.id}')
             model.Add(eksik >= hedef_toplam - toplam_atama)
             penalties.append(eksik * WEIGHT_TOPLAM * plan_penalty_multiplier)
@@ -1782,146 +1943,233 @@ class NobetSolver:
         if penalties:
             model.Minimize(sum(penalties))
         
+        return _SolveContext(
+            cp=cp, model=model, x=x, kisi_gun_atama=kisi_gun_atama,
+            bos_slotlar=bos_slotlar, penalties=penalties,
+            eliminated_vars=eliminated_vars,
+            unsat_registry=unsat_registry,
+        )
+
+    def _solve(self, context: _SolveContext):
         # COZUM
-        solver = cp.CpSolver()
+        solver = context.cp.CpSolver()
         solver.parameters.max_time_in_seconds = self.max_sure
         solver.parameters.num_search_workers = 4
         
-        status = solver.Solve(model)
-        sure_ms = int((time.time() - baslangic) * 1000)
+        status = solver.Solve(context.model)
         
-        if status in [cp.OPTIMAL, cp.FEASIBLE]:
-            atamalar = []
-            kisi_sayac = {p.id: {'toplam': 0, 'tipler': {t: 0 for t in GUN_TIPLERI}, 'gorevler': {}} for p in self.personel_listesi}
-            bos_slot_sayisi = sum(1 for bos_mu in bos_slotlar if solver.Value(bos_mu) == 1)
-            
-            for g in range(1, self.gun_sayisi + 1):
-                gun_tipi = self.gun_tipleri.get(g, 'hici')
-                for s in range(self.slot_sayisi):
-                    for p in self.personel_listesi:
-                        if solver.Value(x[p.id, g, s]) == 1:
-                            gorev = self.gorevler[s] if s < len(self.gorevler) else None
-                            gorev_ad = gorev.ad if gorev else f'Slot {s}'
-                            base_name = gorev.base_name if gorev and gorev.base_name else gorev_ad
-                            atamalar.append({
-                                'gun': g, 'slot_idx': s, 'gorev_ad': gorev_ad,
-                                'gorev_base': base_name, 'personel_id': p.id,
-                                'personel_ad': p.ad, 'gun_tipi': gun_tipi
-                            })
-                            kisi_sayac[p.id]['toplam'] += 1
-                            kisi_sayac[p.id]['tipler'][gun_tipi] += 1
-                            kisi_sayac[p.id]['gorevler'][base_name] = kisi_sayac[p.id]['gorevler'].get(base_name, 0) + 1
-            
-            toplam_atama = len(atamalar)
-            toplam_slot = self.gun_sayisi * self.slot_sayisi
-            min_nobet = min(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
-            max_nobet = max(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
-            birlikte_grup_istatistikleri = self._hesapla_birlikte_grup_istatistikleri(atamalar)
-            plan_sapmalari = self._hesapla_plan_sapmalari(kisi_sayac, atamalar)
-            
-            # DEBUG: Kısıtlamalı personel bilgileri
-            kisitli_debug = []
-            for p in self.personel_listesi:
-                if p.kisitli_gorev:
-                    izinli = list(self.role_slots.get(p.kisitli_gorev, []))
-                    if p.tasma_gorevi:
-                        tasma_slotlar = list(self.role_slots.get(p.tasma_gorevi, []))
-                        izinli = list(set(izinli + tasma_slotlar))
-                    kisitli_debug.append({
-                        'personel_id': p.id,
-                        'personel_ad': p.ad,
-                        'kisitli_gorev': p.kisitli_gorev,
-                        'tasma_gorevi': p.tasma_gorevi,
-                        'izinli_slotlar': izinli,
-                        'gerceklesen_gorevler': kisi_sayac[p.id]['gorevler']
-                    })
-            
-            istatistikler = {
-                'status': 'OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE',
-                'objective': solver.ObjectiveValue() if penalties else 0,
-                'toplam_atama': toplam_atama, 'toplam_slot': toplam_slot,
-                'bos_slot_sayisi': bos_slot_sayisi,
-                'ara_gun': self.ara_gun,
-                'solver_status_name': solver.StatusName(status),
-                'doluluk_yuzde': round(100 * toplam_atama / toplam_slot, 1) if toplam_slot > 0 else 0,
-                'min_nobet': min_nobet, 'max_nobet': max_nobet,
-                'denge_farki': max_nobet - min_nobet,
-                'solver_num_conflicts': solver.NumConflicts(),
-                'solver_num_branches': solver.NumBranches(),
-                'solver_wall_time_s': round(solver.WallTime(), 3),
-                'eliminated_vars': eliminated_vars,
-                'kalite_skoru': self._hesapla_kalite_skoru(kisi_sayac, atamalar, toplam_atama, toplam_slot),
-                'plan': {
-                    'aktif': self._plan_aktif_mi(),
-                    'plan_hash': self.plan_kontrati.get('plan_hash'),
-                    'kaynak': self.plan_kontrati.get('kaynak'),
-                    'olusturulan_ara_gun': self.plan_kontrati.get('olusturulan_ara_gun'),
-                    'uygulama': self.plan_uygulama,
-                    'gun_iskeleti_aktif': self._gun_iskeleti_aktif_mi(),
-                    'gun_iskeleti_uygulanabilir_ids': sorted(self._gun_iskeleti_uygulanabilir_ids()),
-                } if self.plan_kontrati else {},
-                'plan_sapmalari': plan_sapmalari,
-                'birlikte_gruplar': birlikte_grup_istatistikleri,
-                'birlikte_esdeger_aile': BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
-                'kisi_detay': [
-                    {'personel_id': str(p.id), 'personel_ad': p.ad, 'toplam': kisi_sayac[p.id]['toplam'],
-                     'tipler': kisi_sayac[p.id]['tipler'], 'gorevler': kisi_sayac[p.id]['gorevler']}
-                    for p in self.personel_listesi
-                ],
-                'role_slots': {k: v for k, v in self.role_slots.items()},
-                'kisitli_debug': kisitli_debug,
-                'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
-                'feasibility_debug': self._build_feasibility_diagnostics(limit_preview=30) if bos_slot_sayisi > 0 else {},
-                'gorev_listesi': [{'idx': i, 'ad': g.ad, 'base_name': g.base_name} for i, g in enumerate(self.gorevler)]
-            }
-            return SolverSonuc(basarili=True, atamalar=atamalar, istatistikler=istatistikler,
-                              sure_ms=sure_ms, mesaj='OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE')
-        else:
-            # Çözüm bulunamadı - gerçek solver status bilgisini dön
-            status_name = solver.StatusName(status)
-            if status == cp.INFEASIBLE:
-                normalized_status = 'INFEASIBLE'
-            elif status == cp.MODEL_INVALID:
-                normalized_status = 'MODEL_INVALID'
-            elif status == cp.UNKNOWN:
-                normalized_status = 'UNKNOWN'
-            else:
-                normalized_status = f'STATUS_{status}'
+        return solver, status
 
-            ara_gun_1_dene = (normalized_status == 'INFEASIBLE' and self.ara_gun > 1)
-            timeout_olasi = (
-                normalized_status == 'UNKNOWN' and
-                sure_ms >= max(int(self.max_sure * 1000) - 500, 0)
-            )
-            reason_hint = (
-                "Muhtemel timeout veya model cok zor."
-                if timeout_olasi else
-                "Model cozulmedi, ayrintiları kontrol edin."
-            )
-            feasibility_debug = self._build_feasibility_diagnostics(limit_preview=40)
-            return SolverSonuc(basarili=False, atamalar=[], 
-                              istatistikler={
-                                  'status': normalized_status,
-                                  'solver_status_name': status_name,
-                                  'ara_gun': self.ara_gun,
-                                  'plan': {
-                                      'aktif': self._plan_aktif_mi(),
-                                      'plan_hash': self.plan_kontrati.get('plan_hash'),
-                                      'kaynak': self.plan_kontrati.get('kaynak'),
-                                      'olusturulan_ara_gun': self.plan_kontrati.get('olusturulan_ara_gun'),
-                                      'uygulama': self.plan_uygulama,
-                                      'gun_iskeleti_aktif': self._gun_iskeleti_aktif_mi(),
-                                      'gun_iskeleti_uygulanabilir_ids': sorted(self._gun_iskeleti_uygulanabilir_ids()),
-                                  } if self.plan_kontrati else {},
-                                  'ara_gun_1_dene': ara_gun_1_dene,
-                                  'solver_num_conflicts': solver.NumConflicts(),
-                                  'solver_num_branches': solver.NumBranches(),
-                                  'solver_wall_time_s': round(solver.WallTime(), 3),
-                                  'max_sure_saniye': self.max_sure,
-                                  'timeout_olasi': timeout_olasi,
-                                  'reason_hint': reason_hint,
-                                  'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
-                                  'feasibility_debug': feasibility_debug
-                              },
-                              sure_ms=sure_ms, 
-                              mesaj=f"Cozum bulunamadi: {normalized_status} (ara_gun={self.ara_gun})")
+    def diagnose_with_unsat_core(self, max_sure_saniye: int = 10) -> Dict:
+        """INFEASIBLE durumda CP-SAT assumptions ile cakisabilecek kural gruplarini raporlar.
+
+        Bu metod normal cozum davranisini degistirmez; sadece hata yolunda ikinci,
+        kisa ve tek worker'li bir model kurup sufficient assumptions core'u okur.
+        """
+        cp = _get_cp_model()
+        try:
+            context = self._build_model(cp, collect_unsat_core=True)
+            solver = cp.CpSolver()
+            solver.parameters.max_time_in_seconds = max(1, int(max_sure_saniye or 1))
+            solver.parameters.num_search_workers = 1
+            status = solver.Solve(context.model)
+            status_name = solver.StatusName(status)
+
+            result = {
+                'enabled': True,
+                'status': 'INFEASIBLE' if status == cp.INFEASIBLE else status_name,
+                'solver_status_name': status_name,
+                'solver_wall_time_s': round(solver.WallTime(), 3),
+            }
+            registry = context.unsat_registry
+            if status != cp.INFEASIBLE or registry is None:
+                result.update({
+                    'core_size': 0,
+                    'core_groups': [],
+                    'suggested_actions': [],
+                    'note': 'Assumption modeli INFEASIBLE donmedi; core raporu yok.',
+                })
+                return result
+
+            core_fn = getattr(solver, 'sufficient_assumptions_for_infeasibility', None)
+            if core_fn is None:
+                core_fn = getattr(solver, 'SufficientAssumptionsForInfeasibility', None)
+            if core_fn is None:
+                result.update({
+                    'core_size': 0,
+                    'core_groups': [],
+                    'suggested_actions': [],
+                    'note': 'OR-Tools assumption core API bulunamadi.',
+                })
+                return result
+
+            result.update(registry.describe_core(core_fn()))
+            if result.get('core_size', 0) == 0:
+                result['note'] = (
+                    'Model infeasible ama core bos. Neden, guard edilmeyen temel '
+                    'kisitlar veya degisken eliminasyonu olabilir.'
+                )
+            return result
+        except Exception as exc:
+            return {
+                'enabled': True,
+                'status': 'ERROR',
+                'error': str(exc)[:300],
+                'core_size': 0,
+                'core_groups': [],
+                'suggested_actions': [],
+            }
+
+    def _extract_solution(self, context: _SolveContext, solver: Any, status: int, sure_ms: int) -> SolverSonuc:
+        cp = context.cp
+        atamalar = []
+        kisi_sayac = {p.id: {'toplam': 0, 'tipler': {t: 0 for t in GUN_TIPLERI}, 'gorevler': {}} for p in self.personel_listesi}
+        bos_slot_sayisi = sum(1 for bos_mu in context.bos_slotlar if solver.Value(bos_mu) == 1)
+            
+        for g in range(1, self.gun_sayisi + 1):
+            gun_tipi = self.gun_tipleri.get(g, 'hici')
+            for s in range(self.slot_sayisi):
+                for p in self.personel_listesi:
+                    if solver.Value(context.x[p.id, g, s]) == 1:
+                        gorev = self.gorevler[s] if s < len(self.gorevler) else None
+                        gorev_ad = gorev.ad if gorev else f'Slot {s}'
+                        base_name = gorev.base_name if gorev and gorev.base_name else gorev_ad
+                        atamalar.append({
+                            'gun': g, 'slot_idx': s, 'gorev_ad': gorev_ad,
+                            'gorev_base': base_name, 'personel_id': p.id,
+                            'personel_ad': p.ad, 'gun_tipi': gun_tipi
+                        })
+                        kisi_sayac[p.id]['toplam'] += 1
+                        kisi_sayac[p.id]['tipler'][gun_tipi] += 1
+                        kisi_sayac[p.id]['gorevler'][base_name] = kisi_sayac[p.id]['gorevler'].get(base_name, 0) + 1
+            
+        toplam_atama = len(atamalar)
+        toplam_slot = self.gun_sayisi * self.slot_sayisi
+        min_nobet = min(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
+        max_nobet = max(k['toplam'] for k in kisi_sayac.values()) if kisi_sayac else 0
+        birlikte_grup_istatistikleri = self._hesapla_birlikte_grup_istatistikleri(atamalar)
+        plan_sapmalari = self._hesapla_plan_sapmalari(kisi_sayac, atamalar)
+            
+        # DEBUG: Kısıtlamalı personel bilgileri
+        kisitli_debug = []
+        for p in self.personel_listesi:
+            if p.kisitli_gorev:
+                izinli = list(self.role_slots.get(p.kisitli_gorev, []))
+                if p.tasma_gorevi:
+                    tasma_slotlar = list(self.role_slots.get(p.tasma_gorevi, []))
+                    izinli = list(set(izinli + tasma_slotlar))
+                kisitli_debug.append({
+                    'personel_id': p.id,
+                    'personel_ad': p.ad,
+                    'kisitli_gorev': p.kisitli_gorev,
+                    'tasma_gorevi': p.tasma_gorevi,
+                    'izinli_slotlar': izinli,
+                    'gerceklesen_gorevler': kisi_sayac[p.id]['gorevler']
+                })
+            
+        istatistikler = {
+            'status': 'OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE',
+            'objective': solver.ObjectiveValue() if context.penalties else 0,
+            'toplam_atama': toplam_atama, 'toplam_slot': toplam_slot,
+            'bos_slot_sayisi': bos_slot_sayisi,
+            'ara_gun': self.ara_gun,
+            'solver_status_name': solver.StatusName(status),
+            'doluluk_yuzde': round(100 * toplam_atama / toplam_slot, 1) if toplam_slot > 0 else 0,
+            'min_nobet': min_nobet, 'max_nobet': max_nobet,
+            'denge_farki': max_nobet - min_nobet,
+            'solver_num_conflicts': solver.NumConflicts(),
+            'solver_num_branches': solver.NumBranches(),
+            'solver_wall_time_s': round(solver.WallTime(), 3),
+            'eliminated_vars': context.eliminated_vars,
+            'kalite_skoru': self._hesapla_kalite_skoru(kisi_sayac, atamalar, toplam_atama, toplam_slot),
+            'plan': {
+                'aktif': self._plan_aktif_mi(),
+                'plan_hash': self.plan_kontrati.get('plan_hash'),
+                'kaynak': self.plan_kontrati.get('kaynak'),
+                'olusturulan_ara_gun': self.plan_kontrati.get('olusturulan_ara_gun'),
+                'uygulama': self.plan_uygulama,
+                'gun_iskeleti_aktif': self._gun_iskeleti_aktif_mi(),
+                'gun_iskeleti_uygulanabilir_ids': sorted(self._gun_iskeleti_uygulanabilir_ids()),
+            } if self.plan_kontrati else {},
+            'plan_sapmalari': plan_sapmalari,
+            'birlikte_gruplar': birlikte_grup_istatistikleri,
+            'birlikte_esdeger_aile': BIRLIKTE_ESDEGER_GOREV_AILE_ADI,
+            'kisi_detay': [
+                {'personel_id': str(p.id), 'personel_ad': p.ad, 'toplam': kisi_sayac[p.id]['toplam'],
+                 'tipler': kisi_sayac[p.id]['tipler'], 'gorevler': kisi_sayac[p.id]['gorevler']}
+                for p in self.personel_listesi
+            ],
+            'role_slots': {k: v for k, v in self.role_slots.items()},
+            'kisitli_debug': kisitli_debug,
+            'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
+            'feasibility_debug': self._build_feasibility_diagnostics(limit_preview=30) if bos_slot_sayisi > 0 else {},
+            'gorev_listesi': [{'idx': i, 'ad': g.ad, 'base_name': g.base_name} for i, g in enumerate(self.gorevler)]
+        }
+        return SolverSonuc(basarili=True, atamalar=atamalar, istatistikler=istatistikler,
+                          sure_ms=sure_ms, mesaj='OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE')
+
+    def _build_failure_result(self, context: _SolveContext, solver: Any, status: int, sure_ms: int) -> SolverSonuc:
+        cp = context.cp
+        # Çözüm bulunamadı - gerçek solver status bilgisini dön
+        status_name = solver.StatusName(status)
+        if status == cp.INFEASIBLE:
+            normalized_status = 'INFEASIBLE'
+        elif status == cp.MODEL_INVALID:
+            normalized_status = 'MODEL_INVALID'
+        elif status == cp.UNKNOWN:
+            normalized_status = 'UNKNOWN'
+        else:
+            normalized_status = f'STATUS_{status}'
+
+        ara_gun_1_dene = (normalized_status == 'INFEASIBLE' and self.ara_gun > 1)
+        timeout_olasi = (
+            normalized_status == 'UNKNOWN' and
+            sure_ms >= max(int(self.max_sure * 1000) - 500, 0)
+        )
+        reason_hint = (
+            "Muhtemel timeout veya model cok zor."
+            if timeout_olasi else
+            "Model cozulmedi, ayrintiları kontrol edin."
+        )
+        feasibility_debug = self._build_feasibility_diagnostics(limit_preview=40)
+        return SolverSonuc(basarili=False, atamalar=[],
+                          istatistikler={
+                              'status': normalized_status,
+                              'solver_status_name': status_name,
+                              'ara_gun': self.ara_gun,
+                              'plan': {
+                                  'aktif': self._plan_aktif_mi(),
+                                  'plan_hash': self.plan_kontrati.get('plan_hash'),
+                                  'kaynak': self.plan_kontrati.get('kaynak'),
+                                  'olusturulan_ara_gun': self.plan_kontrati.get('olusturulan_ara_gun'),
+                                  'uygulama': self.plan_uygulama,
+                                  'gun_iskeleti_aktif': self._gun_iskeleti_aktif_mi(),
+                                  'gun_iskeleti_uygulanabilir_ids': sorted(self._gun_iskeleti_uygulanabilir_ids()),
+                              } if self.plan_kontrati else {},
+                              'ara_gun_1_dene': ara_gun_1_dene,
+                              'solver_num_conflicts': solver.NumConflicts(),
+                              'solver_num_branches': solver.NumBranches(),
+                              'solver_wall_time_s': round(solver.WallTime(), 3),
+                              'max_sure_saniye': self.max_sure,
+                              'timeout_olasi': timeout_olasi,
+                              'reason_hint': reason_hint,
+                              'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
+                              'feasibility_debug': feasibility_debug
+                          },
+                          sure_ms=sure_ms,
+                          mesaj=f"Cozum bulunamadi: {normalized_status} (ara_gun={self.ara_gun})")
+
+    def coz(self) -> SolverSonuc:
+        baslangic = time.time()
+        manual_conflicts = self._manual_hard_conflict_diagnostics()
+        if manual_conflicts and not self.ignore_manual_conflicts:
+            return self._manual_conflict_result(baslangic, manual_conflicts)
+
+        cp = _get_cp_model()
+        context = self._build_model(cp)
+        solver, status = self._solve(context)
+        sure_ms = int((time.time() - baslangic) * 1000)
+
+        if status in [cp.OPTIMAL, cp.FEASIBLE]:
+            return self._extract_solution(context, solver, status, sure_ms)
+        return self._build_failure_result(context, solver, status, sure_ms)

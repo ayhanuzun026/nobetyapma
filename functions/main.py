@@ -58,6 +58,39 @@ def _validate_input_sizes(data: dict, slot_sayisi: int) -> None:
         raise ValueError(f"Görev sayısı çok büyük: {n_gorev} (üst sınır {MAX_GOREV})")
 
 
+def _parse_cozum_parametreleri(data: dict, slot_default: int, slot_raw=None):
+    yil = _safe_int(data.get("yil", 2025), 2025)
+    ay = _safe_int(data.get("ay", 1), 1)
+    slot_value = slot_raw if slot_raw is not None else data.get("slotSayisi", slot_default)
+    slot_sayisi = _safe_int(slot_value, slot_default)
+    ara_gun = _safe_int(data.get("araGun", 2), 2)
+    return yil, ay, slot_sayisi, ara_gun
+
+
+def _cizelge_olustur(gun_sayisi: int, gorevler, atamalar):
+    cizelge = {str(g): [None] * len(gorevler) for g in range(1, gun_sayisi + 1)}
+    for atama in atamalar:
+        cizelge[str(atama['gun'])][atama['slot_idx']] = atama['personel_ad']
+    return cizelge
+
+
+def _hazirlik_analizi_ekle(cikti: dict, plan_kontrati, *, gun_sayisi: int,
+                           gun_tipleri: dict, personeller, gorevler, kurallar,
+                           gorev_havuzlari, manuel_atamalar, ara_gun: int,
+                           kisitlama_istisnalari) -> None:
+    try:
+        _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
+        _haz = analyze_preflight(
+            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
+            gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
+            manuel_atamalar=manuel_atamalar, ara_gun=ara_gun, plan_kontrati=_plan_dict,
+            kisitlama_istisnalari=kisitlama_istisnalari, max_preview=30
+        )
+        cikti['hazirlikAnalizi'] = _haz
+    except Exception as _e:
+        cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod': 'ANALIZ_HATA', 'oneri': str(_e)[:120]}]}
+
+
 # Kimlik doğrulama: endpoint'ler geçerli bir Firebase ID token ister.
 # REQUIRE_AUTH=False yaparak (acil durum) geçici kapatılabilir. Anonim (misafir)
 # token'lar da kabul edilir — mevcut misafir akışını korumak için. Daha sıkı koruma
@@ -103,10 +136,11 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": "Veri gönderilmedi"}, status=400)
 
         try:
-            yil = _safe_int(data.get("yil", 2025), 2025)
-            ay = _safe_int(data.get("ay", 1), 1)
-            slot_sayisi = _safe_int(data.get("gunlukSayi") or data.get("slotSayisi", 5), 5)
-            ara_gun = _safe_int(data.get("araGun", 2), 2)
+            yil, ay, slot_sayisi, ara_gun = _parse_cozum_parametreleri(
+                data,
+                slot_default=5,
+                slot_raw=data.get("gunlukSayi") or data.get("slotSayisi", 5),
+            )
         except (ValueError, TypeError) as ve:
             return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
 
@@ -185,11 +219,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
         )
 
-        cizelge = {}
-        for g in range(1, gun_sayisi + 1):
-            cizelge[str(g)] = [None] * len(gorevler)
-        for atama in sonuc.atamalar:
-            cizelge[str(atama['gun'])][atama['slot_idx']] = atama['personel_ad']
+        cizelge = _cizelge_olustur(gun_sayisi, gorevler, sonuc.atamalar)
 
         kisi_ozet = []
         eksik_atamalar = []
@@ -247,17 +277,13 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         log_session("nobet_dagit", data, cikti, sure_ms,
                     frontend_loglar=data.get("frontendLoglar"))
         # Hazırlık Analizi ekle
-        try:
-            _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
-            _haz = analyze_preflight(
-                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
-                gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
-                manuel_atamalar=manuel_atamalar, ara_gun=ara_gun, plan_kontrati=_plan_dict,
-                kisitlama_istisnalari=kisitlama_istisnalari, max_preview=30
-            )
-            cikti['hazirlikAnalizi'] = _haz
-        except Exception as _e:
-            cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod':'ANALIZ_HATA','oneri': str(_e)[:120]}]}
+        _hazirlik_analizi_ekle(
+            cikti, plan_kontrati,
+            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+            personeller=personeller, gorevler=gorevler, kurallar=kurallar,
+            gorev_havuzlari=gorev_havuzlari, manuel_atamalar=manuel_atamalar,
+            ara_gun=ara_gun, kisitlama_istisnalari=kisitlama_istisnalari,
+        )
         return _json_response(cikti)
 
     except Exception as e:
@@ -435,10 +461,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": "Veri gönderilmedi"}, status=400)
 
         try:
-            yil = _safe_int(data.get("yil", 2025), 2025)
-            ay = _safe_int(data.get("ay", 1), 1)
-            slot_sayisi = _safe_int(data.get("slotSayisi", 6), 6)
-            ara_gun = _safe_int(data.get("araGun", 2), 2)
+            yil, ay, slot_sayisi, ara_gun = _parse_cozum_parametreleri(data, slot_default=6)
             max_sure = _safe_int(data.get("maxSure", 300), 300)
         except (ValueError, TypeError) as ve:
             return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
@@ -565,12 +588,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         )
 
         # Çizelge formatına dönüştür
-        cizelge = {}
-        for g in range(1, gun_sayisi + 1):
-            cizelge[str(g)] = [None] * len(gorevler)
-
-        for atama in sonuc.atamalar:
-            cizelge[str(atama['gun'])][atama['slot_idx']] = atama['personel_ad']
+        cizelge = _cizelge_olustur(gun_sayisi, gorevler, sonuc.atamalar)
 
         hedef_debug = []
         for p in personeller:
@@ -627,17 +645,13 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         log_session("nobet_coz", data, cikti, sure_ms,
                     frontend_loglar=data.get("frontendLoglar"))
         # Hazırlık Analizi ekle
-        try:
-            _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
-            _haz = analyze_preflight(
-                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
-                gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
-                manuel_atamalar=manuel_atamalar, ara_gun=ara_gun, plan_kontrati=_plan_dict,
-                kisitlama_istisnalari=kisitlama_istisnalari, max_preview=30
-            )
-            cikti['hazirlikAnalizi'] = _haz
-        except Exception as _e:
-            cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod':'ANALIZ_HATA','oneri': str(_e)[:120]}]}
+        _hazirlik_analizi_ekle(
+            cikti, plan_kontrati,
+            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+            personeller=personeller, gorevler=gorevler, kurallar=kurallar,
+            gorev_havuzlari=gorev_havuzlari, manuel_atamalar=manuel_atamalar,
+            ara_gun=ara_gun, kisitlama_istisnalari=kisitlama_istisnalari,
+        )
         return _json_response(cikti)
 
     except Exception as e:

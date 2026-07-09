@@ -16,7 +16,9 @@
       "WebSearch",
       "Bash(python -m py_compile solve_strategy.py http_helpers.py ortools_solver.py excel_export.py utils.py)",
       "Bash(python -m py_compile ortools_solver.py)",
-      "Bash(python -m py_compile main.py parsers.py firestore_logger.py)"
+      "Bash(python -m py_compile main.py parsers.py firestore_logger.py)",
+      "Bash(python -m py_compile main.py ortools_solver.py hedef_hesaplayici.py hedef_teshis.py solve_strategy.py _smoke_test.py)",
+      "Bash(python _smoke_test.py)"
     ]
   }
 }
