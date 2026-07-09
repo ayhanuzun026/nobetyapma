@@ -14,6 +14,44 @@ from utils import find_matching_id
 logger = logging.getLogger(__name__)
 
 
+def _doluluk_raporu_uret(sonuc, bos_slot, gevsetme_denendi):
+    """Doluluk (boş slot) durumunu kullanıcıya net aksiyonla açıklayan rapor üretir.
+
+    Boş slot verisi çözücünün istatistiklerinde zaten mevcut; burada onu
+    anlaşılır bir öneri metnine dönüştürürüz.
+    """
+    ist = (getattr(sonuc, 'istatistikler', None) or {}) if sonuc else {}
+    toplam_slot = int(ist.get('toplam_slot', 0) or 0)
+    doluluk_yuzde = ist.get('doluluk_yuzde', 100 if bos_slot == 0 else 0)
+    feasibility_debug = ist.get('feasibility_debug') or {}
+
+    if bos_slot <= 0:
+        oneri = "Takvim tam dolu."
+    else:
+        cozumler = [
+            "1 kişi daha ekleyin",
+            "bir personelin mazeretini kaldırın",
+            "günlük slot sayısını azaltın",
+        ]
+        gevsetme_notu = (
+            " Ara gün kuralı gevşetildiği hâlde açık kaldı."
+            if gevsetme_denendi else ""
+        )
+        oneri = (
+            f"{bos_slot} slot boş kaldı.{gevsetme_notu} "
+            f"Çözüm: {' / '.join(cozumler)}."
+        )
+
+    return {
+        'bos_slot': bos_slot,
+        'toplam_slot': toplam_slot,
+        'doluluk_yuzde': doluluk_yuzde,
+        'gevsetme_denendi': gevsetme_denendi,
+        'feasibility_debug': feasibility_debug,
+        'oneri': oneri,
+    }
+
+
 def _sirala_birlikte_kurallari(kurallar, personeller, hedefler):
     personel_map = {p.id: p for p in personeller}
     birlikte_kurallari = []
@@ -83,6 +121,12 @@ def solve_with_diagnostics(
     sonuc = None
     kullanilan_ara_gun = ara_gun
     aktif_plan_kontrati = plan_kontrati
+
+    # Kümülatif gevşetme durumu (Faz 2 teşhis + Faz 3 doluluk boyunca güncellenir)
+    aktif_gorevler = gorevler
+    aktif_kurallar = kurallar
+    aktif_havuzlar = gorev_havuzlari
+    aktif_ara_gun = ara_gun
 
     def _plani_yenile(yeni_ara_gun):
         nonlocal hedefler, aktif_plan_kontrati
@@ -215,9 +259,10 @@ def solve_with_diagnostics(
             ) for g in gorevler
         ]
 
-        # Kümülatif gevşetme durumu
-        aktif_gorevler = gorevler  # Başlangıçta orijinal görevler
-        aktif_kurallar = kurallar  # Başlangıçta orijinal kurallar
+        # Not: aktif_gorevler / aktif_kurallar / aktif_havuzlar / aktif_ara_gun
+        # fonksiyon başında ilklendirildi; burada orijinal değerlerine sıfırlıyoruz.
+        aktif_gorevler = gorevler
+        aktif_kurallar = kurallar
         aktif_havuzlar = gorev_havuzlari
         aktif_ara_gun = ara_gun
 
@@ -387,6 +432,74 @@ def solve_with_diagnostics(
         )
         kullanilan_ara_gun = ara_gun
 
+    # ---- FAZ 3: Başarılı ama boş slotlu çözüm -> doluluğu artırmayı dene ----
+    # Çözücü FEASIBLE dönse bile bazı slotlar boş kalabilir (ör. ara_gün kısıtı
+    # yerleştirmeyi engeller). Bunu sessizce kabul etmek yerine ara_gün'ü kademeli
+    # düşürüp yeniden çözer, EN DOLU sonucu (best-so-far) saklarız.
+    DOLULUK_TOLERANS = 0  # kaç boş slota kadar "yeterince dolu" sayılır
+
+    def _bos_slot_say(s):
+        if not s or not getattr(s, 'istatistikler', None):
+            return 0
+        return int((s.istatistikler or {}).get('bos_slot_sayisi', 0) or 0)
+
+    bos_ilk = _bos_slot_say(sonuc)
+    doluluk_gevsetme_denendi = False
+    if sonuc and sonuc.basarili and bos_ilk > DOLULUK_TOLERANS and kullanilan_ara_gun > 0:
+        en_iyi_sonuc = sonuc
+        en_iyi_bos = bos_ilk
+        en_iyi_ara_gun = kullanilan_ara_gun
+        denenecek_ara = list(range(kullanilan_ara_gun - 1, -1, -1))  # (kullanilan-1) .. 0
+        gecen = _time.time() - baslangic_toplam
+        kalan = max(max_sure - gecen, 5)
+        sure_adim = max(int(kalan / max(len(denenecek_ara), 1)), 3)
+
+        for dene_ara_gun in denenecek_ara:
+            if en_iyi_bos <= DOLULUK_TOLERANS:
+                break
+            doluluk_gevsetme_denendi = True
+            _plani_yenile(dene_ara_gun)
+            solver = NobetSolver(
+                gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+                personeller=personeller, gorevler=aktif_gorevler,
+                kurallar=aktif_kurallar, gorev_havuzlari=aktif_havuzlar,
+                kisitlama_istisnalari=kisitlama_istisnalari,
+                birlikte_istisnalari=birlikte_istisnalari,
+                aragun_istisnalari=aragun_istisnalari,
+                manuel_atamalar=manuel_atamalar, hedefler=hedefler,
+                ara_gun=dene_ara_gun, max_sure_saniye=sure_adim,
+                ignore_manual_conflicts=ignore_manual_conflicts,
+                plan_kontrati=aktif_plan_kontrati,
+            )
+            aday = solver.coz()
+            if aday and aday.basarili:
+                aday_bos = _bos_slot_say(aday)
+                if aday_bos < en_iyi_bos:
+                    en_iyi_sonuc = aday
+                    en_iyi_bos = aday_bos
+                    en_iyi_ara_gun = dene_ara_gun
+                    tani_mesajlari.append(
+                        f"Doluluk gevsetme: ara_gun {kullanilan_ara_gun}->{dene_ara_gun}, "
+                        f"bos slot {bos_ilk}->{aday_bos}"
+                    )
+
+        # En dolu sonucu benimse. Döngüde plan/hedefler daha düşük ara_gün'e göre
+        # değişmiş olabilir; döndürülen çözümle tutarlı olması için (plan_yenileyici
+        # varsa) her durumda en iyi ara_gün'e geri getir. plan_yenileyici yoksa
+        # _plani_yenile no-op'tur, zararsızdır.
+        sonuc = en_iyi_sonuc
+        _plani_yenile(en_iyi_ara_gun)
+        if en_iyi_ara_gun != kullanilan_ara_gun:
+            kullanilan_ara_gun = en_iyi_ara_gun
+            gevsetme_bilgisi['doluluk_ara_gun_gevsetildi'] = True
+
+    # ---- Doluluk raporu (D): boş slot varsa net aksiyon önerisi üret ----
+    doluluk_raporu = _doluluk_raporu_uret(
+        sonuc, _bos_slot_say(sonuc), doluluk_gevsetme_denendi
+    )
+    if doluluk_raporu.get('bos_slot', 0) > 0:
+        tani_mesajlari.append(f"Doluluk: {doluluk_raporu.get('oneri', '')}")
+
     # Toplam süreyi güncelle
     toplam_sure_ms = int((_time.time() - baslangic_toplam) * 1000)
     logger.info("nobet_coz tamamlandi: basarili=%s, sure=%dms, atama=%d, gevsetme=%s",
@@ -408,6 +521,7 @@ def solve_with_diagnostics(
             'tani_mesajlari': tani_mesajlari,
             'gevsetme_bilgisi': gevsetme_bilgisi,
             'teshis': teshis_bilgisi,
+            'doluluk_raporu': doluluk_raporu,
             **(
                 {'fallback_ara_gun': kullanilan_ara_gun, 'istenen_ara_gun': ara_gun}
                 if kullanilan_ara_gun != ara_gun else {}

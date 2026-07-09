@@ -3,6 +3,7 @@ Firebase gerektirmez; dogrudan NobetSolver.coz() cagirir. Calistir: venv/Scripts
 """
 from solver_models import SolverPersonel, SolverGorev
 from ortools_solver import NobetSolver
+from solve_strategy import solve_with_diagnostics, _doluluk_raporu_uret
 
 
 def senaryo_temel():
@@ -64,6 +65,23 @@ def senaryo_unsat_core_ara_gun():
     return gun_sayisi, gun_tipleri, personeller, gorevler, hedefler
 
 
+def senaryo_doluluk_gevsetme():
+    """Aşama 1B: Tek kişi + 4 gün + ara_gün=2 -> başta boş slot kalır (H4 gap>ara_gün),
+    doluluk geçişi ara_gün'ü kademeli düşürüp (0'da ardışık serbest) tümünü doldurmalı."""
+    gun_sayisi = 4
+    gun_tipleri = {g: 'hici' for g in range(1, gun_sayisi + 1)}
+    gorevler = [SolverGorev(id=0, ad='Acil', slot_idx=0, base_name='Acil',
+                            exclusive=False, ayri_bina=False)]
+    personeller = [SolverPersonel(id=1, ad='TekKisi', mazeret_gunleri=set())]
+    hedefler = {
+        1: {
+            'hedef_toplam': 4,
+            'hedef_tipler': {'hici': 4, 'prs': 0, 'cum': 0, 'cmt': 0, 'pzr': 0},
+        }
+    }
+    return gun_sayisi, gun_tipleri, personeller, gorevler, hedefler
+
+
 def coz(baslik, veri):
     gun_sayisi, gun_tipleri, personeller, gorevler, hedefler = veri
     solver = NobetSolver(
@@ -114,5 +132,37 @@ if __name__ == '__main__':
     assert not s3.basarili, "SENARYO 3 BASARILI DONDU - test infeasible olmali!"
     assert 'H4_ARA_GUN' in core_groups, f"Unsat core H4_ARA_GUN icermiyor: {core_groups}"
     assert 'S3_TOPLAM_HEDEF_PLAN' in core_groups, f"Unsat core S3_TOPLAM_HEDEF_PLAN icermiyor: {core_groups}"
+
+    # === Senaryo 4: Doluluk gevsetme (Asama 1B/1D) ===
+    gun_sayisi, gun_tipleri, personeller, gorevler, hedefler = senaryo_doluluk_gevsetme()
+    s4, gev4, tesh4, kul_ara4 = solve_with_diagnostics(
+        gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler,
+        kurallar=[], gorev_havuzlari={},
+        kisitlama_istisnalari=[], birlikte_istisnalari=[],
+        aragun_istisnalari=[], manuel_atamalar=[], hedefler=hedefler,
+        ara_gun=2, max_sure=20, yil=2025, ay=1, resmi_tatiller={}, data={},
+    )
+    ist4 = s4.istatistikler or {}
+    rapor4 = ist4.get('doluluk_raporu') or {}
+    print("\n=== Senaryo 4: doluluk gevsetme ===")
+    print(f"  basarili={s4.basarili} atama={len(s4.atamalar)} bos_slot={rapor4.get('bos_slot')} "
+          f"kullanilan_ara_gun={kul_ara4} gevsetme_denendi={rapor4.get('gevsetme_denendi')}")
+    print(f"  oneri: {rapor4.get('oneri')}")
+    assert s4.basarili, "SENARYO 4 BASARISIZ — feasible olmaliydi!"
+    assert 'doluluk_raporu' in ist4, "doluluk_raporu istatistiklere eklenmemis!"
+    assert rapor4.get('gevsetme_denendi') is True, "Bos slot vardi ama doluluk gevsetmesi denenmedi!"
+    assert rapor4.get('bos_slot', 99) == 0, f"Doluluk gevsetmesi tum slotlari dolduramadi: bos={rapor4.get('bos_slot')}"
+    assert len(s4.atamalar) == 4, f"4 slot dolmaliydi, atama={len(s4.atamalar)}"
+
+    # === Birim: _doluluk_raporu_uret bos slot dalinda oneri metni ureti mi ===
+    class _SahteSonuc:
+        basarili = True
+        istatistikler = {'toplam_slot': 10, 'bos_slot_sayisi': 3, 'doluluk_yuzde': 70.0}
+    rapor_bos = _doluluk_raporu_uret(_SahteSonuc(), bos_slot=3, gevsetme_denendi=True)
+    assert rapor_bos['bos_slot'] == 3, rapor_bos
+    assert 'slot boş kaldı' in rapor_bos['oneri'], f"Oneri metni beklenen degil: {rapor_bos['oneri']}"
+    rapor_dolu = _doluluk_raporu_uret(_SahteSonuc(), bos_slot=0, gevsetme_denendi=False)
+    assert rapor_dolu['oneri'] == "Takvim tam dolu.", rapor_dolu['oneri']
 
     print("\n*** TUM SMOKE TESTLER GECTI ***")
