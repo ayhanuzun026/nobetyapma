@@ -1,7 +1,7 @@
 """Gecici smoke test — NobetSolver'in Faz 1 duzeltmeleri sonrasi calistigini dogrular.
 Firebase gerektirmez; dogrudan NobetSolver.coz() cagirir. Calistir: venv/Scripts/python _smoke_test.py
 """
-from solver_models import SolverPersonel, SolverGorev
+from solver_models import SolverPersonel, SolverGorev, SolverKural
 from ortools_solver import NobetSolver
 from solve_strategy import solve_with_diagnostics, _doluluk_raporu_uret
 
@@ -190,5 +190,50 @@ if __name__ == '__main__':
     assert 'slot boş kaldı' in rapor_bos['oneri'], f"Oneri metni beklenen degil: {rapor_bos['oneri']}"
     rapor_dolu = _doluluk_raporu_uret(_SahteSonuc(), bos_slot=0, gevsetme_denendi=False)
     assert rapor_dolu['oneri'] == "Takvim tam dolu.", rapor_dolu['oneri']
+
+    # === Senaryo 5: Bos slot INSAN DILI aciklamasi (ayri kurali) ===
+    # 1 gun, AYNI gorev tipinde (base_name='Acil') 2 slot, 2 kisi, aralarinda
+    # 'ayri' kurali + her birinin kotasi 1. H5 ayni gorev tipinde ikisini birlikte
+    # yasaklar, H3 ayni gun tek slot der -> bir slot bos kalir. Bos slotun
+    # aciklamasinda 'ayri' sebebi ve karsi kisinin adi gecmeli.
+    gorevler5 = [
+        SolverGorev(id=0, ad='Acil-1', slot_idx=0, base_name='Acil'),
+        SolverGorev(id=1, ad='Acil-2', slot_idx=1, base_name='Acil'),
+    ]
+    personeller5 = [
+        SolverPersonel(id=1, ad='Ali', mazeret_gunleri=set()),
+        SolverPersonel(id=2, ad='Ayse', mazeret_gunleri=set()),
+    ]
+    hedefler5 = {
+        1: {'hedef_toplam': 1, 'hedef_tipler': {'hici': 1}},
+        2: {'hedef_toplam': 1, 'hedef_tipler': {'hici': 1}},
+    }
+    solver5 = NobetSolver(
+        gun_sayisi=1, gun_tipleri={1: 'hici'},
+        personeller=personeller5, gorevler=gorevler5,
+        kurallar=[SolverKural(tur='ayri', kisiler=[1, 2])], gorev_havuzlari={},
+        kisitlama_istisnalari=[], birlikte_istisnalari=[],
+        aragun_istisnalari=[], manuel_atamalar=[], hedefler=hedefler5,
+        ara_gun=1, max_sure_saniye=10,
+        ignore_manual_conflicts=False, plan_kontrati=None,
+    )
+    s5 = solver5.coz()
+    ist5 = s5.istatistikler or {}
+    aciklamalar5 = ist5.get('bos_slot_aciklamalari') or []
+    print("\n=== Senaryo 5: bos slot insan dili (ayri) ===")
+    print(f"  basarili={s5.basarili} atama={len(s5.atamalar)} "
+          f"bos_slot={ist5.get('bos_slot_sayisi')}")
+    for a in aciklamalar5:
+        print(f"    {a['aciklama']}")
+    assert s5.basarili, "SENARYO 5 BASARISIZ — feasible olmaliydi!"
+    assert ist5.get('bos_slot_sayisi', 0) == 1, \
+        f"1 slot bos kalmaliydi, bos={ist5.get('bos_slot_sayisi')}"
+    assert len(aciklamalar5) == 1, f"1 bos slot aciklamasi bekleniyordu: {aciklamalar5}"
+    sebepler5 = aciklamalar5[0]['sebep_sayilari']
+    assert 'ayri' in sebepler5, f"Bos slot sebeplerinde 'ayri' yok: {sebepler5}"
+    metin5 = aciklamalar5[0]['aciklama']
+    assert 'ayrı' in metin5, f"Aciklamada 'ayrı' gecmiyor: {metin5}"
+    assert ('Ali' in metin5 and 'Ayse' in metin5), \
+        f"Aciklamada iki kisinin adi da gecmeli: {metin5}"
 
     print("\n*** TUM SMOKE TESTLER GECTI ***")

@@ -9661,14 +9661,26 @@
       let icerikHtml = '';
 
       if (bosSlotSayisi > 0) {
+        // Backend her boş slotu insan diline çevirdiyse (doluluk_raporu.slot_detaylari)
+        // "neden boş kaldı" cümlelerini göster; yoksa eski basit rozet listesine düş.
+        const slotDetaylari = window.ortoolsIstatistikler?.doluluk_raporu?.slot_detaylari;
+        let bosIcerik;
+        if (Array.isArray(slotDetaylari) && slotDetaylari.length > 0) {
+          bosIcerik = slotDetaylari
+            .filter(d => d && d.aciklama)
+            .map(d => `<div class="help" style="margin:4px 0; padding:6px 8px; background:#fff; border-radius:4px; border-left:3px solid #f59e0b;">${escapeHtml(d.aciklama)}</div>`)
+            .join('');
+        } else {
+          bosIcerik = bosSlotlar.map(x =>
+            `<div class="badge badge-warn" style="margin:2px;">${x.gun}. gün - ${escapeHtml(x.gorev)}</div>`
+          ).join('');
+        }
         icerikHtml += `
       <div class="rule-box mb-3" style="background:#fee2e2; border-left:4px solid #dc2626;">
         <strong>⚠️ Boş Kalan Slotlar (${bosSlotSayisi})</strong>
-        <div class="help mb-3">Çizelgede personele atanamayan görevler.</div>
-        <div style="max-height:150px; overflow-y:auto;">
-          ${bosSlotlar.map(x =>
-          `<div class="badge badge-warn" style="margin:2px;">${x.gun}. gün - ${escapeHtml(x.gorev)}</div>`
-        ).join('')}
+        <div class="help mb-3">Çizelgede personele atanamayan görevler ve nedenleri.</div>
+        <div style="max-height:220px; overflow-y:auto;">
+          ${bosIcerik}
         </div>
       </div>
     `;

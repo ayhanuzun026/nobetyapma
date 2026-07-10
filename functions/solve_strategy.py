@@ -13,36 +13,54 @@ logger = logging.getLogger(__name__)
 
 
 def _doluluk_raporu_uret(sonuc, bos_slot, gevsetme_denendi):
-    """Bos slot durumunu kullaniciya net aksiyonlarla aciklar."""
-    ist = (getattr(sonuc, "istatistikler", None) or {}) if sonuc else {}
-    toplam_slot = int(ist.get("toplam_slot", 0) or 0)
-    doluluk_yuzde = ist.get("doluluk_yuzde", 100 if bos_slot == 0 else 0)
-    feasibility_debug = ist.get("feasibility_debug") or {}
+    """Doluluk (boş slot) durumunu kullanıcıya net aksiyonla açıklayan rapor üretir.
+
+    Boş slot verisi çözücünün istatistiklerinde zaten mevcut; burada onu
+    anlaşılır bir öneri metnine dönüştürürüz.
+    """
+    ist = (getattr(sonuc, 'istatistikler', None) or {}) if sonuc else {}
+    toplam_slot = int(ist.get('toplam_slot', 0) or 0)
+    doluluk_yuzde = ist.get('doluluk_yuzde', 100 if bos_slot == 0 else 0)
+    feasibility_debug = ist.get('feasibility_debug') or {}
+    slot_aciklamalari = ist.get('bos_slot_aciklamalari') or []
 
     if bos_slot <= 0:
         oneri = "Takvim tam dolu."
+        ozet = []
     else:
-        cozumler = [
-            "1 kişi daha ekleyin",
-            "bir personelin mazeretini kaldırın",
-            "günlük slot sayısını azaltın",
-        ]
+        # İnsan dili: her boş slotun spesifik sebebini öne çıkar
+        ozet = [a.get('aciklama', '') for a in slot_aciklamalari if a.get('aciklama')]
         gevsetme_notu = (
             " Ara gün kuralı gevşetildiği hâlde açık kaldı."
             if gevsetme_denendi else ""
         )
-        oneri = (
-            f"{bos_slot} slot boş kaldı.{gevsetme_notu} "
-            f"Çözüm: {' / '.join(cozumler)}."
-        )
+        if ozet:
+            gosterilecek = ozet[:5]
+            ek = "" if len(ozet) <= 5 else f" (+{bos_slot - len(gosterilecek)} slot daha)"
+            oneri = (
+                f"{bos_slot} slot boş kaldı.{gevsetme_notu} "
+                f"Sebepler: " + " | ".join(gosterilecek) + ek
+            )
+        else:
+            # Açıklama üretilemediyse eski genel öneriye düş
+            cozumler = [
+                "1 kişi daha ekleyin",
+                "bir personelin mazeretini kaldırın",
+                "günlük slot sayısını azaltın",
+            ]
+            oneri = (
+                f"{bos_slot} slot boş kaldı.{gevsetme_notu} "
+                f"Çözüm: {' / '.join(cozumler)}."
+            )
 
     return {
-        "bos_slot": bos_slot,
-        "toplam_slot": toplam_slot,
-        "doluluk_yuzde": doluluk_yuzde,
-        "gevsetme_denendi": gevsetme_denendi,
-        "feasibility_debug": feasibility_debug,
-        "oneri": oneri,
+        'bos_slot': bos_slot,
+        'toplam_slot': toplam_slot,
+        'doluluk_yuzde': doluluk_yuzde,
+        'gevsetme_denendi': gevsetme_denendi,
+        'feasibility_debug': feasibility_debug,
+        'slot_detaylari': slot_aciklamalari,
+        'oneri': oneri,
     }
 
 

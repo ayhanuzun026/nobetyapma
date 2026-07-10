@@ -944,6 +944,166 @@ class NobetSolver:
         setattr(self, f"_feasibility_cache_{limit_preview}", result)
         return result
 
+    # Gün tipi -> insan diline uygun etiket
+    _GUN_TIPI_ETIKET = {
+        'hici': 'hafta içi',
+        'prs': 'Perşembe',
+        'cum': 'Cuma',
+        'cmt': 'Cumartesi',
+        'pzr': 'Pazar',
+    }
+
+    def _ayri_cift_haritasi(self) -> Dict[int, Set[int]]:
+        """Ayrı kurallarından pid -> {aynı anda çizelgelenemeyeceği pid'ler} haritası."""
+        harita: Dict[int, Set[int]] = {}
+        for kural in self.kurallar:
+            if getattr(kural, 'tur', None) != 'ayri':
+                continue
+            valid = []
+            for raw_pid in kural.kisiler:
+                matched = find_matching_id(raw_pid, self.personeller.keys())
+                if matched is not None:
+                    valid.append(matched)
+            for i, a in enumerate(valid):
+                for b in valid[i + 1:]:
+                    harita.setdefault(a, set()).add(b)
+                    harita.setdefault(b, set()).add(a)
+        return harita
+
+    def _bos_slot_aciklamalari(self, atamalar: List[Dict], limit: int = 40) -> List[Dict]:
+        """Her boş (gün, slot) için 'neden boş kaldı'yı insan diline çevirir.
+
+        Bir slotu dolduramayan her aday için TEK birincil engel sınıflandırılır:
+          - mazeret            : kişi o gün müsait değil (izin/mazeret)
+          - gorev_uygun_degil  : görev kısıtı/havuz/exclusive nedeniyle uygun değil
+          - zaten_atandi       : kişi o gün başka nöbette
+          - hedef_dolu         : kişi nöbet kotasını (hedef_toplam, KN3) doldurdu
+          - ara_gun            : yakın günde nöbeti var, ara gün kuralına takılı
+          - ayri               : 'ayrı' kuralındaki biri o gün nöbette
+          - serbest            : uygun+boştu ama denge/kota nedeniyle atanmadı
+
+        Döndürülen her kayıt: gün, gün_tipi, slot_idx, gorev, aday_sayisi,
+        sebepler (kod -> [açıklama]) ve hazır 'aciklama' cümlesi.
+        """
+        exclusive_roles = self._exclusive_roles_without_pool()
+        birlikte_uye_ids = self._birlikte_uye_ids()
+        ayri_map = self._ayri_cift_haritasi()
+        kisi_ad = {p.id: (p.ad or f"#{p.id}") for p in self.personel_listesi}
+
+        # Çözümden türetilen yardımcı haritalar
+        dolu = set()                       # (gun, slot_idx)
+        gun_atananlar: Dict[int, Set[int]] = {}   # gun -> {pid}
+        kisi_gunler: Dict[int, List[int]] = {}     # pid -> [atandığı günler]
+        kisi_atama_sayisi: Dict[int, int] = {}     # pid -> toplam atama
+        for a in atamalar:
+            g = a.get('gun')
+            s = a.get('slot_idx')
+            pid = a.get('personel_id')
+            if g is None or s is None or pid is None:
+                continue
+            dolu.add((g, s))
+            gun_atananlar.setdefault(g, set()).add(pid)
+            kisi_gunler.setdefault(pid, []).append(g)
+            kisi_atama_sayisi[pid] = kisi_atama_sayisi.get(pid, 0) + 1
+
+        def _kisi_engeli(pid: int, g: int, s: int) -> tuple:
+            """(kod, aciklama) döndürür; aday değilse ('mazeret'/'gorev_uygun_degil')."""
+            p = self.personeller.get(pid)
+            if p is None:
+                return ('gorev_uygun_degil', kisi_ad.get(pid, f"#{pid}"))
+            ad = kisi_ad.get(pid, f"#{pid}")
+
+            # Yapısal uygunluk (mazeret + görev/havuz/exclusive kısıtları)
+            if not self._person_can_take_slot_on_day(pid, s, g, exclusive_roles, birlikte_uye_ids):
+                if g in p.mazeret_gunleri:
+                    return ('mazeret', f"{ad} (o gün izinli/mazeretli)")
+                return ('gorev_uygun_degil', f"{ad} (bu göreve uygun değil)")
+
+            atananlar = gun_atananlar.get(g, set())
+            # 1) O gün zaten başka nöbette
+            if pid in atananlar:
+                return ('zaten_atandi', f"{ad} (o gün başka nöbette)")
+            # 2) Kota (hedef_toplam) dolu — KN3 sert üst sınırı
+            hedef_toplam = int((self.hedefler.get(pid, {}) or {}).get('hedef_toplam', 0) or 0)
+            if kisi_atama_sayisi.get(pid, 0) >= hedef_toplam:
+                if hedef_toplam <= 0:
+                    return ('hedef_dolu', f"{ad} (nöbet kotası 0)")
+                return ('hedef_dolu', f"{ad} (kotası dolu: {hedef_toplam})")
+            # 3) Ara gün: yakın günde nöbeti var (gap < ara_gun)
+            for gg in kisi_gunler.get(pid, []):
+                if gg != g and abs(gg - g) < self.ara_gun:
+                    return ('ara_gun', f"{ad} ({gg}. günde nöbeti var, ara gün={self.ara_gun})")
+            # 4) Ayrı kuralı: karşı taraf o gün nöbette
+            cakisan = ayri_map.get(pid, set()) & atananlar
+            if cakisan:
+                karsi = kisi_ad.get(next(iter(cakisan)))
+                return ('ayri', f"{ad} ({karsi} ile 'ayrı' kuralında, {karsi} bugün nöbette)")
+            # 5) Uygun ve boştu ama solver atamadı (denge/soft birlikte)
+            return ('serbest', f"{ad} (uygun ve boştu; denge/kota nedeniyle atanmadı)")
+
+        aciklamalar: List[Dict] = []
+        for g in range(1, self.gun_sayisi + 1):
+            gun_tipi = self.gun_tipleri.get(g, 'hici')
+            tip_etiket = self._GUN_TIPI_ETIKET.get(gun_tipi, gun_tipi)
+            for s in range(self.slot_sayisi):
+                if (g, s) in dolu:
+                    continue
+                gorev = self._role_name_by_slot(s) or f"Slot {s}"
+
+                # Cümle için tam metinleri topla (yalnızca yerel kullanım),
+                # payload'a yalnızca kod->sayı özeti koy (isim listeleri şişirmesin).
+                sebep_metinleri: Dict[str, List[str]] = {}
+                sebep_sayilari: Dict[str, int] = {}
+                aday_sayisi = 0
+                for p in self.personel_listesi:
+                    kod, metin = _kisi_engeli(p.id, g, s)
+                    # 'aday' = yapısal olarak uygun olanlar
+                    if kod not in ('mazeret', 'gorev_uygun_degil'):
+                        aday_sayisi += 1
+                    sebep_metinleri.setdefault(kod, []).append(metin)
+                    sebep_sayilari[kod] = sebep_sayilari.get(kod, 0) + 1
+
+                aciklama = self._bos_slot_cumle(
+                    g, tip_etiket, gorev, aday_sayisi, sebep_metinleri
+                )
+                aciklamalar.append({
+                    'gun': g,
+                    'gun_tipi': gun_tipi,
+                    'slot_idx': s,
+                    'gorev': gorev,
+                    'aday_sayisi': aday_sayisi,
+                    'sebep_sayilari': sebep_sayilari,
+                    'aciklama': aciklama,
+                })
+                if len(aciklamalar) >= limit:
+                    return aciklamalar
+        return aciklamalar
+
+    @staticmethod
+    def _bos_slot_cumle(gun: int, tip_etiket: str, gorev: str,
+                        aday_sayisi: int, sebepler: Dict[str, List[str]]) -> str:
+        """Bir boş slot için tek satırlık insan-dili açıklama üretir."""
+        baslik = f"{gun}. gün ({tip_etiket}) '{gorev}' boş"
+
+        if aday_sayisi == 0:
+            mazeretliler = sebepler.get('mazeret', [])
+            if mazeretliler:
+                isimler = ", ".join(m.split(' (')[0] for m in mazeretliler[:4])
+                ek = "" if len(mazeretliler) <= 4 else f" (+{len(mazeretliler) - 4})"
+                return (f"{baslik} — o gün uygun personel yoktu; "
+                        f"müsait olmayanlar: {isimler}{ek}.")
+            return f"{baslik} — bu göreve atanabilecek uygun personel tanımlı değil."
+
+        # Aday vardı ama hepsi bir engele takıldı — engelli adayları say/isimle
+        engelli = []
+        for kod in ('zaten_atandi', 'hedef_dolu', 'ara_gun', 'ayri', 'serbest'):
+            engelli.extend(sebepler.get(kod, []))
+        if not engelli:
+            return f"{baslik} — {aday_sayisi} uygun aday vardı."
+        gosterilecek = "; ".join(engelli[:4])
+        ek = "" if len(engelli) <= 4 else f"; +{len(engelli) - 4} kişi daha"
+        return f"{baslik} — {aday_sayisi} uygun aday vardı ama: {gosterilecek}{ek}."
+
     def _diagnose_infeasible(self, diagnostics: Dict) -> 'List[Dict]':
         """INFEASIBLE nedenini analiz et, akıllı gevşetme aksiyonları öner.
 
@@ -2158,6 +2318,7 @@ class NobetSolver:
             'kisitli_debug': kisitli_debug,
             'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
             'feasibility_debug': self._build_feasibility_diagnostics(limit_preview=30) if bos_slot_sayisi > 0 else {},
+            'bos_slot_aciklamalari': self._bos_slot_aciklamalari(atamalar) if bos_slot_sayisi > 0 else [],
             'gorev_listesi': [{'idx': i, 'ad': g.ad, 'base_name': g.base_name} for i, g in enumerate(self.gorevler)]
         }
         return SolverSonuc(basarili=True, atamalar=atamalar, istatistikler=istatistikler,
