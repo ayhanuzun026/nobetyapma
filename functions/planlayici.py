@@ -142,6 +142,43 @@ def _plan_hash_payload(
     return hashlib.sha256(ham.encode("utf-8")).hexdigest()[:16]
 
 
+def plan_kontrati_hash_yenile(plan_kontrati):
+    """Plan kontratinin mevcut icerigine gore hash'ini yeniden uretir.
+
+    Gevsetme akisi kontratin ``uygulama`` bolumunu degistirebildigi icin eski
+    hash'i tasimak, raporlanan plan ile solver'in kullandigi planin farkli
+    gorunmesine neden olur. Yardimci hem API katmaninda kullanilan sozlukleri
+    hem de planlayicinin kendi ``PlanKontrati`` nesnesini destekler.
+    """
+    if plan_kontrati is None:
+        return None
+
+    if isinstance(plan_kontrati, PlanKontrati):
+        plan_kontrati.plan_hash = _plan_hash_payload(
+            plan_kontrati.hedefler or {},
+            plan_kontrati.gun_iskeleti or {},
+            plan_kontrati.kaynak,
+            plan_kontrati.olusturulan_ara_gun,
+            plan_kontrati.uygulama or {},
+            plan_kontrati.meta or {},
+        )
+        return plan_kontrati
+
+    if not isinstance(plan_kontrati, dict):
+        raise TypeError("plan_kontrati dict veya PlanKontrati olmali")
+
+    yenilenmis = deepcopy(plan_kontrati)
+    yenilenmis["plan_hash"] = _plan_hash_payload(
+        yenilenmis.get("hedefler", {}) or {},
+        yenilenmis.get("gun_iskeleti", {}) or {},
+        yenilenmis.get("kaynak", ""),
+        int(yenilenmis.get("olusturulan_ara_gun", 0) or 0),
+        yenilenmis.get("uygulama", {}) or {},
+        yenilenmis.get("meta", {}) or {},
+    )
+    return yenilenmis
+
+
 def plan_kontrati_olustur(
     hedef_sonuc: HedefSonuc,
     personeller: List[SolverPersonel],

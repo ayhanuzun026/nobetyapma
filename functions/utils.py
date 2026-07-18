@@ -37,6 +37,11 @@ BIRLIKTE_ESDEGER_GOREV_AILESI = frozenset({
 })
 BIRLIKTE_ESDEGER_GOREV_AILE_ADI = 'AMELIYATHANE_MAVI_KOD_KVC'
 
+# JSON numbers are parsed as JavaScript Number values in the frontend.
+# Thirteen hexadecimal digits stay within the exact 52-bit integer range.
+JS_MAX_SAFE_INTEGER = (1 << 53) - 1
+_ID_HASH_HEX_LENGTH = 13
+
 _TURKCE_ASCII_TRANSLATION = str.maketrans({
     'Ç': 'C', 'Ğ': 'G', 'İ': 'I', 'Ö': 'O', 'Ş': 'S', 'Ü': 'U',
     'ç': 'C', 'ğ': 'G', 'ı': 'I', 'i': 'I', 'ö': 'O', 'ş': 'S', 'ü': 'U',
@@ -47,41 +52,51 @@ _TURKCE_ASCII_TRANSLATION = str.maketrans({
 # ID NORMALİZASYON
 # ============================================
 
+def _safe_hashed_id(token: str) -> int:
+    return int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:_ID_HASH_HEX_LENGTH], 16)
+
+
+def _normalize_integer_id(value: int) -> int:
+    if -JS_MAX_SAFE_INTEGER <= value <= JS_MAX_SAFE_INTEGER:
+        return value
+    return _safe_hashed_id(f"int:{value}")
+
+
 def normalize_id(pid) -> Optional[int]:
-    """ID'yi int'e normalize et. Geçersiz/None girdi için None döner."""
+    """ID'yi JavaScript ile kayıpsız taşınabilen bir int'e normalize et."""
     if pid is None:
         return None
     if isinstance(pid, bool):
         return int(pid)
 
     if isinstance(pid, int):
-        return pid
+        return _normalize_integer_id(pid)
 
     if isinstance(pid, float):
         if math.isfinite(pid) and pid.is_integer():
-            return int(pid)
+            return _normalize_integer_id(int(pid))
         token = f"float:{pid:.15g}" if math.isfinite(pid) else f"float:{pid}"
-        return int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:15], 16)
+        return _safe_hashed_id(token)
 
     raw = str(pid).strip()
     if not raw:
-        return int(hashlib.sha1(b"text:").hexdigest()[:15], 16)
+        return _safe_hashed_id("text:")
 
     if raw.lstrip("+-").isdigit():
-        return int(raw, 10)
+        return _normalize_integer_id(int(raw, 10))
 
     try:
         numeric = float(raw)
         if math.isfinite(numeric) and numeric.is_integer():
-            return int(numeric)
+            return _normalize_integer_id(int(numeric))
         if math.isfinite(numeric):
             token = f"float:{numeric:.15g}"
-            return int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:15], 16)
+            return _safe_hashed_id(token)
     except (ValueError, TypeError):
         pass
 
     token = f"text:{raw}"
-    return int(hashlib.sha1(token.encode("utf-8")).hexdigest()[:15], 16)
+    return _safe_hashed_id(token)
 
 
 def ids_match(id1, id2) -> bool:

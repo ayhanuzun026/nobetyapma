@@ -1,4 +1,3 @@
-ta
 <!DOCTYPE html>
 <html lang="tr">
 
@@ -7,12 +6,18 @@ ta
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Nöbet Robotu Pro v2</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"></script>
-  <script src="https://unpkg.com/read-excel-file@5.x/bundle/read-excel-file.min.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet"
+    integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"
+    integrity="sha384-P7KKlGD3Ng66Ds7oTliLzTnol6DbK+k7PafNYXIBDQ4b5eFWtmqctplDVOxslglR" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/read-excel-file@5.8.8/bundle/read-excel-file.min.js"
+    integrity="sha384-u/LhPZ2zIypkkpeSlPRAe6YuG6wLGt8G4wfNC2knATJP0c5rWsQlzuO5OejXSmEu" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-app-compat.js"
+    integrity="sha384-+KqYOH8TSu3FKjN3ld86eZMYqq6lk+y2GjV1hyOW+1hT3Pk/aD8JFueZP1W3bPh1" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-auth-compat.js"
+    integrity="sha384-+OubPIxtsLCp2uUuSsvWDuBB9oSIEDIYt2qQfYki+vDmSxc6GQsBbBPH6Z6x5wrq" crossorigin="anonymous"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.6.1/firebase-firestore-compat.js"
+    integrity="sha384-6A4YFdmYPT5gmyRp8KegTqUol1Ff3navFf6eyVLErDtdSrikTwa1MQpVhFtubVlq" crossorigin="anonymous"></script>
   <script>
     const firebaseConfig = {
       apiKey: "AIzaSyC7w00A_jYCCBrnDASD1RjoYHjyKsKeLBI",
@@ -1470,6 +1475,10 @@ ta
     let devirListesi = [];
     let solverSorunRaporu = null;
     let personelIdCounter = 0;
+    let aktifDonem = null;
+    let donemDegistiriliyor = false;
+    let aktifCozumIstekImzasi = null;
+    let gunTipiDegisimKayitlari = [];
     let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
 
     // Saat değerleri
@@ -1574,14 +1583,26 @@ ta
       yukle();
     }
 
-    function girisYap() {
+    async function girisYap() {
       if (!auth) return alert('Firebase yüklenemedi');
-      auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+      try {
+        await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+      } catch (e) {
+        if (e?.code !== 'auth/popup-closed-by-user' && e?.code !== 'auth/cancelled-popup-request') {
+          console.error('Google giriş hatası:', e);
+          alert('Google ile giriş yapılamadı. Lütfen tekrar deneyin.');
+        }
+      }
     }
 
-    function misafirGiris() {
+    async function misafirGiris() {
       if (!auth) return alert('Firebase yüklenemedi');
-      auth.signInAnonymously();
+      try {
+        await auth.signInAnonymously();
+      } catch (e) {
+        console.error('Misafir giriş hatası:', e);
+        alert('Misafir girişi başlatılamadı. Lütfen tekrar deneyin.');
+      }
     }
 
     function cikisYap() {
@@ -1616,9 +1637,11 @@ ta
       // Step 6: Sadece önizleme tablosunu güncelle, listeyi otomatik oluşturma
       if (s === 6) {
         // Eğer daha önce liste oluşturulmuşsa sadece tabloyu güncelle
-        if (hesaplananListe?.atanan && Object.keys(hesaplananListe.atanan).length > 0) {
+        if (cozumGecerliMi() && hesaplananListe?.atanan && Object.keys(hesaplananListe.atanan).length > 0) {
           atananlar = hesaplananListe.atanan;
           onizlemeGuncelle();
+        } else if (hesaplananListe) {
+          cozumuGecersizKil();
         }
         // Aksi halde kullanıcı "Listeyi Oluştur" butonuna tıklamalı
       }
@@ -1668,6 +1691,70 @@ ta
     function debounce(fn, wait = 500) {
       let t = null;
       return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), wait); };
+    }
+
+    function cozumGirdiImzasiOlustur() {
+      const { yil, ay } = getYilAy();
+      return JSON.stringify({
+        yil,
+        ay,
+        gunluk: parseInt(document.getElementById('inp-gunluk').value) || 0,
+        araGun: parseInt(document.getElementById('inp-aragun').value) || 0,
+        saatler: Object.fromEntries(GUN_TIPLERI.map(tip => [tip, getSaatDeger(tip)])),
+        personelListesi,
+        resmiTatiller,
+        kurallar,
+        gorevler,
+        manuelAtamalar,
+        gorevKisitlamalari,
+        gorevHavuzlari,
+        kisitlamaIstisnalari,
+        birlikteIstisnalari,
+        araGunIstisnalari,
+        kilitliHedefler,
+        kisitlamaExclusive,
+        gorevKapasiteAyar
+      });
+    }
+
+    function cozumGecerliMi() {
+      return Boolean(
+        hesaplananListe &&
+        hesaplananListe._girdiImzasi &&
+        hesaplananListe._girdiImzasi === cozumGirdiImzasiOlustur()
+      );
+    }
+
+    function cozumuGecersizKil(neden = 'Çözümü etkileyen veriler değişti.') {
+      const cozumVardi = Boolean(hesaplananListe || window.sonExcelUrl);
+      hesaplananListe = null;
+      atananlar = {};
+      devirListesi = [];
+      gunTipiDegisimKayitlari = [];
+      solverSorunRaporu = null;
+      window.sonExcelUrl = null;
+      window.ortoolsIstatistikler = null;
+      window.bosSlotAnaliz = [];
+      window.birlikteGunMap = {};
+
+      const tbody = document.querySelector('#liste-table tbody');
+      if (tbody) tbody.innerHTML = '';
+      const statToplam = document.getElementById('stat-toplam');
+      const statDoluluk = document.getElementById('stat-doluluk');
+      const statDevir = document.getElementById('stat-devir');
+      if (statToplam) statToplam.textContent = '0';
+      if (statDoluluk) statDoluluk.textContent = '%0';
+      if (statDevir) statDevir.textContent = '0';
+
+      if (cozumVardi) {
+        const devirDiv = document.getElementById('devir-listesi');
+        const devirIcerik = document.getElementById('devir-icerik');
+        if (devirDiv && devirIcerik) {
+          devirDiv.style.display = 'block';
+          devirIcerik.textContent = `${neden} Listeyi yeniden oluşturun.`;
+        }
+      }
+      solverTeshisGuncelle();
     }
 
     const kaydetDebounced = debounce(() => kaydet(), 500);
@@ -1755,8 +1842,11 @@ ta
 
       container.innerHTML = resmiTatiller
         .sort((a, b) => a.gun - b.gun)
-        .map(t => `<span class="badge ${tipClass[t.tip] || 'badge-warn'}" style="margin:2px; cursor:pointer;" onclick="tatilSil(${t.gun})">${t.gun}. gün → ${tipLabel[t.tip] || t.tip} ✕</span>`)
+        .map(t => `<button type="button" class="badge ${tipClass[t.tip] || 'badge-warn'} tatil-sil-btn" data-gun="${escapeHtml(t.gun)}" style="margin:2px; cursor:pointer; border:0;">${escapeHtml(t.gun)}. gün → ${escapeHtml(tipLabel[t.tip] || t.tip)} ✕</button>`)
         .join('');
+      container.querySelectorAll('.tatil-sil-btn').forEach(btn => {
+        btn.addEventListener('click', () => tatilSil(parseInt(btn.dataset.gun, 10)));
+      });
     }
 
     // ============================================
@@ -1919,9 +2009,12 @@ ta
       <td>${idx + 1}</td>
       <td><input type="text" class="inp-cell" value="${escapeHtml(p.ad)}" onchange="personelAdDegisti(${idx}, this.value)" style="text-align:left;"></td>
       <td><span class="badge badge-info">${yillikToplam.toplam} nöbet</span></td>
-      <td><button class="btn btn-danger btn-sm" onclick="personelSil('${p.id}')"><i class="fa-solid fa-trash"></i></button></td>
+      <td><button class="btn btn-danger btn-sm personel-sil-btn" data-personel-id="${escapeHtml(p.id)}"><i class="fa-solid fa-trash"></i></button></td>
     `;
         tbody.appendChild(tr);
+      });
+      tbody.querySelectorAll('.personel-sil-btn').forEach(btn => {
+        btn.addEventListener('click', () => personelSil(btn.dataset.personelId));
       });
     }
 
@@ -2646,16 +2739,16 @@ ta
 
         let html = `<td style="font-weight:700;">${AY_ISIMLERI[ay]}</td>`;
         GUN_TIPLERI.forEach(tip => {
-          html += `<td><input type="number" class="inp-cell" value="${ayData[tip] || 0}" min="0" 
-        onblur="gecmisGuncelle(${personel.id}, ${yil}, ${ay}, '${tip}', this.value)"></td>`;
+          html += `<td><input type="number" class="inp-cell gecmis-tip-input" value="${ayData[tip] || 0}" min="0"
+        data-personel-id="${escapeHtml(personel.id)}" data-yil="${yil}" data-ay="${ay}" data-tip="${tip}"></td>`;
         });
         html += `<td><strong>${ayToplam}</strong></td>`;
 
         ozelGorevler.forEach(g => {
           const val = ayData.gorevler?.[g] || 0;
           gorevToplam[g] += val;
-          html += `<td style="background:#eff6ff;"><input type="number" class="inp-cell" value="${val}" min="0" style="background:#eff6ff;"
-        onblur="gecmisGorevGuncelle(${personel.id}, ${yil}, ${ay}, '${escapeHtml(g)}', this.value)"></td>`;
+          html += `<td style="background:#eff6ff;"><input type="number" class="inp-cell gecmis-gorev-input" value="${val}" min="0" style="background:#eff6ff;"
+        data-personel-id="${escapeHtml(personel.id)}" data-yil="${yil}" data-ay="${ay}" data-gorev="${escapeHtml(g)}"></td>`;
         });
 
         tr.innerHTML = html;
@@ -2673,6 +2766,17 @@ ta
       });
       footHtml += '</tr>';
       tfoot.innerHTML = footHtml;
+
+      tbody.querySelectorAll('.gecmis-tip-input').forEach(input => {
+        input.addEventListener('blur', () => {
+          gecmisGuncelle(input.dataset.personelId, parseInt(input.dataset.yil, 10), parseInt(input.dataset.ay, 10), input.dataset.tip, input.value);
+        });
+      });
+      tbody.querySelectorAll('.gecmis-gorev-input').forEach(input => {
+        input.addEventListener('blur', () => {
+          gecmisGorevGuncelle(input.dataset.personelId, parseInt(input.dataset.yil, 10), parseInt(input.dataset.ay, 10), input.dataset.gorev, input.value);
+        });
+      });
     }
 
     function gecmisGuncelle(personelId, yil, ay, tip, deger) {
@@ -2915,12 +3019,15 @@ ta
           <span style="color:#374151;">${adlar.join(', ')}</span>
           <span class="badge badge-info" style="margin-left:6px;">${ids.length} kişi</span>
         </div>
-        <button class="btn btn-danger btn-sm" onclick="gorevHavuzuSil('${escapeHtml(gorevAdi)}')" title="Havuzu sil">
+        <button class="btn btn-danger btn-sm gorev-havuzu-sil" data-gorev="${escapeHtml(gorevAdi)}" title="Havuzu sil">
           <i class="fa-solid fa-trash"></i>
         </button>
       </div>
     `;
       }).join('');
+      container.querySelectorAll('.gorev-havuzu-sil').forEach(btn => {
+        btn.addEventListener('click', () => gorevHavuzuSil(btn.dataset.gorev));
+      });
     }
 
     function gorevHavuzuSil(gorevAdi) {
@@ -6398,7 +6505,7 @@ ta
           const musait = gunSayisi - p.mazeretSayisi;
           return `
                 <tr style="border-bottom:1px solid #1e293b55;">
-                  <td style="padding:4px 5px; color:#e2e8f0; font-weight:600;">${p.ad}</td>
+                  <td style="padding:4px 5px; color:#e2e8f0; font-weight:600;">${escapeHtml(p.ad)}</td>
                   <td style="padding:4px 5px; text-align:center; color:#fbbf24;">${mz || '-'}</td>
                   <td style="padding:4px 5px; text-align:center; color:#ef4444;">${yi || '-'}</td>
                   <td style="padding:4px 5px; text-align:center; color:#f97316;">${ni || '-'}</td>
@@ -6434,7 +6541,7 @@ ta
         html += `
       <div style="background:#7f1d1d44; border:1px solid #dc262644; border-radius:8px; padding:12px; margin-bottom:12px;">
         <div style="font-weight:700; color:#fca5a5; margin-bottom:6px;">&#9888; Manuel Atama Cakismalari (${manuelCakismalar.length})</div>
-        ${manuelCakismalar.map(c => `<div style="color:#fca5a5; padding:3px 0; font-size:12px;">&#8226; ${c.ad}: ${c.gun}. gun ${c.tur.toLowerCase()} + nobet atanmis (${c.gorev})${c.onayli ? ' [onayli]' : ''}</div>`).join('')}
+        ${manuelCakismalar.map(c => `<div style="color:#fca5a5; padding:3px 0; font-size:12px;">&#8226; ${escapeHtml(c.ad)}: ${c.gun}. gun ${escapeHtml(c.tur.toLowerCase())} + nobet atanmis (${escapeHtml(c.gorev)})${c.onayli ? ' [onayli]' : ''}</div>`).join('')}
       </div>
     `;
       }
@@ -6466,7 +6573,7 @@ ta
         html += `
       <div style="background:#7f1d1d33; border:1px solid #dc262644; border-radius:8px; padding:12px; margin-bottom:12px;">
         <div style="font-weight:700; color:#fca5a5; margin-bottom:6px;">&#10060; Kritik Sorunlar (${kritikler.length})</div>
-        ${kritikler.map(k => `<div style="color:#fca5a5; padding:3px 0; font-size:12px;">&#8226; ${k}</div>`).join('')}
+        ${kritikler.map(k => `<div style="color:#fca5a5; padding:3px 0; font-size:12px;">&#8226; ${escapeHtml(k)}</div>`).join('')}
       </div>
     `;
       }
@@ -6476,7 +6583,7 @@ ta
         html += `
       <div style="background:#78350f33; border:1px solid #f59e0b44; border-radius:8px; padding:12px; margin-bottom:12px;">
         <div style="font-weight:700; color:#fbbf24; margin-bottom:6px;">&#9888; Uyarilar (${uyarilar.length})</div>
-        ${uyarilar.map(u => `<div style="color:#fcd34d; padding:3px 0; font-size:12px;">&#8226; ${u}</div>`).join('')}
+        ${uyarilar.map(u => `<div style="color:#fcd34d; padding:3px 0; font-size:12px;">&#8226; ${escapeHtml(u)}</div>`).join('')}
       </div>
     `;
       }
@@ -6486,7 +6593,7 @@ ta
         html += `
       <div style="background:#0c4a6e33; border:1px solid #0284c744; border-radius:8px; padding:12px; margin-bottom:12px;">
         <div style="font-weight:700; color:#38bdf8; margin-bottom:6px;">&#128161; Tavsiyeler (${tavsiyeler.length})</div>
-        ${tavsiyeler.map(t => `<div style="color:#7dd3fc; padding:3px 0; font-size:12px;">&#8226; ${t}</div>`).join('')}
+        ${tavsiyeler.map(t => `<div style="color:#7dd3fc; padding:3px 0; font-size:12px;">&#8226; ${escapeHtml(t)}</div>`).join('')}
       </div>
     `;
       }
@@ -6594,7 +6701,7 @@ ta
         }
         return `
               <tr style="border-bottom:1px solid #1e293b55;">
-                <td style="padding:5px; color:#e2e8f0; font-weight:600;">${p.ad}</td>
+                <td style="padding:5px; color:#e2e8f0; font-weight:600;">${escapeHtml(p.ad)}</td>
                 <td style="padding:5px; text-align:center; color:#e2e8f0;">${p.toplam}</td>
                 <td style="padding:5px; text-align:center; color:#94a3b8;">${p.musaitlik.maxNobet}</td>
                 <td style="padding:5px; text-align:center; color:${p.mazeretSayisi > gunSayisi * 0.3 ? '#fca5a5' : '#94a3b8'};">${p.mazeretSayisi}</td>
@@ -6790,33 +6897,33 @@ ta
         <div class="form-grid mt-3" style="grid-template-columns: repeat(6, 1fr); gap:8px;">
           <div class="input-group">
             <label style="font-size:10px;">H.İçi (${vars.hici})</label>
-            <input type="number" class="inp-cell" value="${ayar.hici}" min="0" 
+            <input type="number" class="inp-cell gorev-kapasite-input" value="${ayar.hici}" min="0"
               data-gorev="${escapeHtml(g)}" data-tip="hici"
-              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'hici', this.value)" style="padding:4px;">
+              style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Prş (${vars.prs})</label>
-            <input type="number" class="inp-cell" value="${ayar.prs}" min="0"
+            <input type="number" class="inp-cell gorev-kapasite-input" value="${ayar.prs}" min="0"
               data-gorev="${escapeHtml(g)}" data-tip="prs"
-              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'prs', this.value)" style="padding:4px;">
+              style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Cum (${vars.cum})</label>
-            <input type="number" class="inp-cell" value="${ayar.cum}" min="0"
+            <input type="number" class="inp-cell gorev-kapasite-input" value="${ayar.cum}" min="0"
               data-gorev="${escapeHtml(g)}" data-tip="cum"
-              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'cum', this.value)" style="padding:4px;">
+              style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Cmt (${vars.cmt})</label>
-            <input type="number" class="inp-cell" value="${ayar.cmt}" min="0"
+            <input type="number" class="inp-cell gorev-kapasite-input" value="${ayar.cmt}" min="0"
               data-gorev="${escapeHtml(g)}" data-tip="cmt"
-              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'cmt', this.value)" style="padding:4px;">
+              style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">Pzr (${vars.pzr})</label>
-            <input type="number" class="inp-cell" value="${ayar.pzr}" min="0"
+            <input type="number" class="inp-cell gorev-kapasite-input" value="${ayar.pzr}" min="0"
               data-gorev="${escapeHtml(g)}" data-tip="pzr"
-              onblur="gorevKapasiteDegistir('${escapeHtml(g)}', 'pzr', this.value)" style="padding:4px;">
+              style="padding:4px;">
           </div>
           <div class="input-group">
             <label style="font-size:10px;">TOPLAM</label>
@@ -6826,8 +6933,13 @@ ta
           </div>
         </div>
       </div>
-    `;
+      `;
       }).join('');
+      kapasiteDiv.querySelectorAll('.gorev-kapasite-input').forEach(input => {
+        input.addEventListener('blur', () => {
+          gorevKapasiteDegistir(input.dataset.gorev, input.dataset.tip, input.value);
+        });
+      });
 
       // Personel Kotaları Tablosu
       const thead = document.getElementById('ozel-gorev-thead');
@@ -6876,13 +6988,17 @@ ta
       <td><span class="badge ${toplamKota === toplamHedef ? 'badge-ok' : 'badge-warn'}">${toplamKota}/${toplamHedef}</span></td>
       ${ozelGorevler.map(g => `
         <td style="background:#eff6ff;">
-          <input type="number" class="inp-cell" value="${p.gorevKotalari?.[g] || 0}" min="0"
-            style="background:#eff6ff;"
-            onblur="gorevKotasiDegistir(${idx}, '${escapeHtml(g)}', this.value)">
+          <input type="number" class="inp-cell gorev-kota-input" value="${p.gorevKotalari?.[g] || 0}" min="0"
+            style="background:#eff6ff;" data-personel-idx="${idx}" data-gorev="${escapeHtml(g)}">
         </td>
       `).join('')}
     `;
         tbody.appendChild(tr);
+      });
+      tbody.querySelectorAll('.gorev-kota-input').forEach(input => {
+        input.addEventListener('blur', () => {
+          gorevKotasiDegistir(parseInt(input.dataset.personelIdx, 10), input.dataset.gorev, input.value);
+        });
       });
     }
 
@@ -6896,7 +7012,8 @@ ta
       );
 
       // Sadece toplam input'unu güncelle (tüm section'ı yeniden render etme)
-      const toplamInput = document.querySelector(`input[data-gorev="${gorevAdi}"][data-tip="toplam"]`);
+      const toplamInput = Array.from(document.querySelectorAll('input[data-tip="toplam"][data-gorev]'))
+        .find(input => input.dataset.gorev === gorevAdi);
       if (toplamInput) {
         toplamInput.value = gorevKapasiteAyar[gorevAdi].toplam;
       }
@@ -7193,8 +7310,7 @@ ta
       });
     }
 
-    // Değişim kayıtları (global)
-    let gunTipiDegisimKayitlari = [];
+    // Değişim kayıtları global state bölümünde tanımlanır.
 
     // Python Backend URL (Firebase Functions)
     const BACKEND_URL = 'https://us-central1-nobetyap-29acf.cloudfunctions.net/nobet_dagit';
@@ -7207,14 +7323,34 @@ ta
     // Anonim (misafir) kullanıcılar dahil çalışır; token alınamazsa header'sız devam eder
     // (bu durumda backend 401 döner). Tüm backend fetch'leri bundan geçmeli.
     async function authFetch(url, options = {}) {
+      const { timeoutMs = 120000, signal: disSignal, ...fetchOptions } = options;
       const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+      const controller = new AbortController();
+      let zamanAsimi = false;
+      const timer = setTimeout(() => {
+        zamanAsimi = true;
+        controller.abort();
+      }, timeoutMs);
+      const disAbort = () => controller.abort();
+      if (disSignal) {
+        if (disSignal.aborted) controller.abort();
+        else disSignal.addEventListener('abort', disAbort, { once: true });
+      }
       try {
         if (typeof auth !== 'undefined' && auth && auth.currentUser) {
           const token = await auth.currentUser.getIdToken();
           headers['Authorization'] = 'Bearer ' + token;
         }
       } catch (e) { /* token alınamadı — header'sız devam */ }
-      return fetch(url, { ...options, headers });
+      try {
+        return await fetch(url, { ...fetchOptions, headers, signal: controller.signal });
+      } catch (e) {
+        if (zamanAsimi) throw new Error(`İstek ${Math.round(timeoutMs / 1000)} saniye içinde tamamlanamadı.`);
+        throw e;
+      } finally {
+        clearTimeout(timer);
+        disSignal?.removeEventListener('abort', disAbort);
+      }
     }
 
     // ============================================
@@ -7247,21 +7383,11 @@ ta
       return logs;
     }
 
-    function _pushLogsToFirestore(logs) {
-      if (!logs || logs.length === 0) return;
-      try {
-        const db = firebase.firestore();
-        db.collection('debug_frontend_logs').add({
-          timestamp: firebase.firestore.FieldValue.serverTimestamp(),
-          logs: logs.slice(0, 500),
-        }).catch(() => {});
-      } catch(e) {}
-    }
-
     function _logFrontendEvent(tip, detay) {
       authFetch(BACKEND_URL_DEBUG_EVENT, {
         method: 'POST',
         body: JSON.stringify({ tip, detay }),
+        timeoutMs: 10000
       }).catch(() => {});
     }
 
@@ -7906,7 +8032,8 @@ ta
 
       const response = await authFetch(BACKEND_URL_HEDEF, {
         method: 'POST',
-        body: JSON.stringify(requestData)
+        body: JSON.stringify(requestData),
+        timeoutMs: 310000
       });
 
       if (!response.ok) {
@@ -8020,6 +8147,7 @@ ta
         }
 
         // OR-Tools aktifse yeni endpoint'i kullan
+        aktifCozumIstekImzasi = cozumGirdiImzasiOlustur();
         if (ortoolsAktif) {
           await listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk);
         } else {
@@ -8192,7 +8320,8 @@ ta
 
       const response = await authFetch(BACKEND_URL_ORTOOLS, {
         method: 'POST',
-        body: JSON.stringify(requestData)
+        body: JSON.stringify(requestData),
+        timeoutMs: 330000
       });
 
       const result = await response.json();
@@ -8277,6 +8406,7 @@ ta
       solverTeshisGuncelle();
       console.log('isleOrtoolsSonucu çağrılıyor...');
       hesaplananListe = isleOrtoolsSonucu(result, gunSayisi);
+      hesaplananListe._girdiImzasi = aktifCozumIstekImzasi;
       console.log('hesaplananListe:', hesaplananListe);
       console.log('hesaplananListe.atanan[1]:', hesaplananListe?.atanan?.[1]);
 
@@ -8312,8 +8442,8 @@ ta
         });
       }
 
-      // Tüm işlem bitti — logları Firestore'a gönder (fire-and-forget)
-      _pushLogsToFirestore(_getAndClearLogs());
+      // Ham frontend logları personel adları içerebildiği için kalıcı depoya gönderilmez.
+      _getAndClearLogs();
     }
 
     // OR-Tools sonucunu işle
@@ -9206,14 +9336,20 @@ ta
       });
 
       // Sonucu kaydet
-      hesaplananListe = { atanan, kisiAtama, siraliGorevler };
-
-      // Önizlemeyi güncelle
-      onizlemeGuncelle();
+      return {
+        atanan,
+        kisiAtama,
+        siraliGorevler,
+        _girdiImzasi: aktifCozumIstekImzasi || cozumGirdiImzasiOlustur()
+      };
     }
 
     function onizlemeGuncelle() {
       if (!hesaplananListe) return;
+      if (!cozumGecerliMi()) {
+        cozumuGecersizKil();
+        return;
+      }
 
       const { yil, ay } = getYilAy();
       const gunSayisi = getGunSayisi(yil, ay);
@@ -9263,7 +9399,7 @@ ta
         <div class="help mb-3">Çizelgede personele atanamayan görevler.</div>
         <div style="max-height:150px; overflow-y:auto;">
           ${bosSlotlar.map(x =>
-          `<div class="badge badge-warn" style="margin:2px;">${x.gun}. gün - ${x.gorev}</div>`
+          `<div class="badge badge-warn" style="margin:2px;">${x.gun}. gün - ${escapeHtml(x.gorev)}</div>`
         ).join('')}
         </div>
       </div>
@@ -9278,7 +9414,7 @@ ta
         <div class="help mb-3">Hedef karşılanamadığı için alternatif gün tipine kaydırıldı.</div>
         <div style="max-height:150px; overflow-y:auto;">
           ${gunTipiDegisimKayitlari.map(d =>
-          `<div class="badge badge-info" style="margin:2px;">${d.personel}: ${d.orijinalTip} → ${d.yeniTip} (${d.gun}. gün)</div>`
+          `<div class="badge badge-info" style="margin:2px;">${escapeHtml(d.personel)}: ${escapeHtml(d.orijinalTip)} → ${escapeHtml(d.yeniTip)} (${d.gun}. gün)</div>`
         ).join('')}
         </div>
       </div>
@@ -9497,8 +9633,9 @@ ta
     }
 
     async function listeyiIndir() {
-      if (!hesaplananListe) {
-        alert('Önce listeyi oluşturun!');
+      if (!hesaplananListe || !cozumGecerliMi()) {
+        if (hesaplananListe) cozumuGecersizKil();
+        alert('Çizelge güncel değil. Listeyi yeniden oluşturun!');
         return;
       }
 
@@ -9575,6 +9712,17 @@ ta
       return `nobet_v2_${uid}_${yil}_${ay}`;
     }
 
+    function donemVerisiEslesiyor(data, yil, ay) {
+      if (!data?.ayarlar) return true;
+      return parseInt(data.ayarlar.yil, 10) === parseInt(yil, 10) &&
+        parseInt(data.ayarlar.ay, 10) === parseInt(ay, 10);
+    }
+
+    function sonDonemAnahtariniGuncelle(uid, yil, ay) {
+      localStorage.setItem(`nobet_last_yil_${uid}`, String(yil));
+      localStorage.setItem(`nobet_last_ay_${uid}`, String(ay));
+    }
+
     // ============================================
     // FIRESTORE CLOUD SYNC
     // ============================================
@@ -9606,12 +9754,8 @@ ta
       }, 2000);
     }
 
-    function kaydet() {
-      if (!veriYuklendi) return; // Sayfa tam yüklenmeden önce kayıt tetiklenirse engelle
-      const uid = auth?.currentUser?.uid || 'LOCAL';
-      const yil = document.getElementById('inp-yil').value;
-      const ay = document.getElementById('inp-ay').value;
-      const data = {
+    function veriPaketiOlustur(yil, ay) {
+      return {
         personelListesi,
         resmiTatiller,
         kurallar,
@@ -9627,8 +9771,8 @@ ta
         gorevKapasiteAyar,
         devirListesi,
         ayarlar: {
-          yil: document.getElementById('inp-yil').value,
-          ay: document.getElementById('inp-ay').value,
+          yil: String(yil),
+          ay: String(ay),
           gunluk: document.getElementById('inp-gunluk').value,
           aragun: document.getElementById('inp-aragun').value,
           detayli: true, // Her zaman detaylı mod
@@ -9642,30 +9786,87 @@ ta
         },
         step: currentStep
       };
-      localStorage.setItem(getStorageKey(uid, yil, ay), JSON.stringify(data));
-      // Geriye uyumluluk: eski key'e de yaz (sayfa ilk açılışında bulabilsin)
-      localStorage.setItem(`nobet_v2_${uid}`, JSON.stringify(data));
-
-      // F5 koruması için son çalışılan tarihi ayrıca kaydet
-      localStorage.setItem(`nobet_last_yil_${uid}`, yil);
-      localStorage.setItem(`nobet_last_ay_${uid}`, ay);
-
-      // Firestore'a async yaz (Google kullanıcıları için)
-      firestoreKaydetDebounced(data, uid, yil, ay);
     }
 
-    async function yukle() {
+    async function kaydetDonem(yil, ay, anindaBuluta = false) {
+      if (!veriYuklendi) return;
       const uid = auth?.currentUser?.uid || 'LOCAL';
+      const data = veriPaketiOlustur(yil, ay);
+      localStorage.setItem(getStorageKey(uid, yil, ay), JSON.stringify(data));
+      localStorage.setItem(`nobet_v2_${uid}`, JSON.stringify(data));
+      sonDonemAnahtariniGuncelle(uid, yil, ay);
 
-      // F5 koruması: Önceki çalışılan tarih var mı kontrol et, yoksa inputtan al
-      const lastYil = localStorage.getItem(`nobet_last_yil_${uid}`);
-      const lastAy = localStorage.getItem(`nobet_last_ay_${uid}`);
-      if (lastYil) document.getElementById('inp-yil').value = lastYil;
-      if (lastAy) document.getElementById('inp-ay').value = lastAy;
+      if (anindaBuluta) {
+        if (_firestoreDebounceTimer) {
+          clearTimeout(_firestoreDebounceTimer);
+          _firestoreDebounceTimer = null;
+        }
+        await firestoreKaydet(data, uid, yil, ay);
+      } else {
+        firestoreKaydetDebounced(data, uid, yil, ay);
+      }
+    }
 
-      // Önce ay bazlı key'den oku, yoksa eski genel key'den
-      const yil = document.getElementById('inp-yil').value;
-      const ay = document.getElementById('inp-ay').value;
+    function kaydet() {
+      if (!veriYuklendi) return;
+      if (hesaplananListe && !cozumGecerliMi()) {
+        cozumuGecersizKil();
+      }
+      const donem = aktifDonem || getYilAy();
+      void kaydetDonem(donem.yil, donem.ay);
+    }
+
+    function bosDonemDurumuUygula(yil, ay) {
+      personelListesi = [];
+      resmiTatiller = [];
+      kurallar = [];
+      gorevler = [];
+      manuelAtamalar = [];
+      gorevKisitlamalari = [];
+      gorevHavuzlari = {};
+      gorevKapasiteAyar = {};
+      kisitlamaIstisnalari = [];
+      birlikteIstisnalari = [];
+      araGunIstisnalari = [];
+      kilitliHedefler = {};
+      kisitlamaExclusive = false;
+      devirListesi = [];
+      selectedCells = [];
+      mazeretDegisti = false;
+      document.getElementById('inp-yil').value = String(yil);
+      document.getElementById('inp-ay').value = String(ay);
+      document.getElementById('inp-gunluk').value = 5;
+      document.getElementById('inp-aragun').value = 2;
+      GUN_TIPLERI.forEach(tip => {
+        document.getElementById(`saat-${tip}`).value = SAAT_DEGER[tip];
+      });
+      const exclusiveCheckbox = document.getElementById('kisitlama-exclusive');
+      if (exclusiveCheckbox) exclusiveCheckbox.checked = false;
+      cozumuGecersizKil('Dönem değişti.');
+      tatilListesiGuncelle();
+      kuralListesiGuncelle();
+      gorevKisitlamaListesiGuncelle();
+      havuzMevcutListeGuncelle();
+      manuelAtamaListesiGuncelle();
+    }
+
+    async function yukle(secenekler = {}) {
+      const uid = auth?.currentUser?.uid || 'LOCAL';
+      const acikDonem = Number.isFinite(Number(secenekler.yil)) && Number.isFinite(Number(secenekler.ay));
+
+      if (acikDonem) {
+        document.getElementById('inp-yil').value = String(parseInt(secenekler.yil, 10));
+        document.getElementById('inp-ay').value = String(parseInt(secenekler.ay, 10));
+      } else {
+        const lastYil = localStorage.getItem(`nobet_last_yil_${uid}`);
+        const lastAy = localStorage.getItem(`nobet_last_ay_${uid}`);
+        if (lastYil) document.getElementById('inp-yil').value = lastYil;
+        if (lastAy) document.getElementById('inp-ay').value = lastAy;
+      }
+
+      const yil = parseInt(document.getElementById('inp-yil').value, 10);
+      const ay = parseInt(document.getElementById('inp-ay').value, 10);
+      veriYuklendi = false;
 
       let saved = null;
       let kaynakFirestore = false;
@@ -9678,10 +9879,13 @@ ta
           const doc = await docRef.get();
           if (doc.exists) {
             const firestoreData = doc.data();
-            // _meta alanını temizle
-            delete firestoreData._meta;
-            saved = JSON.stringify(firestoreData);
-            kaynakFirestore = true;
+            if (donemVerisiEslesiyor(firestoreData, yil, ay)) {
+              delete firestoreData._meta;
+              saved = JSON.stringify(firestoreData);
+              kaynakFirestore = true;
+            } else {
+              console.warn('Firestore dönem kaydı hedef dönemle eşleşmedi; kayıt yok sayıldı.');
+            }
           }
           updateSyncStatus('synced');
         } catch (e) {
@@ -9690,10 +9894,33 @@ ta
         }
       }
 
-      // Firestore'da bulunamadıysa localStorage'dan oku
+      // Eski genel kayıt yalnız aynı döneme aitse migration kaynağı olabilir.
       if (!saved) {
-        saved = localStorage.getItem(getStorageKey(uid, yil, ay))
-          || localStorage.getItem(`nobet_v2_${uid}`);
+        const donemSaved = localStorage.getItem(getStorageKey(uid, yil, ay));
+        if (donemSaved) {
+          try {
+            const donemData = JSON.parse(donemSaved);
+            if (donemVerisiEslesiyor(donemData, yil, ay)) saved = donemSaved;
+            else console.warn('Yerel dönem kaydı hedef dönemle eşleşmedi; kayıt yok sayıldı.');
+          } catch (e) {
+            console.warn('Yerel dönem kaydı okunamadı:', e);
+          }
+        }
+      }
+      if (!saved) {
+        const legacySaved = localStorage.getItem(`nobet_v2_${uid}`);
+        if (legacySaved) {
+          try {
+            const legacyData = JSON.parse(legacySaved);
+            if (legacyData.ayarlar &&
+              parseInt(legacyData.ayarlar.yil, 10) === yil &&
+              parseInt(legacyData.ayarlar.ay, 10) === ay) {
+              saved = legacySaved;
+            }
+          } catch (e) {
+            console.warn('Eski dönem kaydı okunamadı:', e);
+          }
+        }
       }
 
       if (saved) {
@@ -9740,8 +9967,8 @@ ta
           if (exclusiveCheckbox) exclusiveCheckbox.checked = kisitlamaExclusive;
 
           if (data.ayarlar) {
-            document.getElementById('inp-yil').value = data.ayarlar.yil || 2025;
-            document.getElementById('inp-ay').value = data.ayarlar.ay || 12;
+            document.getElementById('inp-yil').value = String(yil);
+            document.getElementById('inp-ay').value = String(ay);
             document.getElementById('inp-gunluk').value = data.ayarlar.gunluk || 5;
             document.getElementById('inp-aragun').value = (data.ayarlar.aragun != null) ? data.ayarlar.aragun : 2;
             // detayli-mod artık her zaman true, checkbox kaldırıldı
@@ -9760,7 +9987,8 @@ ta
           gorevKisitlamaListesiGuncelle();
           havuzMevcutListeGuncelle();
 
-          veriYuklendi = true; // Yükleme tamamlandı, artık kaydet() çalışabilir
+          aktifDonem = { yil, ay };
+          sonDonemAnahtariniGuncelle(uid, yil, ay);
           veriYuklendi = true;
           goStep(data.step || 1);
 
@@ -9770,11 +9998,51 @@ ta
           }
         } catch (e) {
           console.error('Veri yükleme hatası:', e);
+          bosDonemDurumuUygula(yil, ay);
+          aktifDonem = { yil, ay };
+          sonDonemAnahtariniGuncelle(uid, yil, ay);
+          veriYuklendi = true;
           goStep(1);
         }
       } else {
-        veriYuklendi = true; // Kayıtlı veri yoksa da yeni veri girişine izin ver
+        bosDonemDurumuUygula(yil, ay);
+        aktifDonem = { yil, ay };
+        sonDonemAnahtariniGuncelle(uid, yil, ay);
+        veriYuklendi = true;
         goStep(1);
+      }
+      localStorage.setItem(`nobet_last_yil_${uid}`, String(yil));
+      localStorage.setItem(`nobet_last_ay_${uid}`, String(ay));
+    }
+
+    async function donemDegisti() {
+      if (!veriYuklendi || donemDegistiriliyor) return;
+      const hedefDonem = getYilAy();
+      if (aktifDonem && aktifDonem.yil === hedefDonem.yil && aktifDonem.ay === hedefDonem.ay) return;
+
+      const oncekiDonem = aktifDonem;
+      donemDegistiriliyor = true;
+      const yilInput = document.getElementById('inp-yil');
+      const ayInput = document.getElementById('inp-ay');
+      yilInput.disabled = true;
+      ayInput.disabled = true;
+      try {
+        if (oncekiDonem) {
+          await kaydetDonem(oncekiDonem.yil, oncekiDonem.ay, true);
+        }
+        cozumuGecersizKil('Dönem değişti.');
+        await yukle(hedefDonem);
+      } catch (e) {
+        console.error('Dönem değiştirme hatası:', e);
+        if (oncekiDonem) {
+          document.getElementById('inp-yil').value = String(oncekiDonem.yil);
+          document.getElementById('inp-ay').value = String(oncekiDonem.ay);
+        }
+        alert('Dönem yüklenemedi. Önceki dönemde kalındı.');
+      } finally {
+        yilInput.disabled = false;
+        ayInput.disabled = false;
+        donemDegistiriliyor = false;
       }
     }
 
@@ -9948,6 +10216,8 @@ ta
     // Sayfa yüklendiğinde
     document.addEventListener('DOMContentLoaded', () => {
       tatilListesiGuncelle();
+      document.getElementById('inp-yil')?.addEventListener('change', donemDegisti);
+      document.getElementById('inp-ay')?.addEventListener('change', donemDegisti);
     });
   </script>
 </body>

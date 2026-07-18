@@ -198,10 +198,10 @@ class GunIskeletPlanlayici:
                         self.kalan_gorev_kotalari[pid][str(k)] = kalan
 
     def _ara_gun_ihlali_var_mi(self, pid: int, gun: int) -> bool:
-        if self.ara_gun <= 1:
+        if self.ara_gun <= 0:
             return False
         for mevcut in self.planlanan_gunler[pid]:
-            if mevcut != gun and abs(mevcut - gun) < self.ara_gun:
+            if mevcut != gun and abs(mevcut - gun) <= self.ara_gun:
                 return True
         return False
 

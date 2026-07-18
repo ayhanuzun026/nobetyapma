@@ -3,6 +3,12 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location $repoRoot
 
+function Assert-LastExitCode([string]$step) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "$step basarisiz oldu (exit code: $LASTEXITCODE)"
+    }
+}
+
 $pythonFiles = @(
     "functions\utils.py",
     "functions\solve_strategy.py",
@@ -19,16 +25,28 @@ $pythonFiles = @(
     "functions\firestore_logger.py",
     "functions\excel_export.py",
     "functions\hedef_teshis.py",
-    "functions\_smoke_test.py"
+    "functions\_smoke_test.py",
+    "functions\_regression_test.py"
 )
 
-Write-Host "[1/3] Python derleme kontrolu"
+Write-Host "[1/5] Python derleme kontrolu"
 python -m py_compile @pythonFiles
+Assert-LastExitCode "Python derleme kontrolu"
 
-Write-Host "[2/3] Solver smoke test"
+Write-Host "[2/5] Solver smoke test"
 python functions\_smoke_test.py
+Assert-LastExitCode "Solver smoke test"
 
-Write-Host "[3/3] Git diff whitespace kontrolu"
+Write-Host "[3/5] Regression test"
+python functions\_regression_test.py
+Assert-LastExitCode "Regression test"
+
+Write-Host "[4/5] Frontend ve config testleri"
+npm test
+Assert-LastExitCode "Frontend ve config testleri"
+
+Write-Host "[5/5] Git diff whitespace kontrolu"
 git diff --check
+Assert-LastExitCode "Git diff whitespace kontrolu"
 
 Write-Host "Tum kontroller gecti."

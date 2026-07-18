@@ -159,9 +159,12 @@ def analyze_preflight(
         # 2) Rol kapasite önizleme (ara_gün dahil kişi-üst sınır)
         role_summaries: List[Dict] = []
         risk_preview: List[Dict] = []
+        toplam_rol_talebi = 0
+        toplam_rol_eksigi = 0
         # Hazırla: gün → aday id birliği (rol bazında)
         for role, slots in role_slots.items():
             demand = gun_sayisi * max(1, len(slots))
+            toplam_rol_talebi += demand
             daily_union: Dict[int, Set[int]] = {g: set() for g in range(1, gun_sayisi + 1)}
             for g in range(1, gun_sayisi + 1):
                 # Slot doluluğuna bakma — üst kapasite tahmininde aday birliğini istiyoruz
@@ -177,6 +180,7 @@ def analyze_preflight(
                 upper += _max_assignable_with_ara_gun(uygun, ara_gun)
             eksik = max(0, demand - upper)
             if eksik > 0:
+                toplam_rol_eksigi += eksik
                 role_summaries.append({'rol': role, 'talep': demand, 'ust_kapasite': upper, 'eksik': eksik})
         role_summaries.sort(key=lambda x: x['eksik'], reverse=True)
 
@@ -240,6 +244,7 @@ def analyze_preflight(
 
         # 4) Zero-candidate preview (slot/gün)
         zero_preview: List[Dict] = []
+        zero_candidate_count = 0
         # Build candidate check quick: for each day and slot
         for g in range(1, gun_sayisi + 1):
             for s, gv in enumerate(gorevler or []):
@@ -250,24 +255,28 @@ def analyze_preflight(
                         cands += 1
                         if cands > 0:
                             break
-                if cands == 0 and len(zero_preview) < max_preview:
-                    zero_preview.append({'gun': g, 'slot_idx': s, 'rol': role})
+                if cands == 0:
+                    zero_candidate_count += 1
+                    if len(zero_preview) < max_preview:
+                        zero_preview.append({'gun': g, 'slot_idx': s, 'rol': role})
 
         # 5) Parametre kontrolleri (hafif)
         slot_sayisi = len(gorevler or [])
         plan_slot_info = slot_sayisi  # basit; ayrıntılı kıyas opsiyonel
 
-        # Skor (basitleştirilmiş ağırlıklandırma)
-        kapasite_ceza = 0
-        if role_summaries:
-            toplam_talep = sum(r['talep'] for r in role_summaries)
-            toplam_eksik = sum(r['eksik'] for r in role_summaries)
-            kapasite_ceza = min(30, 30 * toplam_eksik / max(1, toplam_talep))
-        uyum_puan = max(0, 25 * iskelet_uyum_orani)
-        zero_ceza = min(15, 15 * (len(zero_preview) / max(1, gun_sayisi)))
-        fallback_ceza = min(20, 5 * fallback_kisi_sayisi)
-        manuel_ceza = 0  # ileri çalışma: manuel çakışma analizine bağlanabilir
-        skor = int(round(100 - (kapasite_ceza + zero_ceza + fallback_ceza + manuel_ceza) + uyum_puan))
+        # Skor, olumlu bir bonus eklemek yerine gerçek risk oranlarını 100'den düşer.
+        # int() tabana yuvarladığı için küçük bir gerçek sorun dahi 100 olarak maskelenmez.
+        toplam_slot_gun = gun_sayisi * slot_sayisi
+        kapasite_riski = min(1.0, toplam_rol_eksigi / max(1, toplam_rol_talebi))
+        zero_riski = min(1.0, zero_candidate_count / max(1, toplam_slot_gun))
+        fallback_riski = min(1.0, fallback_kisi_sayisi / max(1, len(personeller)))
+        iskelet_riski = min(1.0, max(0.0, 1.0 - iskelet_uyum_orani))
+        skor = int(100 - (
+            70 * kapasite_riski
+            + 30 * zero_riski
+            + 15 * fallback_riski
+            + 5 * iskelet_riski
+        ))
         skor = max(0, min(100, skor))
 
         sorunlar: List[Dict] = []
@@ -286,9 +295,9 @@ def analyze_preflight(
                 'kod': 'TIP_FALLBACK', 'adet': fallback_kisi_sayisi,
                 'oneri': 'Kişi bazlı tip fallback (cum→pzr, cmt→cum→pzr) uygulayın.'
             })
-        if zero_preview:
+        if zero_candidate_count > 0:
             sorunlar.append({
-                'kod': 'ZERO_CANDIDATE', 'adet': len(zero_preview),
+                'kod': 'ZERO_CANDIDATE', 'adet': zero_candidate_count,
                 'oneri': 'Aday olmayan slot/günler için havuz/mazeret/kısıtları gözden geçirin.'
             })
 
@@ -297,7 +306,7 @@ def analyze_preflight(
             'ozet': {
                 'iskelet_gecersiz_gun': gecersiz_count,
                 'rol_kapasite_eksik_rol_sayisi': len(role_summaries),
-                'zero_candidate': len(zero_preview),
+                'zero_candidate': zero_candidate_count,
                 'fallback_ihtiyaci_kisi': fallback_kisi_sayisi,
             },
             'sorunlar': sorunlar,
@@ -309,11 +318,19 @@ def analyze_preflight(
                 'kapasite': {
                     'roller': role_summaries,
                     'riskli_gunler': risk_preview,
+                    'toplam_talep': toplam_rol_talebi,
+                    'toplam_eksik': toplam_rol_eksigi,
                 },
                 'tip_fallback': {
                     'kisi': fallback,
                 },
                 'zero_candidate_preview': zero_preview,
+                'skor_bilesenleri': {
+                    'kapasite_riski': round(kapasite_riski, 3),
+                    'zero_candidate_riski': round(zero_riski, 3),
+                    'fallback_riski': round(fallback_riski, 3),
+                    'iskelet_riski': round(iskelet_riski, 3),
+                },
                 'parametre': {
                     'slot_sayisi': slot_sayisi,
                     'plan_slot_info': plan_slot_info,

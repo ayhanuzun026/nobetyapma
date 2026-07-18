@@ -834,10 +834,8 @@ class NobetSolver:
         secilen = 0
         son_gun = -10_000
         for g in sorted(gunler):
-            # H4 kısıtı (satır ~1124) iki nöbet arası boşluğun >= ara_gun olmasına
-            # izin verir. Tahminci burada '>' kullanınca kapasiteyi bir eksik sayıp
-            # sahte "ara-gün kapasite eksiği" teşhisi üretiyordu. '>=' ile hizalandı.
-            if g - son_gun >= self.ara_gun:
+            # H4, farki ara_gun veya daha az olan iki atamayi yasaklar.
+            if g - son_gun > self.ara_gun:
                 secilen += 1
                 son_gun = g
         return secilen
@@ -1468,7 +1466,7 @@ class NobetSolver:
                         )
 
         # H10b. Kişi-gün iskeleti — ön planlı günlere sadakat
-        if self._gun_iskeleti_aktif_mi():
+        if self._gun_iskeleti_hard_mi():
             planlanan_gunler_map = self._planlanan_gunler_map()
             uygulanabilir_ids = self._gun_iskeleti_uygulanabilir_ids()
             gun_tol = self._gun_iskeleti_toleransi()
@@ -1512,10 +1510,9 @@ class NobetSolver:
                 hedef = self.hedefler.get(p.id, {})
                 hedef_toplam = int(hedef.get('hedef_toplam', len(planlanan_gunler)) or 0)
                 planlanan_hesap = sum(kisi_gun_atama[p.id, g] for g in planlanan_gunler)
-                eksik_plan = model.NewIntVar(0, hedef_toplam, f'gun_iskeleti_eksik_{p.id}')
-                model.Add(eksik_plan >= hedef_toplam - planlanan_hesap)
-                if self._gun_iskeleti_hard_mi():
-                    model.Add(eksik_plan <= gun_tol)
+                planlanan_hedef = min(len(planlanan_gunler), hedef_toplam)
+                eksik_plan = model.NewIntVar(0, planlanan_hedef, f'gun_iskeleti_eksik_{p.id}')
+                model.Add(eksik_plan >= planlanan_hedef - planlanan_hesap)
                 penalties.append(eksik_plan * gun_iskeleti_agirligi)
 
         # S0c. Rol iskeleti sadakati — planlanan role uygun slot'a atama tercih edilir

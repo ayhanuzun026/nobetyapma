@@ -5,9 +5,11 @@ Nöbet Yapma — Firebase Cloud Functions giriş noktası.
 
 from firebase_functions import https_fn
 from firebase_admin import initialize_app, storage, auth as fb_auth
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+import json
 import logging
 import time
+import uuid
 
 from utils import (
     _safe_int, get_days_in_month,
@@ -44,6 +46,8 @@ logger = logging.getLogger(__name__)
 MAX_SLOT_SAYISI = 50
 MAX_PERSONEL = 1000
 MAX_GOREV = 300
+MAX_COZUM_SURESI = 480
+DEBUG_RETENTION_DAYS = 30
 
 
 def _validate_input_sizes(data: dict, slot_sayisi: int) -> None:
@@ -56,6 +60,20 @@ def _validate_input_sizes(data: dict, slot_sayisi: int) -> None:
     n_gorev = len(data.get("gorevler") or [])
     if n_gorev > MAX_GOREV:
         raise ValueError(f"Görev sayısı çok büyük: {n_gorev} (üst sınır {MAX_GOREV})")
+
+
+def _solver_suresi(data: dict, default: int, upper_bound: int = MAX_COZUM_SURESI) -> int:
+    return max(5, min(_safe_int(data.get("maxSure", default), default), upper_bound))
+
+
+def _debug_deger_sinirla(value, max_bytes: int = 20_000):
+    try:
+        raw = json.dumps(value, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        raw = str(value)
+    if len(raw.encode("utf-8")) <= max_bytes:
+        return value
+    return {"truncated": True, "preview": raw[:4000]}
 
 
 def _parse_cozum_parametreleri(data: dict, slot_default: int, slot_raw=None):
@@ -79,7 +97,15 @@ def _hazirlik_analizi_ekle(cikti: dict, plan_kontrati, *, gun_sayisi: int,
                            gorev_havuzlari, manuel_atamalar, ara_gun: int,
                            kisitlama_istisnalari) -> None:
     try:
-        _plan_dict = plan_kontrati.to_dict() if plan_kontrati else (cikti.get('planKontrati') or {})
+        _plan_dict = cikti.get('planKontrati') or (
+            ((cikti.get('istatistikler') or {}).get('plan') or {}).get('kontrat')
+        )
+        if not _plan_dict:
+            _plan_dict = (
+                plan_kontrati.to_dict()
+                if hasattr(plan_kontrati, 'to_dict')
+                else (plan_kontrati or {})
+            )
         _haz = analyze_preflight(
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri, personeller=personeller,
             gorevler=gorevler, kurallar=kurallar, gorev_havuzlari=gorev_havuzlari,
@@ -89,6 +115,14 @@ def _hazirlik_analizi_ekle(cikti: dict, plan_kontrati, *, gun_sayisi: int,
         cikti['hazirlikAnalizi'] = _haz
     except Exception as _e:
         cikti['hazirlikAnalizi'] = {'skor': 0, 'sorunlar': [{'kod': 'ANALIZ_HATA', 'oneri': str(_e)[:120]}]}
+
+
+def _sonuc_plan_ve_hedefler(sonuc, varsayilan_hedefler: dict):
+    """Solver'in fiilen kullandigi son plan kontratini ve hedefleri dondurur."""
+    istatistikler = getattr(sonuc, 'istatistikler', None) or {}
+    plan = (istatistikler.get('plan') or {}).get('kontrat') or {}
+    hedefler = plan.get('hedefler') if isinstance(plan, dict) else None
+    return plan, (hedefler or varsayilan_hedefler)
 
 
 # Kimlik doğrulama: endpoint'ler geçerli bir Firebase ID token ister.
@@ -202,8 +236,13 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         )
         hedefler = planlama.get("hedefler_map", {})
         plan_kontrati = planlama.get("plan_kontrati")
+        if not planlama.get("basarili") or not hedefler:
+            return _json_response({
+                "error": planlama.get("mesaj") or "Planlama sonucu boş.",
+                "error_type": "PlanlamaHatasi",
+            }, status=400)
 
-        max_sure = min(_safe_int(data.get("maxSure", 120), 120), 300)
+        max_sure = _solver_suresi(data, 120, 300)
 
         sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
@@ -218,6 +257,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             ignore_manual_conflicts=ignore_manual_conflicts,
             plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
         )
+        son_plan_kontrati, aktif_hedefler = _sonuc_plan_ve_hedefler(sonuc, hedefler)
 
         cizelge = _cizelge_olustur(gun_sayisi, gorevler, sonuc.atamalar)
 
@@ -228,7 +268,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             pid = atama.get('personel_id')
             kisi_sayac[pid] = kisi_sayac.get(pid, 0) + 1
         for p in personeller:
-            h = hedefler.get(p.id) or hedefler.get(normalize_id(p.id)) or {}
+            h = aktif_hedefler.get(p.id) or aktif_hedefler.get(normalize_id(p.id)) or {}
             hedef_toplam = h.get('hedef_toplam', 0)
             gerceklesen = kisi_sayac.get(p.id, 0)
             fark = hedef_toplam - gerceklesen
@@ -256,9 +296,12 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         from excel_export import create_excel
         from firebase_admin import storage
 
-        excel_file = create_excel(yil, ay, cizelge, gorevler, personeller, hedefler, gun_sayisi)
+        excel_file = create_excel(
+            yil, ay, cizelge, gorevler, personeller, aktif_hedefler, gun_sayisi,
+            resmi_tatiller=resmi_tatiller,
+        )
         bucket = storage.bucket()
-        dosya_adi = f"sonuclar/nobet_{yil}_{ay}_{int(datetime.now().timestamp())}.xlsx"
+        dosya_adi = f"sonuclar/{yil}_{ay}/nobet_{uuid.uuid4().hex}.xlsx"
         blob = bucket.blob(dosya_adi)
         blob.upload_from_file(
             excel_file,
@@ -271,6 +314,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             "kisiOzet": kisi_ozet, "eksikAtamalar": eksik_atamalar,
             "gorevler": [g.ad for g in gorevler],
             "istatistikler": sonuc.istatistikler,
+            "planKontrati": son_plan_kontrati or (plan_kontrati.to_dict() if plan_kontrati else None),
             "mesaj": sonuc.mesaj, "sureMs": sonuc.sure_ms,
         }
         sure_ms = int((time.time() - t0) * 1000)
@@ -282,7 +326,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
             personeller=personeller, gorevler=gorevler, kurallar=kurallar,
             gorev_havuzlari=gorev_havuzlari, manuel_atamalar=manuel_atamalar,
-            ara_gun=ara_gun, kisitlama_istisnalari=kisitlama_istisnalari,
+            ara_gun=kullanilan_ara_gun, kisitlama_istisnalari=kisitlama_istisnalari,
         )
         return _json_response(cikti)
 
@@ -321,6 +365,10 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
 
         if not (1 <= ay <= 12):
             return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+        try:
+            _validate_input_sizes(data, slot_sayisi)
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "GirdiCokBuyuk"}, status=400)
 
         resmi_tatiller = data.get("resmiTatiller", [])
 
@@ -379,6 +427,10 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
 
         if gun_sayisi < 1 or gun_sayisi > 31:
             return _json_response({"error": f"Geçersiz gün sayısı: {gun_sayisi}"}, status=400)
+        try:
+            _validate_input_sizes(data, len(data.get("gorevler") or []))
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "GirdiCokBuyuk"}, status=400)
 
         saat_degerleri = data.get("saatDegerleri", None)
 
@@ -462,7 +514,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
         try:
             yil, ay, slot_sayisi, ara_gun = _parse_cozum_parametreleri(data, slot_default=6)
-            max_sure = _safe_int(data.get("maxSure", 300), 300)
+            max_sure = _solver_suresi(data, 300)
         except (ValueError, TypeError) as ve:
             return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
 
@@ -586,13 +638,14 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
             plan_yenileyici=_plan_yenileyici,
         )
+        son_plan_kontrati, aktif_hedefler = _sonuc_plan_ve_hedefler(sonuc, hedefler)
 
         # Çizelge formatına dönüştür
         cizelge = _cizelge_olustur(gun_sayisi, gorevler, sonuc.atamalar)
 
         hedef_debug = []
         for p in personeller:
-            h = hedefler.get(p.id) or hedefler.get(normalize_id(p.id)) or {}
+            h = aktif_hedefler.get(p.id) or aktif_hedefler.get(normalize_id(p.id)) or {}
             hedef_debug.append({
                 'id': p.id, 'ad': p.ad,
                 'hedef_toplam': h.get('hedef_toplam', 0),
@@ -633,9 +686,8 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             "teshis": teshis_bilgisi,
             "gorevler": [g.ad for g in gorevler], "hedefDebug": hedef_debug,
             "planKontrati": (
-                (sonuc.istatistikler.get("plan", {}) or {}).get("kontrat")
-                if isinstance(sonuc.istatistikler, dict) else None
-            ) or (plan_kontrati.to_dict() if plan_kontrati else None),
+                son_plan_kontrati or (plan_kontrati.to_dict() if plan_kontrati else None)
+            ),
             "planHash": (
                 (sonuc.istatistikler.get("plan", {}) or {}).get("plan_hash")
                 if isinstance(sonuc.istatistikler, dict) else None
@@ -650,7 +702,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
             personeller=personeller, gorevler=gorevler, kurallar=kurallar,
             gorev_havuzlari=gorev_havuzlari, manuel_atamalar=manuel_atamalar,
-            ara_gun=ara_gun, kisitlama_istisnalari=kisitlama_istisnalari,
+            ara_gun=kullanilan_ara_gun, kisitlama_istisnalari=kisitlama_istisnalari,
         )
         return _json_response(cikti)
 
@@ -680,15 +732,15 @@ def debug_event_log(req: https_fn.Request) -> https_fn.Response:
 
         from firebase_admin import firestore as fs
         db = fs.client()
-        from datetime import timezone
         ts = datetime.now(timezone.utc)
 
         db.collection("debug_events").add({
             "timestamp": ts,
-            "tip": data.get("tip", "bilinmiyor"),
+            "tip": str(data.get("tip", "bilinmiyor"))[:100],
             "personelId": data.get("personelId"),
             "gun": data.get("gun"),
-            "detay": data.get("detay"),
+            "detay": _debug_deger_sinirla(data.get("detay")),
+            "expireAt": ts + timedelta(days=DEBUG_RETENTION_DAYS),
         })
 
         return _json_response({"ok": True})

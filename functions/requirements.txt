@@ -1,5 +1,5 @@
-firebase-functions
-firebase-admin
-openpyxl
-ortools
+firebase-functions==0.5.0
+firebase-admin==7.2.0
+openpyxl==3.1.5
+ortools==9.15.6755
 # v5.0 - Frontend mantigi ile uyumlu OR-Tools
