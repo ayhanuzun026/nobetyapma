@@ -50,3 +50,8 @@ test('responses use the final relaxed plan contract and targets', () => {
   assert.match(mainPy, /son_plan_kontrati, aktif_hedefler = _sonuc_plan_ve_hedefler/);
   assert.match(mainPy, /ara_gun=kullanilan_ara_gun/);
 });
+
+test('Firebase Storage SDK is lazy-loaded outside module initialization', () => {
+  assert.doesNotMatch(mainPy, /from firebase_admin import initialize_app, storage/);
+  assert.match(mainPy, /from firebase_admin import storage/);
+});

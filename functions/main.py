@@ -4,7 +4,7 @@ Nöbet Yapma — Firebase Cloud Functions giriş noktası.
 """
 
 from firebase_functions import https_fn
-from firebase_admin import initialize_app, storage, auth as fb_auth
+from firebase_admin import initialize_app, auth as fb_auth
 from datetime import datetime, timedelta, timezone
 import json
 import logging
