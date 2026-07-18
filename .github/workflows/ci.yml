@@ -1,0 +1,55 @@
+name: Quality Gates
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: functions/requirements.txt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r functions/requirements.txt
+          npm ci
+          npm install --global firebase-tools@15.24.0
+
+      - name: Backend checks
+        run: |
+          python -m compileall -q functions
+          python functions/_smoke_test.py
+          python functions/_regression_test.py
+
+      - name: Frontend and config checks
+        run: npm test
+
+      - name: Firebase rules emulator tests
+        run: firebase emulators:exec --project demo-nobetyap --only firestore,storage "npm run test:rules"
+
+      - name: Whitespace check
+        run: git diff --check
