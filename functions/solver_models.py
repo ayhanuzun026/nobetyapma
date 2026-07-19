@@ -31,12 +31,20 @@ class SolverPersonel:
     mazeret_gunleri: Set[int] = field(default_factory=set)
     kisitli_gorev: Optional[str] = None
     tasma_gorevi: Optional[str] = None
+    yetkili_gorevler: Set[str] = field(default_factory=set)
+    is_yuku_katsayisi: float = 1.0
+    min_nobet: int = 0
+    max_nobet: Optional[int] = None
+    esitlemeden_muaf: bool = False
+    adalet_grubu: str = "normal"
+    gecmis_veri_durumu: str = "bilinmiyor"
     hedef_tipler: Dict[str, int] = field(default_factory=dict)
     gorev_kotalari: Dict[str, int] = field(default_factory=dict)
     musait_gunler: Set[int] = field(default_factory=set)
     musait_tipler: Dict[str, int] = field(default_factory=dict)
     yillik_gerceklesen: Dict[str, int] = field(default_factory=dict)
     gecmis_gorevler: Dict[str, int] = field(default_factory=dict)
+    gecmis_donem: Dict[str, Any] = field(default_factory=dict)
 
 @dataclass
 class SolverGorev:
@@ -46,11 +54,17 @@ class SolverGorev:
     base_name: str = ""
     exclusive: bool = False
     ayri_bina: bool = False
+    bina_id: str = "ANA_BINA"
+    kritik: bool = False
+    istisna_politikasi: str = "kullanici_onayli"
+    alternatif_gorevler: List[Dict[str, Any]] = field(default_factory=list)
 
 @dataclass
 class SolverKural:
     tur: str
     kisiler: List[int] = field(default_factory=list)
+    politika: str = "kullanici_onayli"
+    asla_gevsetme: bool = False
 
 @dataclass
 class SolverAtama:

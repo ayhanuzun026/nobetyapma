@@ -59,3 +59,11 @@ test('backend requests have abortable timeouts', () => {
   assert.match(html, /timeoutMs: 330000/);
   assert.match(html, /timeoutMs: 310000/);
 });
+
+test('strict contract sends authority fields without global manual bypass', () => {
+  assert.match(html, /function normalizeYetkiliGorevler\(value\)/);
+  assert.match(html, /yetkiliGorevler:\s*normalizeYetkiliGorevler\(p\.yetkiliGorevler\)/);
+  assert.doesNotMatch(html, /ignoreManualConflicts/);
+  assert.doesNotMatch(html, /listeOlusturOrtools\([^\n]*,\s*true\)/);
+  assert.doesNotMatch(html, /çakışmalar kullanıcı onayıyla yok sayılıyor/i);
+});

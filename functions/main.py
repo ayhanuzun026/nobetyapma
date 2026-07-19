@@ -190,7 +190,6 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
 
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
-        ignore_manual_conflicts = bool(data.get("ignoreManualConflicts", False))
 
         gun_sayisi = get_days_in_month(yil, ay)
         gun_tipleri = build_gun_tipleri(yil, ay, gun_sayisi, resmi_tatiller)
@@ -206,7 +205,10 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         if duplicate_ids:
             return _json_response({"error": "Duplicate personel ID", "duplicateIds": duplicate_ids}, status=400)
 
-        gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        try:
+            gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "ValueError"}, status=400)
         kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
         birlikte_istisnalari = parse_birlikte_istisnalari(data, personeller)
         aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
@@ -215,7 +217,9 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
 
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari_dict = parse_gorev_kisitlamalari(data, personeller)
-        kilitli_hedefler = frontend_kilitli_hedefleri_topla(personeller)
+        kilitli_hedefler = frontend_kilitli_hedefleri_topla(
+            personeller, data.get("kilitliHedefler")
+        )
         gorev_kota_overrides = frontend_gorev_kota_override_topla(personeller)
 
         planlama = ortak_plan_uret(
@@ -254,7 +258,6 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
             ara_gun=ara_gun, max_sure=max_sure,
             yil=yil, ay=ay, resmi_tatiller=resmi_tatiller, data=data,
-            ignore_manual_conflicts=ignore_manual_conflicts,
             plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
         )
         son_plan_kontrati, aktif_hedefler = _sonuc_plan_ve_hedefler(sonuc, hedefler)
@@ -434,26 +437,25 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
 
         saat_degerleri = data.get("saatDegerleri", None)
 
-        # Kilitli hedefler: {personelId: {hici: N, prs: N, cum: N, cmt: N, pzr: N}}
-        kilitli_hedefler_raw = data.get("kilitliHedefler", {})
-        kilitli_hedefler = {}
-        for k, v in kilitli_hedefler_raw.items():
-            kilitli_hedefler[normalize_id(k)] = {
-                tip: int(v.get(tip, 0)) for tip in ["hici", "prs", "cum", "cmt", "pzr"]
-            }
-
         personeller = parse_solver_personeller_hedef(data)
 
         duplicate_ids = _find_duplicate_personel_ids(personeller)
         if duplicate_ids:
             return _json_response({"error": "Duplicate personel ID", "duplicateIds": duplicate_ids}, status=400)
 
+        kilitli_hedefler = frontend_kilitli_hedefleri_topla(
+            personeller, data.get("kilitliHedefler")
+        )
+
         gorevler = parse_solver_gorevler(data)
         kurallar = parse_kurallar(data, personeller)
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari = parse_gorev_kisitlamalari(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
-        gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        try:
+            gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "ValueError"}, status=400)
 
         planlama = ortak_plan_uret(
             gun_sayisi=gun_sayisi,
@@ -534,7 +536,6 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
         resmi_tatiller = data.get("resmiTatiller", [])
         saat_degerleri = data.get("saatDegerleri", None)
-        ignore_manual_conflicts = bool(data.get("ignoreManualConflicts", False))
 
         gun_sayisi = get_days_in_month(yil, ay)
         gun_tipleri = build_gun_tipleri(yil, ay, gun_sayisi, resmi_tatiller)
@@ -557,7 +558,10 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         if duplicate_ids:
             return _json_response({"error": "Duplicate personel ID", "duplicateIds": duplicate_ids}, status=400)
 
-        gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        try:
+            gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "ValueError"}, status=400)
         kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
         birlikte_istisnalari = parse_birlikte_istisnalari(data, personeller)
         aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
@@ -567,7 +571,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         # Ortak planlayici: preview ve final ayni plani kullansin
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari_dict = parse_gorev_kisitlamalari(data, personeller)
-        kilitli_hedefler = frontend_kilitli_hedefleri_topla(personeller)
+        kilitli_hedefler = frontend_kilitli_hedefleri_topla(
+            personeller, data.get("kilitliHedefler")
+        )
         gorev_kota_overrides = frontend_gorev_kota_override_topla(personeller)
 
         try:
@@ -634,7 +640,6 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
             ara_gun=ara_gun, max_sure=max_sure,
             yil=yil, ay=ay, resmi_tatiller=resmi_tatiller, data=data,
-            ignore_manual_conflicts=ignore_manual_conflicts,
             plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
             plan_yenileyici=_plan_yenileyici,
         )

@@ -133,9 +133,9 @@ if __name__ == '__main__':
     assert 'H4_ARA_GUN' in core_groups, f"Unsat core H4_ARA_GUN icermiyor: {core_groups}"
     assert 'S3_TOPLAM_HEDEF_PLAN' in core_groups, f"Unsat core S3_TOPLAM_HEDEF_PLAN icermiyor: {core_groups}"
 
-    # === Senaryo 4: Doluluk gevsetme (Asama 1B/1D) ===
+    # === Senaryo 4A: Onaysiz doluluk gevsetmesi uygulanmaz ===
     gun_sayisi, gun_tipleri, personeller, gorevler, hedefler = senaryo_doluluk_gevsetme()
-    s4, gev4, tesh4, kul_ara4 = solve_with_diagnostics(
+    s4a, gev4a, tesh4a, kul_ara4a = solve_with_diagnostics(
         gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
         personeller=personeller, gorevler=gorevler,
         kurallar=[], gorev_havuzlari={},
@@ -143,17 +143,43 @@ if __name__ == '__main__':
         aragun_istisnalari=[], manuel_atamalar=[], hedefler=hedefler,
         ara_gun=2, max_sure=20, yil=2025, ay=1, resmi_tatiller={}, data={},
     )
-    ist4 = s4.istatistikler or {}
-    rapor4 = ist4.get('doluluk_raporu') or {}
-    print("\n=== Senaryo 4: doluluk gevsetme ===")
-    print(f"  basarili={s4.basarili} atama={len(s4.atamalar)} bos_slot={rapor4.get('bos_slot')} "
-          f"kullanilan_ara_gun={kul_ara4} gevsetme_denendi={rapor4.get('gevsetme_denendi')}")
-    print(f"  oneri: {rapor4.get('oneri')}")
-    assert s4.basarili, "SENARYO 4 BASARISIZ — feasible olmaliydi!"
-    assert 'doluluk_raporu' in ist4, "doluluk_raporu istatistiklere eklenmemis!"
-    assert rapor4.get('gevsetme_denendi') is True, "Bos slot vardi ama doluluk gevsetmesi denenmedi!"
-    assert rapor4.get('bos_slot', 99) == 0, f"Doluluk gevsetmesi tum slotlari dolduramadi: bos={rapor4.get('bos_slot')}"
-    assert len(s4.atamalar) == 4, f"4 slot dolmaliydi, atama={len(s4.atamalar)}"
+    ist4a = s4a.istatistikler or {}
+    rapor4a = ist4a.get('doluluk_raporu') or {}
+    onay_onerileri4a = (tesh4a or {}).get('onay_bekleyen_oneriler') or []
+    print("\n=== Senaryo 4A: onaysiz doluluk gevsetmesi ===")
+    print(f"  basarili={s4a.basarili} atama={len(s4a.atamalar)} bos_slot={rapor4a.get('bos_slot')} "
+          f"kullanilan_ara_gun={kul_ara4a} gevsetme_denendi={rapor4a.get('gevsetme_denendi')}")
+    print(f"  oneri: {rapor4a.get('oneri')}")
+    assert s4a.basarili, "SENARYO 4A BASARISIZ — kismi feasible sonuc bekleniyordu!"
+    assert kul_ara4a == 2, f"Onaysiz ara gun degismemeliydi: {kul_ara4a}"
+    assert rapor4a.get('gevsetme_denendi') is False, rapor4a
+    assert rapor4a.get('bos_slot', 0) > 0, rapor4a
+    assert 'doluluk_ara_gun_gevsetildi' not in gev4a, gev4a
+    assert any(o.get('aksiyon') == 'ara_gun_azalt' for o in onay_onerileri4a), tesh4a
+
+    # === Senaryo 4B: Acik otomatik onay ile doluluk gevsetmesi ===
+    s4b, gev4b, tesh4b, kul_ara4b = solve_with_diagnostics(
+        gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler,
+        kurallar=[], gorev_havuzlari={},
+        kisitlama_istisnalari=[], birlikte_istisnalari=[],
+        aragun_istisnalari=[], manuel_atamalar=[], hedefler=hedefler,
+        ara_gun=2, max_sure=20, yil=2025, ay=1, resmi_tatiller={},
+        data={'tamirPolitikasi': {'araGunAzaltma': 'otomatik'}},
+    )
+    ist4b = s4b.istatistikler or {}
+    rapor4b = ist4b.get('doluluk_raporu') or {}
+    print("\n=== Senaryo 4B: onayli doluluk gevsetmesi ===")
+    print(f"  basarili={s4b.basarili} atama={len(s4b.atamalar)} bos_slot={rapor4b.get('bos_slot')} "
+          f"kullanilan_ara_gun={kul_ara4b} gevsetme_denendi={rapor4b.get('gevsetme_denendi')}")
+    print(f"  oneri: {rapor4b.get('oneri')}")
+    assert s4b.basarili, "SENARYO 4B BASARISIZ — feasible olmaliydi!"
+    assert rapor4b.get('gevsetme_denendi') is True, rapor4b
+    assert rapor4b.get('bos_slot', 99) == 0, rapor4b
+    assert len(s4b.atamalar) == 4, f"4 slot dolmaliydi, atama={len(s4b.atamalar)}"
+    assert kul_ara4b == 0, f"Tam doluluk icin ara gun 0 bekleniyordu: {kul_ara4b}"
+    assert gev4b.get('doluluk_ara_gun_gevsetildi') is True, gev4b
+    assert not (tesh4b or {}).get('onay_bekleyen_oneriler'), tesh4b
 
     # === Birim: _doluluk_raporu_uret bos slot dalinda oneri metni ureti mi ===
     class _SahteSonuc:

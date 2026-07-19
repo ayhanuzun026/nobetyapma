@@ -2,6 +2,7 @@
 Request verisi parse fonksiyonları — endpoint'ler arası tekrarı kaldırır.
 """
 
+import math
 from typing import List, Dict, Set
 
 from utils import (
@@ -12,6 +13,104 @@ from utils import (
 from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
 )
+
+
+def _parse_optional_int(value, default=None):
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _parse_non_negative_float(value, default: float = 1.0) -> float:
+    try:
+        parsed = float(value)
+    except (ValueError, TypeError):
+        return default
+    if not math.isfinite(parsed):
+        return default
+    return min(10.0, max(0.0, parsed))
+
+
+def parse_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "evet", "yes"}:
+            return True
+        if normalized in {"false", "0", "hayir", "hayır", "no", ""}:
+            return False
+    return default
+
+
+def _parse_string_set(value) -> Set[str]:
+    if not isinstance(value, (list, tuple, set)):
+        return set()
+    return {
+        str(item).strip()
+        for item in value
+        if item is not None and str(item).strip()
+    }
+
+
+def _parse_personel_adalet_alanlari(p_data: Dict) -> Dict:
+    min_nobet = max(0, _parse_optional_int(p_data.get("minNobet"), 0) or 0)
+    max_nobet = _parse_optional_int(p_data.get("maxNobet"), None)
+    if max_nobet is not None:
+        max_nobet = max(0, max_nobet)
+    adalet_grubu = str(p_data.get("adaletGrubu") or "normal").strip() or "normal"
+    gecmis_veri_durumu = str(
+        p_data.get("gecmisVeriDurumu") or "bilinmiyor"
+    ).strip().lower()
+    if gecmis_veri_durumu not in {"tam", "kismi", "yeni", "bilinmiyor"}:
+        gecmis_veri_durumu = "bilinmiyor"
+    gecmis_donem_raw = p_data.get("gecmisDonem")
+    return {
+        "yetkili_gorevler": _parse_string_set(p_data.get("yetkiliGorevler")),
+        "is_yuku_katsayisi": _parse_non_negative_float(p_data.get("isYukuKatsayisi"), 1.0),
+        "min_nobet": min_nobet,
+        "max_nobet": max_nobet,
+        "esitlemeden_muaf": parse_bool(p_data.get("esitlemedenMuaf"), False),
+        "adalet_grubu": adalet_grubu,
+        "gecmis_veri_durumu": gecmis_veri_durumu,
+        "gecmis_donem": dict(gecmis_donem_raw) if isinstance(gecmis_donem_raw, dict) else {},
+    }
+
+
+def _parse_gorev_politikasi(g_data: Dict, base_name: str) -> Dict:
+    ayri_bina = parse_bool(g_data.get("ayriBina"), False)
+    raw_bina_id = g_data.get("binaId")
+    if raw_bina_id is not None and str(raw_bina_id).strip():
+        bina_id = str(raw_bina_id).strip()
+    elif ayri_bina:
+        bina_id = f"AYRI_BINA:{base_name}"
+    else:
+        bina_id = "ANA_BINA"
+
+    kritik = parse_bool(g_data.get("kritik"), False)
+    default_politika = "asla" if kritik else "kullanici_onayli"
+    istisna_politikasi = str(
+        g_data.get("istisnaPolitikasi") or default_politika
+    ).strip().lower()
+    if istisna_politikasi not in {"asla", "kullanici_onayli", "otomatik", "soft"}:
+        istisna_politikasi = default_politika
+
+    alternatifler = g_data.get("alternatifGorevler", [])
+    if not isinstance(alternatifler, list):
+        alternatifler = []
+
+    return {
+        "ayri_bina": ayri_bina,
+        "bina_id": bina_id,
+        "kritik": kritik,
+        "istisna_politikasi": istisna_politikasi,
+        "alternatif_gorevler": [dict(item) for item in alternatifler if isinstance(item, dict)],
+    }
 
 
 # ============================================
@@ -37,13 +136,15 @@ def parse_kapasite_personeller(data: Dict) -> List[SolverPersonel]:
         mazeretler = _extract_mazeret_gunleri(p_data)
 
         yillik_gerceklesen = _parse_yillik_gerceklesen(p_data)
+        adalet_alanlari = _parse_personel_adalet_alanlari(p_data)
 
         personeller.append(SolverPersonel(
             id=normalize_id(p_data.get("id", len(personeller))),
             ad=p_data.get("ad"),
             mazeret_gunleri=mazeretler,
             kisitli_gorev=p_data.get("kisitliGorev"),
-            yillik_gerceklesen=yillik_gerceklesen
+            yillik_gerceklesen=yillik_gerceklesen,
+            **adalet_alanlari,
         ))
 
     return personeller
@@ -57,13 +158,16 @@ def parse_solver_gorevler(data: Dict, key: str = "gorevler") -> List[SolverGorev
     """OR-Tools çözücü için görevleri parse et"""
     gorevler = []
     for idx, g_data in enumerate(data.get(key, [])):
+        gorev_ad = g_data.get("ad") or f"Görev {idx}"
+        base_name = str(g_data.get("baseName") or "").strip() or gorev_ad
+        politika = _parse_gorev_politikasi(g_data, base_name)
         gorevler.append(SolverGorev(
             id=g_data.get("id", idx),
-            ad=g_data.get("ad", f"Görev {idx}"),
+            ad=gorev_ad,
             slot_idx=idx,
-            base_name=g_data.get("baseName", ""),
-            exclusive=g_data.get("exclusive", False),
-            ayri_bina=bool(g_data.get("ayriBina", False))
+            base_name=base_name,
+            exclusive=parse_bool(g_data.get("exclusive"), False) or politika["kritik"],
+            **politika,
         ))
     return gorevler
 
@@ -73,24 +177,32 @@ def parse_solver_gorevler_nobet_coz(data: Dict, slot_sayisi: int) -> List[Solver
     gorev_kisitlamalari_raw = data.get("gorevKisitlamalari", [])
     exclusive_gorevler = set()
     for k in gorev_kisitlamalari_raw:
+        if not isinstance(k, dict):
+            continue
         gorev_adi = k.get("gorevAdi")
-        if k.get("exclusive", False) and gorev_adi:
+        if parse_bool(k.get("exclusive"), False) and gorev_adi:
             exclusive_gorevler.add(gorev_adi)
 
     gorevler = []
     for idx, g_data in enumerate(data.get("gorevler", [])):
         if isinstance(g_data, dict):
             gorev_id = g_data.get("id", idx)
-            gorev_ad = g_data.get("ad", f"Nöbetçi {idx + 1}")
-            base_name = g_data.get("baseName", gorev_ad.split(" #")[0] if " #" in gorev_ad else gorev_ad)
-            exclusive = g_data.get("exclusive", False) or gorev_ad in exclusive_gorevler or base_name in exclusive_gorevler
-            ayri_bina = bool(g_data.get("ayriBina", False))
+            gorev_ad = g_data.get("ad") or f"Nöbetçi {idx + 1}"
+            fallback_base_name = gorev_ad.split(" #")[0] if " #" in gorev_ad else gorev_ad
+            base_name = str(g_data.get("baseName") or "").strip() or fallback_base_name
+            politika = _parse_gorev_politikasi(g_data, base_name)
+            exclusive = (
+                parse_bool(g_data.get("exclusive"), False)
+                or politika["kritik"]
+                or gorev_ad in exclusive_gorevler
+                or base_name in exclusive_gorevler
+            )
         else:
             gorev_id = idx
             gorev_ad = str(g_data)
             base_name = gorev_ad.split(" #")[0] if " #" in gorev_ad else gorev_ad
             exclusive = gorev_ad in exclusive_gorevler or base_name in exclusive_gorevler
-            ayri_bina = False
+            politika = _parse_gorev_politikasi({}, base_name)
 
         gorevler.append(SolverGorev(
             id=gorev_id,
@@ -98,7 +210,7 @@ def parse_solver_gorevler_nobet_coz(data: Dict, slot_sayisi: int) -> List[Solver
             slot_idx=idx,
             base_name=base_name,
             exclusive=exclusive,
-            ayri_bina=ayri_bina
+            **politika,
         ))
 
     # Defansif üst sınır (OOM backstop): main.py slot_sayisi'ni zaten doğruluyor,
@@ -111,7 +223,7 @@ def parse_solver_gorevler_nobet_coz(data: Dict, slot_sayisi: int) -> List[Solver
             ad=f"Nöbetçi {idx + 1}",
             slot_idx=idx,
             base_name=f"Nöbetçi {idx + 1}",
-            ayri_bina=False
+            **_parse_gorev_politikasi({}, f"Nöbetçi {idx + 1}"),
         ))
 
     return gorevler
@@ -125,6 +237,7 @@ def parse_solver_personeller_hedef(data: Dict) -> List[SolverPersonel]:
         mazeret_set = _extract_mazeret_gunleri(p_data)
         yillik_gerceklesen = _parse_yillik_gerceklesen(p_data)
         gecmis_gorevler = _parse_gecmis_gorevler(p_data)
+        adalet_alanlari = _parse_personel_adalet_alanlari(p_data)
 
         personeller.append(SolverPersonel(
             id=pid,
@@ -132,7 +245,8 @@ def parse_solver_personeller_hedef(data: Dict) -> List[SolverPersonel]:
             mazeret_gunleri=mazeret_set,
             kisitli_gorev=p_data.get("kisitliGorev"),
             yillik_gerceklesen=yillik_gerceklesen,
-            gecmis_gorevler=gecmis_gorevler
+            gecmis_gorevler=gecmis_gorevler,
+            **adalet_alanlari,
         ))
 
     return personeller
@@ -198,6 +312,7 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
 
         yillik_gerceklesen = _parse_yillik_gerceklesen(p_data)
         gecmis_gorevler = _parse_gecmis_gorevler(p_data)
+        adalet_alanlari = _parse_personel_adalet_alanlari(p_data)
 
         personeller.append(SolverPersonel(
             id=pid,
@@ -208,7 +323,8 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
             hedef_tipler=hedef_tipler,
             gorev_kotalari=gorev_kotalari,
             yillik_gerceklesen=yillik_gerceklesen,
-            gecmis_gorevler=gecmis_gorevler
+            gecmis_gorevler=gecmis_gorevler,
+            **adalet_alanlari,
         ))
 
     return personeller
@@ -238,7 +354,15 @@ def parse_kurallar(data: Dict, personeller) -> List[SolverKural]:
                     kisiler.append(pid)
 
         if len(kisiler) >= 2:
-            kurallar.append(SolverKural(tur=tur, kisiler=kisiler))
+            politika = str(k_data.get("politika") or "kullanici_onayli").strip().lower()
+            if politika not in {"hard", "kullanici_onayli", "soft"}:
+                politika = "kullanici_onayli"
+            kurallar.append(SolverKural(
+                tur=tur,
+                kisiler=kisiler,
+                politika=politika,
+                asla_gevsetme=parse_bool(k_data.get("aslaGevsetme"), False) or politika == "hard",
+            ))
 
     return kurallar
 
@@ -287,7 +411,7 @@ def parse_manuel_atamalar(data: Dict, personeller, gorevler: List[SolverGorev],
         gorev_id = m_data.get("gorevId")
         gorev_adi = m_data.get("gorevAdi")
         gorev_base_adi = m_data.get("gorevBaseAdi")
-        mazeret_onayli = bool(m_data.get("mazeretOnayli", False))
+        mazeret_onayli = parse_bool(m_data.get("mazeretOnayli"), False)
         slot_idx = None
 
         if gorev_id is not None:
@@ -352,10 +476,10 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
                           personeller) -> Dict[str, Set[int]]:
     """nobet_coz için görev havuzlarını parse et.
 
-    Önce frontend'den gelen gorevHavuzlari objesini oku (yeni format).
-    Yoksa eski gorevKisitlamalari[].havuzIds formatını dene.
-    Kısıtlı / taşma personellerini yalnızca kullanıcı açıkça havuz tanımladıysa
-    o havuza ekle; tek başına görev kısıtı, görevi dar bir role havuzuna çevirmesin.
+    ``gorevHavuzlari`` alanı gönderilmişse authoritative kabul edilir; her rol
+    yalnızca açıkça listelenen mevcut personelleri içerir ve boş liste deny-all
+    anlamına gelir. Alan hiç gönderilmemişse eski
+    ``gorevKisitlamalari[].havuzIds`` formatına geri dönülür.
     """
 
     def _normalize_gorev_adi(raw_gorev_adi):
@@ -366,49 +490,29 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
                 return g.base_name if g.base_name else g.ad
         return raw_gorev_adi
 
-    # Kısıtlı kişileri topla; explicit havuz varsa bu kişiler havuzdan dışlanmasın.
     _cache = build_personel_lookup(personeller)
-    gorev_kisitlamalari_raw = data.get("gorevKisitlamalari", [])
-    kisitlilar_by_role = {}  # { role: set(pid) }
-    tasma_by_role = {}       # { tasma_role: set(pid) } — taşma görevi olan kişiler
-    for k_data in gorev_kisitlamalari_raw:
-        role = _normalize_gorev_adi(k_data.get("gorevAdi"))
-        if not role:
-            continue
-        kisit_pid = _resolve_personel_id(k_data.get("personelId"), personeller, require_existing=True, _cache=_cache)
-        if kisit_pid is not None:
-            kisitlilar_by_role.setdefault(role, set()).add(kisit_pid)
-            # Taşma görevi varsa o role de ekle
-            tasma_raw = k_data.get("tasmaGorevi")
-            tasma_role = _normalize_gorev_adi(tasma_raw) if tasma_raw else None
-            if tasma_role:
-                tasma_by_role.setdefault(tasma_role, set()).add(kisit_pid)
+    if "gorevHavuzlari" in data:
+        gorev_havuzlari_raw = data.get("gorevHavuzlari")
+        if not isinstance(gorev_havuzlari_raw, dict):
+            raise ValueError("gorevHavuzlari nesne olmalı")
 
-    # YENİ FORMAT: Frontend'den gelen gorevHavuzlari objesini oku
-    gorev_havuzlari_raw = data.get("gorevHavuzlari", {})
-    if gorev_havuzlari_raw and isinstance(gorev_havuzlari_raw, dict):
         gorev_havuzlari = {}
         for raw_role, ids in gorev_havuzlari_raw.items():
             role = _normalize_gorev_adi(raw_role)
-            if not role or not ids:
+            if not role:
                 continue
             allowed_ids = set()
-            if isinstance(ids, list):
-                for raw_id in ids:
-                    pid = _resolve_personel_id(raw_id, personeller, require_existing=True, _cache=_cache)
-                    if pid is not None:
-                        allowed_ids.add(pid)
-            # Açık havuz tanımlıysa kısıtlı / taşma personellerini de dahil et.
-            if role in kisitlilar_by_role:
-                allowed_ids |= kisitlilar_by_role[role]
-            if role in tasma_by_role:
-                allowed_ids |= tasma_by_role[role]
-            if allowed_ids:
-                gorev_havuzlari[role] = allowed_ids
+            raw_ids = ids if isinstance(ids, list) else []
+            for raw_id in raw_ids:
+                pid = _resolve_personel_id(raw_id, personeller, require_existing=True, _cache=_cache)
+                if pid is not None:
+                    allowed_ids.add(pid)
+            gorev_havuzlari[role] = allowed_ids
 
         return gorev_havuzlari
 
     # ESKİ FORMAT: gorevKisitlamalari içindeki havuzIds (geriye uyumluluk)
+    gorev_kisitlamalari_raw = data.get("gorevKisitlamalari", [])
     gorev_havuz_kayitlari = {}
     for k_data in gorev_kisitlamalari_raw:
         role = _normalize_gorev_adi(k_data.get("gorevAdi"))

@@ -52,12 +52,30 @@ def _normalize_tip_hedefleri(raw: Optional[Dict]) -> Dict[str, int]:
     return normalized
 
 
-def frontend_kilitli_hedefleri_topla(personeller: List[SolverPersonel]) -> Dict[int, Dict[str, int]]:
+def frontend_kilitli_hedefleri_topla(
+    personeller: List[SolverPersonel],
+    kilitli_hedefler_raw: Optional[Dict] = None,
+) -> Dict[int, Dict[str, int]]:
+    """Yalnız kullanıcının açıkça kilitlediği hedefleri normalize eder.
+
+    Personel nesnesindeki ``hedef_tipler`` hesaplanmış plan önerisidir; kullanıcı
+    kilidi değildir. Eski davranış tüm pozitif hedefleri hard kilide çevirerek
+    manuel atama ve geçmiş değişikliklerinden sonra yeniden hesaplamayı
+    etkisizleştiriyordu.
+    """
     kilitli_hedefler: Dict[int, Dict[str, int]] = {}
-    for p in personeller:
-        hedef_tipler = _normalize_tip_hedefleri(getattr(p, "hedef_tipler", {}) or {})
-        if sum(hedef_tipler.values()) > 0:
-            kilitli_hedefler[normalize_id(p.id)] = hedef_tipler
+    if not isinstance(kilitli_hedefler_raw, dict):
+        return kilitli_hedefler
+
+    personel_ids = {normalize_id(p.id) for p in personeller}
+    for raw_pid, raw_hedef in kilitli_hedefler_raw.items():
+        if not isinstance(raw_hedef, dict):
+            continue
+        pid = normalize_id(raw_pid)
+        if pid not in personel_ids:
+            continue
+        hedef_tipler = _normalize_tip_hedefleri(raw_hedef)
+        kilitli_hedefler[pid] = hedef_tipler
     return kilitli_hedefler
 
 

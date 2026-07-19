@@ -6,7 +6,7 @@ import time as _time
 
 from ortools_solver import NobetSolver
 from planlayici import plan_kontrati_hash_yenile
-from solver_models import SolverGorev, SolverSonuc
+from solver_models import SolverSonuc
 from utils import find_matching_id
 
 logger = logging.getLogger(__name__)
@@ -101,7 +101,26 @@ def solve_with_diagnostics(
     eder. ``UNKNOWN``, timeout, ``MODEL_INVALID`` ve diger hata durumlari
     kisitlarin kaldirilmasi icin kanit sayilmaz.
     """
-    del yil, ay, resmi_tatiller, data  # Imza geriye uyumluluk icin korunuyor.
+    data_dict = data if isinstance(data, dict) else {}
+    tamir_politikasi = data_dict.get("tamirPolitikasi", {})
+    if not isinstance(tamir_politikasi, dict):
+        tamir_politikasi = {}
+    tamir_modu = str(tamir_politikasi.get("mod", "")).strip().lower()
+    otomatik_gevsetme_degeri = tamir_politikasi.get(
+        "otomatikGevsetme", data_dict.get("otomatikGevsetme")
+    )
+    otomatik_gevsetme_kapali = (
+        otomatik_gevsetme_degeri is False
+        or str(otomatik_gevsetme_degeri).strip().lower() in {"false", "0", "hayir", "hayır"}
+    )
+    explicit_strict = tamir_modu == "strict" or otomatik_gevsetme_kapali
+    kilitli_hedefler_var = bool(data_dict.get("kilitliHedefler"))
+    plan_gevsetme_izinli = not explicit_strict and not kilitli_hedefler_var
+    ara_gun_otomatik_izinli = (
+        not explicit_strict
+        and str(tamir_politikasi.get("araGunAzaltma", "")).strip().lower() == "otomatik"
+    )
+    del yil, ay, resmi_tatiller  # Imza geriye uyumluluk icin korunuyor.
 
     baslangic_toplam = _time.monotonic()
     try:
@@ -240,7 +259,7 @@ def solve_with_diagnostics(
             hedefler=hedefler,
             ara_gun=deneme_ara_gun,
             max_sure_saniye=ayrilan_sure,
-            ignore_manual_conflicts=ignore_manual_conflicts,
+            ignore_manual_conflicts=False,
             plan_kontrati=aktif_plan_kontrati,
         )
         aday = solver.coz()
@@ -369,7 +388,12 @@ def solve_with_diagnostics(
         tani_mesajlari.append("Ilk deneme INFEASIBLE; teshis baslatiliyor.")
 
         # Once yalniz planin hard/tolerans uygulamasini yumusat.
-        if isinstance(aktif_plan_kontrati, dict) and aktif_plan_kontrati and _butce_var():
+        if (
+            plan_gevsetme_izinli
+            and isinstance(aktif_plan_kontrati, dict)
+            and aktif_plan_kontrati
+            and _butce_var()
+        ):
             onceki_plan = deepcopy(aktif_plan_kontrati)
             gevsek_plan = deepcopy(aktif_plan_kontrati)
             uygulama = dict(gevsek_plan.get("uygulama", {}) or {})
@@ -408,6 +432,19 @@ def solve_with_diagnostics(
                     )
                 elif not _infeasible(sonuc):
                     _gevsetilemez_durumu_kaydet(sonuc, "Plan gevsetme")
+        elif (
+            not plan_gevsetme_izinli
+            and isinstance(aktif_plan_kontrati, dict)
+            and aktif_plan_kontrati
+        ):
+            plan_engel_nedeni = (
+                "Acik kilitliHedefler var; plan hedefleri ve toleranslari korunuyor."
+                if kilitli_hedefler_var else
+                "Strict tamir politikasi otomatik plan hedef/tolerans gevsetmesini kapatiyor."
+            )
+            tani_mesajlari.append(plan_engel_nedeni)
+            gevsetme_bilgisi["plan_gevsetme_engellendi"] = True
+            gevsetme_bilgisi["plan_gevsetme_engel_nedeni"] = plan_engel_nedeni
 
         if _infeasible(sonuc) and not otomatik_gevsetme_durduruldu:
             try:
@@ -451,23 +488,83 @@ def solve_with_diagnostics(
                 )
                 tani_mesajlari.append(f"Unsat-core gozlem: {core_ozet}")
 
-            sure_per_aksiyon = (
-                _kalan_sure() / max(len(aksiyonlar), 1)
-                if _butce_var() else 0.0
-            )
-            gorevler_noexcl = [
-                SolverGorev(
-                    id=g.id,
-                    ad=g.ad,
-                    slot_idx=g.slot_idx,
-                    base_name=g.base_name,
-                    exclusive=False,
-                    ayri_bina=g.ayri_bina,
-                )
-                for g in gorevler
-            ]
+            onay_bekleyen_oneriler = []
+            politika_engelli_oneriler = []
+            yurutulebilir_aksiyonlar = []
+
+            def _oneri_kaydi(aksiyon_info, politika, politika_nedeni):
+                return {
+                    "aksiyon": aksiyon_info.get("aksiyon"),
+                    "puan": aksiyon_info.get("puan"),
+                    "neden": aksiyon_info.get("neden"),
+                    "politika": politika,
+                    "politika_nedeni": politika_nedeni,
+                }
 
             for aksiyon_info in aksiyonlar:
+                aksiyon = aksiyon_info.get("aksiyon")
+                if aksiyon == "ara_gun_azalt":
+                    if ara_gun_otomatik_izinli:
+                        yurutulebilir_aksiyonlar.append(aksiyon_info)
+                    else:
+                        onay_bekleyen_oneriler.append(_oneri_kaydi(
+                            aksiyon_info,
+                            "kullanici_onayli",
+                            "tamirPolitikasi.araGunAzaltma='otomatik' olmadigi icin denenmedi.",
+                        ))
+                    continue
+
+                if aksiyon in {"ayri_gevset", "birlikte_kaldir"}:
+                    kural_turu = "ayri" if aksiyon == "ayri_gevset" else "birlikte"
+                    asla_gevsetme = any(
+                        getattr(kural, "tur", None) == kural_turu
+                        and bool(getattr(kural, "asla_gevsetme", False))
+                        for kural in aktif_kurallar
+                    )
+                    kayit = _oneri_kaydi(
+                        aksiyon_info,
+                        "asla" if asla_gevsetme else "kullanici_onayli",
+                        (
+                            "Kural asla_gevsetme olarak isaretli; otomatik veya toplu kaldirilamaz."
+                            if asla_gevsetme else
+                            "Toplu kural kaldirma kapali; yalniz acik kisi-gun istisnasi ile yeniden cozulmeli."
+                        ),
+                    )
+                    (politika_engelli_oneriler if asla_gevsetme else onay_bekleyen_oneriler).append(kayit)
+                    continue
+
+                politika_engelli_oneriler.append(_oneri_kaydi(
+                    aksiyon_info,
+                    "asla",
+                    (
+                        "Kritik/exclusive yetki, gorev havuzu ve toplu kural kaldirma "
+                        "strict politikada otomatik gevsetilemez."
+                    ),
+                ))
+
+            teshis_bilgisi["tamir_politikasi"] = {
+                "ara_gun_azaltma": tamir_politikasi.get("araGunAzaltma"),
+                "ara_gun_otomatik_izinli": ara_gun_otomatik_izinli,
+                "kritik_yetki_gevsetilebilir": False,
+                "toplu_kural_kaldirma_aktif": False,
+            }
+            teshis_bilgisi["onay_bekleyen_oneriler"] = onay_bekleyen_oneriler
+            teshis_bilgisi["politika_engelli_oneriler"] = politika_engelli_oneriler
+            if onay_bekleyen_oneriler:
+                tani_mesajlari.append(
+                    f"{len(onay_bekleyen_oneriler)} tamir onerisi kullanici onayi bekliyor."
+                )
+            if politika_engelli_oneriler:
+                tani_mesajlari.append(
+                    f"{len(politika_engelli_oneriler)} gevsetme strict politika tarafindan engellendi."
+                )
+
+            sure_per_aksiyon = (
+                _kalan_sure() / max(len(yurutulebilir_aksiyonlar), 1)
+                if _butce_var() else 0.0
+            )
+
+            for aksiyon_info in yurutulebilir_aksiyonlar:
                 if sonuc and sonuc.basarili:
                     break
                 if otomatik_gevsetme_durduruldu or not _infeasible(sonuc):
@@ -500,122 +597,6 @@ def solve_with_diagnostics(
                         _ara_basari,
                     )
 
-                elif aksiyon == "exclusive_gevset":
-                    onceki_gorevler = aktif_gorevler
-                    onceki_havuzlar = aktif_havuzlar
-                    aktif_gorevler = gorevler_noexcl
-                    aktif_havuzlar = {}
-
-                    def _exclusive_basari(dene_ara_gun):
-                        nonlocal kullanilan_ara_gun
-                        kullanilan_ara_gun = dene_ara_gun
-                        gevsetme_bilgisi["exclusive_gevsetildi"] = True
-                        tani_mesajlari.append("Exclusive kisitlar gevsetilerek cozum bulundu.")
-
-                    _, deneme_sayisi = _ara_gun_denemeleri(
-                        "exclusive_gevset",
-                        aktif_gorevler,
-                        aktif_kurallar,
-                        aktif_havuzlar,
-                        range(aktif_ara_gun, -1, -1),
-                        sure_per_aksiyon,
-                        _exclusive_basari,
-                    )
-                    if deneme_sayisi == 0:
-                        aktif_gorevler = onceki_gorevler
-                        aktif_havuzlar = onceki_havuzlar
-
-                elif aksiyon == "ayri_gevset":
-                    onceki_kurallar = aktif_kurallar
-                    aktif_kurallar = [k for k in aktif_kurallar if k.tur != "ayri"]
-
-                    def _ayri_basari(dene_ara_gun):
-                        nonlocal kullanilan_ara_gun
-                        kullanilan_ara_gun = dene_ara_gun
-                        gevsetme_bilgisi["ayri_gevsetildi"] = True
-                        tani_mesajlari.append(
-                            "Ayri tutma kurallari kaldirildiktan sonra cozum bulundu."
-                        )
-
-                    _, deneme_sayisi = _ara_gun_denemeleri(
-                        "ayri_gevset",
-                        aktif_gorevler,
-                        aktif_kurallar,
-                        aktif_havuzlar,
-                        range(aktif_ara_gun, -1, -1),
-                        sure_per_aksiyon,
-                        _ayri_basari,
-                    )
-                    if deneme_sayisi == 0:
-                        aktif_kurallar = onceki_kurallar
-
-                elif aksiyon == "birlikte_kaldir":
-                    base_kurallar = [k for k in aktif_kurallar if k.tur != "birlikte"]
-                    birlikte_sirali = _sirala_birlikte_kurallari(
-                        aktif_kurallar, personeller, hedefler
-                    )
-                    for kaldirilan_sayi in range(1, len(birlikte_sirali) + 1):
-                        if otomatik_gevsetme_durduruldu or not _infeasible(sonuc):
-                            break
-                        onceki_kurallar = aktif_kurallar
-                        aktif_kurallar = base_kurallar + [
-                            item["kural"] for item in birlikte_sirali[kaldirilan_sayi:]
-                        ]
-
-                        def _birlikte_basari(dene_ara_gun, sayi=kaldirilan_sayi):
-                            nonlocal kullanilan_ara_gun
-                            kullanilan_ara_gun = dene_ara_gun
-                            gevsetme_bilgisi["birlikte_kaldirildi"] = True
-                            gevsetme_bilgisi["kaldirilan_birlikte_kural_sayisi"] = sayi
-                            tani_mesajlari.append(
-                                f"{sayi} birlikte kurali kademeli kaldirilarak cozum bulundu."
-                            )
-
-                        _, deneme_sayisi = _ara_gun_denemeleri(
-                            "birlikte_kaldir",
-                            aktif_gorevler,
-                            aktif_kurallar,
-                            aktif_havuzlar,
-                            range(aktif_ara_gun, -1, -1),
-                            sure_per_aksiyon,
-                            _birlikte_basari,
-                        )
-                        if deneme_sayisi == 0:
-                            aktif_kurallar = onceki_kurallar
-                            break
-                        if sonuc and sonuc.basarili:
-                            break
-
-                elif aksiyon == "tum_soft_kaldir":
-                    onceki_gorevler = aktif_gorevler
-                    onceki_kurallar = aktif_kurallar
-                    onceki_havuzlar = aktif_havuzlar
-                    aktif_gorevler = gorevler_noexcl
-                    aktif_kurallar = []
-                    aktif_havuzlar = {}
-
-                    def _tum_soft_basari(dene_ara_gun):
-                        nonlocal kullanilan_ara_gun
-                        kullanilan_ara_gun = dene_ara_gun
-                        gevsetme_bilgisi["tum_soft_kaldirildi"] = True
-                        tani_mesajlari.append(
-                            "Tum soft kisitlar kaldirildiktan sonra cozum bulundu."
-                        )
-
-                    _, deneme_sayisi = _ara_gun_denemeleri(
-                        "tum_soft_kaldir",
-                        aktif_gorevler,
-                        aktif_kurallar,
-                        aktif_havuzlar,
-                        range(aktif_ara_gun, -1, -1),
-                        sure_per_aksiyon,
-                        _tum_soft_basari,
-                    )
-                    if deneme_sayisi == 0:
-                        aktif_gorevler = onceki_gorevler
-                        aktif_kurallar = onceki_kurallar
-                        aktif_havuzlar = onceki_havuzlar
-
     if sonuc is None:
         sonuc = SolverSonuc(
             basarili=False,
@@ -640,6 +621,32 @@ def solve_with_diagnostics(
         and sonuc.basarili
         and bos_ilk > DOLULUK_TOLERANS
         and kullanilan_ara_gun > 0
+        and not ara_gun_otomatik_izinli
+    ):
+        teshis_bilgisi.setdefault("tamir_politikasi", {
+            "ara_gun_azaltma": tamir_politikasi.get("araGunAzaltma"),
+            "ara_gun_otomatik_izinli": False,
+            "kritik_yetki_gevsetilebilir": False,
+            "toplu_kural_kaldirma_aktif": False,
+        })
+        teshis_bilgisi.setdefault("onay_bekleyen_oneriler", []).append({
+            "aksiyon": "ara_gun_azalt",
+            "neden": f"Basarili cozumde {bos_ilk} bos slot kaldi.",
+            "politika": "kullanici_onayli",
+            "politika_nedeni": (
+                "Doluluk icin ara gun otomatik azaltilmadi; "
+                "tamirPolitikasi.araGunAzaltma='otomatik' acik onayi gerekir."
+            ),
+        })
+        tani_mesajlari.append(
+            "Bos slotlar icin ara gun azaltma onerildi ancak kullanici onayi olmadigi icin denenmedi."
+        )
+    if (
+        sonuc
+        and sonuc.basarili
+        and bos_ilk > DOLULUK_TOLERANS
+        and kullanilan_ara_gun > 0
+        and ara_gun_otomatik_izinli
         and _butce_var()
     ):
         en_iyi_sonuc = sonuc
@@ -704,24 +711,53 @@ def solve_with_diagnostics(
 
     toplam_sure_ms = int((_time.monotonic() - baslangic_toplam) * 1000)
     sonuc_istatistikleri = getattr(sonuc, "istatistikler", None) or {}
+    sonuc_onceki_status = _sonuc_status(sonuc)
+    final_bos_slot = _bos_slot_say(sonuc)
+    strict_partial = bool(
+        explicit_strict and sonuc.basarili and final_bos_slot > DOLULUK_TOLERANS
+    )
+    dis_basari = bool(sonuc.basarili and not strict_partial)
+    teshis_bilgisi.setdefault("tamir_politikasi", {}).update({
+        "mod": tamir_modu or None,
+        "otomatik_gevsetme": otomatik_gevsetme_degeri,
+        "explicit_strict": explicit_strict,
+        "kilitli_hedefler_var": kilitli_hedefler_var,
+        "plan_gevsetme_izinli": plan_gevsetme_izinli,
+    })
+    if strict_partial:
+        teshis_bilgisi.setdefault("kok_neden", "strict_bos_slot")
+        teshis_bilgisi.setdefault(
+            "kok_neden_aciklama",
+            f"Strict cozumde {final_bos_slot} slot bos kaldi; onayli tamir gerekiyor.",
+        )
+        teshis_bilgisi["partial_repair_required"] = True
+        tani_mesajlari.append(
+            f"Strict sonuc kismi: {final_bos_slot} bos slot nedeniyle basari false donuyor."
+        )
     mevcut_plan_istatistikleri = (
         sonuc_istatistikleri.get("plan", {})
         if isinstance(sonuc_istatistikleri, dict) else {}
     ) or {}
     logger.info(
         "nobet_coz tamamlandi: basarili=%s status=%s sure=%dms atama=%d gevsetme=%s",
-        sonuc.basarili,
-        _sonuc_status(sonuc),
+        dis_basari,
+        "PARTIAL_REPAIR_REQUIRED" if strict_partial else sonuc_onceki_status,
         toplam_sure_ms,
         len(sonuc.atamalar),
         bool(gevsetme_bilgisi),
     )
 
     sonuc = SolverSonuc(
-        basarili=sonuc.basarili,
+        basarili=dis_basari,
         atamalar=sonuc.atamalar,
         istatistikler={
             **sonuc_istatistikleri,
+            **({
+                "status": "PARTIAL_REPAIR_REQUIRED",
+                "solver_status_before_strict": sonuc_onceki_status,
+                "partial_repair_required": True,
+                "partial_atamalar_korundu": True,
+            } if strict_partial else {}),
             "plan": {
                 **mevcut_plan_istatistikleri,
                 **({
@@ -748,6 +784,8 @@ def solve_with_diagnostics(
         },
         sure_ms=toplam_sure_ms,
         mesaj=(
+            f"Kismi cizelge: {final_bos_slot} bos slot icin onayli tamir gerekiyor."
+            if strict_partial else
             f"{sonuc.mesaj} (ara_gun {ara_gun}->{kullanilan_ara_gun} gevsetildi)"
             if kullanilan_ara_gun != ara_gun and sonuc.basarili
             else sonuc.mesaj

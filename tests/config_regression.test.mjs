@@ -51,6 +51,11 @@ test('responses use the final relaxed plan contract and targets', () => {
   assert.match(mainPy, /ara_gun=kullanilan_ara_gun/);
 });
 
+test('HTTP endpoints do not expose the retired manual-conflict bypass', () => {
+  assert.doesNotMatch(mainPy, /ignoreManualConflicts/);
+  assert.doesNotMatch(mainPy, /ignore_manual_conflicts/);
+});
+
 test('Firebase Storage SDK is lazy-loaded outside module initialization', () => {
   assert.doesNotMatch(mainPy, /from firebase_admin import initialize_app, storage/);
   assert.match(mainPy, /from firebase_admin import storage/);

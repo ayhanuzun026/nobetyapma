@@ -1480,12 +1480,27 @@
     let aktifCozumIstekImzasi = null;
     let gunTipiDegisimKayitlari = [];
     let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
+    let hedeflerBayat = true;
+    let aktifPlanKontrati = null;
+    let aktifPlanHash = null;
 
     // Saat değerleri
     const SAAT_DEGER = { hici: 8, prs: 8, cum: 16, cmt: 24, pzr: 16 };
     const GUN_TIPI_LABEL = { hici: 'H.İçi', prs: 'Prş', cum: 'Cum', cmt: 'Cmt', pzr: 'Pzr' };
     const GUN_TIPLERI = ['hici', 'prs', 'cum', 'cmt', 'pzr'];
     const AY_ISIMLERI = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
+    const GECMIS_DONEM_POLITIKASI = 'yil_basi_onceki_ay';
+    const VARSAYILAN_TAMIR_POLITIKASI = Object.freeze({
+      mod: 'strict',
+      otomatikGevsetme: false,
+      mazeret: 'asla',
+      kritikGorevYetkisi: 'asla',
+      kisiBasinaTekGorevGun: 'asla',
+      manuelKilit: 'asla',
+      ayriKural: 'asla',
+      birlikteKural: 'kullanici_onayli',
+      araGunAzaltma: 'kullanici_onayli'
+    });
 
     // WE/WD AYRIMI: Cuma artık Hafta Sonu (WE) kategorisinde
     const WE_TIPLERI = ['cum', 'cmt', 'pzr'];  // Hafta Sonu = Cuma + Cumartesi + Pazar
@@ -1503,6 +1518,24 @@
     // WE/WD yardımcı fonksiyonları
     function isWEGun(tip) { return WE_TIPLERI.includes(tip); }
     function isWDGun(tip) { return WD_TIPLERI.includes(tip); }
+
+    function hedefleriBayatIsaretle(neden = '') {
+      hedeflerBayat = true;
+      aktifPlanKontrati = null;
+      aktifPlanHash = null;
+      if (neden) console.log(`[HEDEF] Hedefler bayat: ${neden}`);
+    }
+
+    function kuralPolitikaAlanlari(kural) {
+      const alanlar = {};
+      if (Object.prototype.hasOwnProperty.call(kural || {}, 'politika')) {
+        alanlar.politika = kural.politika;
+      }
+      if (Object.prototype.hasOwnProperty.call(kural || {}, 'aslaGevsetme')) {
+        alanlar.aslaGevsetme = kural.aslaGevsetme;
+      }
+      return alanlar;
+    }
 
     // BUG FIX (D): XSS koruması için HTML escape fonksiyonu
     function escapeHtml(text) {
@@ -1852,6 +1885,25 @@
     // ============================================
     // STEP 2: GÖREVLER
     // ============================================
+    function normalizeLoadedGorev(gorev, idx) {
+      const kaynak = gorev || {};
+      const kritik = kaynak.kritik === true;
+      const legacyAyriBina = kaynak.ayriBina === true;
+      const binaAnahtari = String(kaynak.baseName || kaynak.ad || `Gorev_${idx + 1}`).trim();
+      const varsayilanBinaId = legacyAyriBina ? `AYRI_BINA:${binaAnahtari}` : 'ANA_BINA';
+      return {
+        ...kaynak,
+        id: kaynak.id ?? (idx + 1),
+        ad: kaynak.ad || `Nöbet Yeri ${idx + 1}`,
+        ayriBina: legacyAyriBina,
+        binaId: String(kaynak.binaId || varsayilanBinaId).trim() || varsayilanBinaId,
+        kritik,
+        istisnaPolitikasi: kritik
+          ? 'asla'
+          : (kaynak.istisnaPolitikasi || 'kullanici_onayli')
+      };
+    }
+
     function gorevleriGuncelle() {
       const container = document.getElementById('gorev-listesi');
       const detayli = true; // Her zaman detaylı mod etkin
@@ -1861,10 +1913,11 @@
 
       // BUG FIX (C): Mevcut görevleri kopyala, sonra sıfırla
       const eskiGorevler = [...gorevler];
+      const gorevSayisiDegisti = eskiGorevler.length !== gunluk;
       gorevler = [];
 
       for (let i = 1; i <= gunluk; i++) {
-        const mevcut = eskiGorevler[i - 1] || {};
+        const mevcut = normalizeLoadedGorev(eskiGorevler[i - 1], i - 1);
         const varsayilanAd = `Nöbet Yeri ${i}`;
         const gorevAdi = mevcut.ad || varsayilanAd;
 
@@ -1892,6 +1945,23 @@
             Ayrı Bina (birlikte gruplar atanmasın)
           </label>
         </div>
+        <div class="input-group mt-2">
+          <label>Bina Kimliği</label>
+          <input type="text" class="gorev-bina-id" data-idx="${i - 1}" value="${escapeHtml(mevcut.binaId)}" onchange="gorevDegisti()" placeholder="ANA_BINA">
+        </div>
+        <div class="input-group mt-2">
+          <label>
+            <input type="checkbox" class="gorev-kritik" data-idx="${i - 1}" ${mevcut.kritik ? 'checked' : ''} onchange="gorevDegisti()">
+            Kritik Görev (yetki otomatik gevşetilmez)
+          </label>
+        </div>
+        <div class="input-group mt-2">
+          <label>İstisna Politikası</label>
+          <select class="gorev-istisna-politikasi" data-idx="${i - 1}" onchange="gorevDegisti()" ${mevcut.kritik ? 'disabled' : ''}>
+            <option value="asla" ${mevcut.istisnaPolitikasi === 'asla' ? 'selected' : ''}>Asla</option>
+            <option value="kullanici_onayli" ${mevcut.istisnaPolitikasi === 'kullanici_onayli' ? 'selected' : ''}>Kullanıcı Onaylı</option>
+          </select>
+        </div>
       `;
           container.appendChild(div);
         }
@@ -1900,7 +1970,10 @@
           id: mevcut.id ?? i,
           ad: gorevAdi,
           ozel: mevcut.ozel !== undefined ? mevcut.ozel : isOzel,
-          ayriBina: mevcut.ayriBina === true
+          ayriBina: mevcut.ayriBina === true,
+          binaId: mevcut.binaId,
+          kritik: mevcut.kritik === true,
+          istisnaPolitikasi: mevcut.istisnaPolitikasi
         });
       }
 
@@ -1929,6 +2002,36 @@
         const idx = parseInt(inp.dataset.idx);
         if (gorevler[idx]) gorevler[idx].ayriBina = inp.checked;
       });
+      document.querySelectorAll('.gorev-bina-id').forEach(inp => {
+        const idx = parseInt(inp.dataset.idx);
+        if (gorevler[idx]) {
+          const binaAnahtari = gorevler[idx].baseName || gorevler[idx].ad || `Gorev_${idx + 1}`;
+          gorevler[idx].binaId = inp.value.trim() || (gorevler[idx].ayriBina ? `AYRI_BINA:${binaAnahtari}` : 'ANA_BINA');
+        }
+      });
+      document.querySelectorAll('.gorev-kritik').forEach(inp => {
+        const idx = parseInt(inp.dataset.idx);
+        if (!gorevler[idx]) return;
+        gorevler[idx].kritik = inp.checked;
+        const politikaSelect = document.querySelector(`.gorev-istisna-politikasi[data-idx="${idx}"]`);
+        if (inp.checked) {
+          gorevler[idx].istisnaPolitikasi = 'asla';
+          if (politikaSelect) {
+            politikaSelect.value = 'asla';
+            politikaSelect.disabled = true;
+          }
+        } else if (politikaSelect) {
+          politikaSelect.disabled = false;
+        }
+      });
+      document.querySelectorAll('.gorev-istisna-politikasi').forEach(inp => {
+        const idx = parseInt(inp.dataset.idx);
+        if (gorevler[idx] && !gorevler[idx].kritik) {
+          gorevler[idx].istisnaPolitikasi = inp.value || 'kullanici_onayli';
+        }
+      });
+      hedefleriBayatIsaretle('Görev tanımı değişti.');
+      if (gorevSayisiDegisti) hedefleriBayatIsaretle('Günlük görev sayısı değişti.');
       kaydetDebounced();
     }
 
@@ -1955,8 +2058,40 @@
     // ============================================
     // STEP 3: PERSONEL
     // ============================================
+    function normalizeYetkiliGorevler(value) {
+      const hamListe = Array.isArray(value)
+        ? value
+        : (typeof value === 'string' ? value.split(/[,;]/) : []);
+      return [...new Set(
+        hamListe
+          .map(gorev => String(gorev || '').trim())
+          .filter(Boolean)
+      )];
+    }
+
+    function normalizeLoadedPersonel(personel) {
+      const kaynak = personel || {};
+      const katsayiRaw = Number.parseFloat(kaynak.isYukuKatsayisi);
+      const minRaw = Number.parseInt(kaynak.minNobet, 10);
+      const maxBos = kaynak.maxNobet === null || kaynak.maxNobet === undefined || kaynak.maxNobet === '';
+      const maxRaw = maxBos ? null : Number.parseInt(kaynak.maxNobet, 10);
+      const minNobet = Number.isFinite(minRaw) ? Math.max(0, minRaw) : 0;
+      let maxNobet = Number.isFinite(maxRaw) ? Math.max(0, maxRaw) : null;
+      if (maxNobet !== null && maxNobet < minNobet) maxNobet = minNobet;
+
+      return {
+        ...kaynak,
+        isYukuKatsayisi: Number.isFinite(katsayiRaw) ? Math.max(0, katsayiRaw) : 1,
+        minNobet,
+        maxNobet,
+        esitlemedenMuaf: kaynak.esitlemedenMuaf === true,
+        adaletGrubu: String(kaynak.adaletGrubu || 'normal').trim() || 'normal',
+        yetkiliGorevler: normalizeYetkiliGorevler(kaynak.yetkiliGorevler)
+      };
+    }
+
     function personelEkle(ad = '', gecmis = null) {
-      personelListesi.push({
+      personelListesi.push(normalizeLoadedPersonel({
         id: yeniPersonelId(),
         ad: ad,
         // Yıllık geçmiş: { 2024: { 1: {hici:0, prs:0, ...}, 2: {...}, ... }, 2025: {...} }
@@ -1970,8 +2105,15 @@
         hedef: { hici: 0, prs: 0, cum: 0, cmt: 0, pzr: 0 },
         gorevKotalari: {},
         // Devir bilgisi
-        devir: {}
-      });
+        devir: {},
+        isYukuKatsayisi: 1,
+        minNobet: 0,
+        maxNobet: null,
+        esitlemedenMuaf: false,
+        adaletGrubu: 'normal',
+        yetkiliGorevler: []
+      }));
+      hedefleriBayatIsaretle('Personel eklendi.');
       personelTablosuGuncelle();
       ozetTablosuGuncelle();
       kaydetDebounced();
@@ -1979,6 +2121,7 @@
 
     function personelSil(id) {
       personelListesi = personelListesi.filter(p => String(p.id) !== String(id));
+      hedefleriBayatIsaretle('Personel silindi.');
       personelTablosuGuncelle();
       ozetTablosuGuncelle();
       kaydetDebounced();
@@ -1995,6 +2138,12 @@
     <tr>
       <th style="width:40px;">No</th>
       <th style="min-width:150px;">Ad Soyad</th>
+      <th style="width:90px;">İş Yükü</th>
+      <th style="width:80px;">Min.</th>
+      <th style="width:80px;">Maks.</th>
+      <th style="width:90px;">Eşitleme Muaf</th>
+      <th style="min-width:110px;">Adalet Grubu</th>
+      <th style="min-width:190px;">Yetkili Görevler <small>(boş=genel görevler)</small></th>
       <th style="width:100px;">Yıllık Özet</th>
       <th style="width:60px;">Sil</th>
     </tr>
@@ -2008,6 +2157,12 @@
         tr.innerHTML = `
       <td>${idx + 1}</td>
       <td><input type="text" class="inp-cell" value="${escapeHtml(p.ad)}" onchange="personelAdDegisti(${idx}, this.value)" style="text-align:left;"></td>
+      <td><input type="number" class="inp-cell personel-model-input" data-personel-id="${escapeHtml(p.id)}" data-alan="isYukuKatsayisi" value="${p.isYukuKatsayisi}" min="0" step="0.05"></td>
+      <td><input type="number" class="inp-cell personel-model-input" data-personel-id="${escapeHtml(p.id)}" data-alan="minNobet" value="${p.minNobet}" min="0" step="1"></td>
+      <td><input type="number" class="inp-cell personel-model-input" data-personel-id="${escapeHtml(p.id)}" data-alan="maxNobet" value="${p.maxNobet ?? ''}" min="0" step="1" placeholder="Yok"></td>
+      <td><input type="checkbox" class="personel-model-input" data-personel-id="${escapeHtml(p.id)}" data-alan="esitlemedenMuaf" ${p.esitlemedenMuaf ? 'checked' : ''}></td>
+      <td><input type="text" class="inp-cell personel-model-input" data-personel-id="${escapeHtml(p.id)}" data-alan="adaletGrubu" value="${escapeHtml(p.adaletGrubu)}" style="text-align:left;"></td>
+      <td><input type="text" class="inp-cell personel-model-input" data-personel-id="${escapeHtml(p.id)}" data-alan="yetkiliGorevler" value="${escapeHtml((p.yetkiliGorevler || []).join(', '))}" placeholder="AMATEM, MAVİ KOD" style="text-align:left;"></td>
       <td><span class="badge badge-info">${yillikToplam.toplam} nöbet</span></td>
       <td><button class="btn btn-danger btn-sm personel-sil-btn" data-personel-id="${escapeHtml(p.id)}"><i class="fa-solid fa-trash"></i></button></td>
     `;
@@ -2016,10 +2171,50 @@
       tbody.querySelectorAll('.personel-sil-btn').forEach(btn => {
         btn.addEventListener('click', () => personelSil(btn.dataset.personelId));
       });
+      tbody.querySelectorAll('.personel-model-input').forEach(input => {
+        input.addEventListener('change', () => {
+          const deger = input.type === 'checkbox' ? input.checked : input.value;
+          personelModelAlaniGuncelle(input.dataset.personelId, input.dataset.alan, deger);
+        });
+      });
     }
 
     function personelAdDegisti(idx, ad) {
       personelListesi[idx].ad = ad;
+      kaydetDebounced();
+    }
+
+    function personelModelAlaniGuncelle(personelId, alan, deger) {
+      const personel = personelListesi.find(p => String(p.id) === String(personelId));
+      if (!personel) return;
+
+      if (alan === 'isYukuKatsayisi') {
+        const sayi = Number.parseFloat(deger);
+        personel.isYukuKatsayisi = Number.isFinite(sayi) ? Math.max(0, sayi) : 1;
+      } else if (alan === 'minNobet') {
+        const sayi = Number.parseInt(deger, 10);
+        personel.minNobet = Number.isFinite(sayi) ? Math.max(0, sayi) : 0;
+        if (personel.maxNobet !== null && personel.maxNobet < personel.minNobet) {
+          personel.maxNobet = personel.minNobet;
+        }
+      } else if (alan === 'maxNobet') {
+        if (deger === '') {
+          personel.maxNobet = null;
+        } else {
+          const sayi = Number.parseInt(deger, 10);
+          personel.maxNobet = Number.isFinite(sayi) ? Math.max(personel.minNobet || 0, sayi) : null;
+        }
+      } else if (alan === 'esitlemedenMuaf') {
+        personel.esitlemedenMuaf = deger === true;
+      } else if (alan === 'adaletGrubu') {
+        personel.adaletGrubu = String(deger || 'normal').trim() || 'normal';
+      } else if (alan === 'yetkiliGorevler') {
+        personel.yetkiliGorevler = normalizeYetkiliGorevler(deger);
+      } else {
+        return;
+      }
+
+      hedefleriBayatIsaretle(`Personel adalet alanı değişti: ${alan}`);
       kaydetDebounced();
     }
 
@@ -2039,6 +2234,65 @@
       });
 
       return toplam;
+    }
+
+    function gecmisOzetOlustur(personel, yil, ay) {
+      const seciliYil = Number.parseInt(yil, 10);
+      const seciliAy = Number.parseInt(ay, 10);
+      const bitisAy = Number.isFinite(seciliAy) ? Math.max(0, Math.min(12, seciliAy - 1)) : 0;
+      const yillikGerceklesen = Object.fromEntries(GUN_TIPLERI.map(tip => [tip, 0]));
+      const gecmisGorevler = {};
+      const yilVerisi = personel?.yillikGecmis?.[seciliYil] || {};
+      let veriAySayisi = 0;
+      let gunTipiToplam = 0;
+      let gorevToplam = 0;
+
+      for (let gecmisAy = 1; gecmisAy <= bitisAy; gecmisAy++) {
+        const ayVerisi = yilVerisi[gecmisAy] || {};
+        let aydaVeriVar = false;
+
+        GUN_TIPLERI.forEach(tip => {
+          const sayi = Number.parseInt(ayVerisi[tip], 10) || 0;
+          yillikGerceklesen[tip] += sayi;
+          gunTipiToplam += sayi;
+          if (sayi > 0) aydaVeriVar = true;
+        });
+
+        if (ayVerisi.gorevler && typeof ayVerisi.gorevler === 'object') {
+          Object.entries(ayVerisi.gorevler).forEach(([gorevAdi, hamSayi]) => {
+            const sayi = Number.parseInt(hamSayi, 10) || 0;
+            gecmisGorevler[gorevAdi] = (gecmisGorevler[gorevAdi] || 0) + sayi;
+            gorevToplam += sayi;
+            if (sayi > 0) aydaVeriVar = true;
+          });
+        }
+
+        if (aydaVeriVar) veriAySayisi++;
+      }
+
+      const gecmisDonem = {
+        politika: GECMIS_DONEM_POLITIKASI,
+        baslangicYil: seciliYil,
+        baslangicAy: 1,
+        bitisYil: seciliYil,
+        bitisAy,
+        baslangic: `${seciliYil}-01`,
+        bitis: bitisAy > 0 ? `${seciliYil}-${String(bitisAy).padStart(2, '0')}` : null
+      };
+      const veriVar = gunTipiToplam > 0 || gorevToplam > 0;
+      const izinliVeriDurumlari = new Set(['tam', 'kismi', 'yeni', 'bilinmiyor']);
+      const kayitliVeriDurumu = String(personel?.gecmisVeriDurumu || '').trim().toLowerCase();
+      const gecmisVeriDurumu = izinliVeriDurumlari.has(kayitliVeriDurumu)
+        ? kayitliVeriDurumu
+        : (veriVar ? 'tam' : 'bilinmiyor');
+      const gecmisVeriOzeti = {
+        veriVar,
+        aySayisi: veriAySayisi,
+        gunTipiToplam,
+        gorevToplam
+      };
+
+      return { yillikGerceklesen, gecmisGorevler, gecmisDonem, gecmisVeriDurumu, gecmisVeriOzeti };
     }
 
     function ozetTablosuGuncelle() {
@@ -3249,6 +3503,7 @@
         gorevBaseAdi: normalizeGorevAdi(gorev.baseName || gorev.ad),
         mazeretOnayli
       });
+      hedefleriBayatIsaretle('Manuel atama eklendi.');
 
       // Input temizle
       document.getElementById('manuel-gun').value = '';
@@ -3261,6 +3516,7 @@
     function manuelAtamaSil(idx) {
       const silinen = manuelAtamalar[idx];
       manuelAtamalar.splice(idx, 1);
+      hedefleriBayatIsaretle('Manuel atama silindi.');
 
       // İlgili istisnayı da sil
       if (silinen) {
@@ -3930,6 +4186,8 @@
         }
       });
 
+      hedefleriBayatIsaretle('Excel üzerinden manuel atama eklendi.');
+
       _pendingNobetler = null; // Temizle
       manuelAtamaListesiGuncelle();
       kaydetDebounced();
@@ -3959,6 +4217,8 @@
           }
         }
       });
+
+      hedefleriBayatIsaretle('Excel üzerinden manuel atama eklendi.');
 
       manuelAtamaListesiGuncelle();
       kaydetDebounced();
@@ -4258,6 +4518,7 @@
           // OR-Tools sonuçlarını personel hedeflerine uygula
           let eslesmeyen = 0;
           const eslestirilenIds = new Set(); // Duplicate ID kontrolü için
+          const backendKotaPersonelIds = new Set();
           result.hedefler.forEach(h => {
             // Önce ID ile bul, duplicate varsa ad ile eşleştir
             let p = null;
@@ -4291,6 +4552,10 @@
             const pid = String(p.id);
             if (kilitliHedefler.hasOwnProperty(pid)) {
               p.hedef = { ...kilitliHedefler[pid] };
+              if (h.gorev_kotalari && Object.keys(h.gorev_kotalari).length > 0) {
+                p.gorevKotalari = { ...h.gorev_kotalari };
+                backendKotaPersonelIds.add(pid);
+              }
               console.log(`[KILIT] ${p.ad} kilitli - hedef korundu:`, p.hedef);
               return; // WE/WD, birlikte, kota da kilitli kalır
             }
@@ -4323,10 +4588,14 @@
             }
 
             // Görev kotalarını kaydet
-            if (h.gorev_kotalari) {
-              p.gorevKotalari = h.gorev_kotalari;
+            if (h.gorev_kotalari && Object.keys(h.gorev_kotalari).length > 0) {
+              p.gorevKotalari = { ...h.gorev_kotalari };
+              backendKotaPersonelIds.add(String(p.id));
             }
           });
+
+          aktifPlanKontrati = result.planKontrati || null;
+          aktifPlanHash = result.planHash || result.planKontrati?.plan_hash || null;
 
           // Birlikte atamalarını global'e kaydet
           if (result.birlikteAtamalar) {
@@ -4340,17 +4609,21 @@
             console.log('[HEDEF] OR-Tools görev kotaları alındı:', Object.keys(result.gorevKotalari));
           }
 
-          // Görev kotalarını dağıt (tek seferlik)
+          // Backend kişi kotaları yoksa legacy yerel dağıtımı kullan.
           const ozelGorevler = getOzelGorevler();
-          if (ozelGorevler.length > 0) {
+          if (ozelGorevler.length > 0 && backendKotaPersonelIds.size === 0) {
             const { yil, ay } = getYilAy();
             const gunSayisi = getGunSayisi(yil, ay);
             ozelGorevKotalariniDagit(ozelGorevler, gunSayisi);
+          } else if (backendKotaPersonelIds.size > 0) {
+            console.log(`[HEDEF] Backend kişi görev kotaları korunuyor: ${backendKotaPersonelIds.size} kişi`);
           }
 
           // Tabloyu güncelle
           hedefTablosuGuncelle();
           ozelGorevSectionGuncelle();
+          hedeflerBayat = false;
+          kaydetDebounced();
 
           console.log(`[HEDEF] OR-Tools hedef hesaplama başarılı: ${personelListesi.length} kişi eşleştirildi`);
           if (eslesmeyen > 0) {
@@ -4358,9 +4631,11 @@
           }
           return true;
         }
+        hedeflerBayat = true;
         return false;
       } catch (error) {
         console.error('OR-Tools hedef hesaplama hatası:', error);
+        hedeflerBayat = true;
         return false;
       }
     }
@@ -6804,7 +7079,9 @@
         kilitliHedefler[pid] = { ...p.hedef };
         console.log(`[KILIT] ${p.ad} kilitlendi:`, kilitliHedefler[pid]);
       }
+      hedefleriBayatIsaretle('Hedef kilidi değişti.');
       hedefTablosuGuncelle();
+      kaydetDebounced();
     }
 
     function hedefDuzenle(idx, tip, cell) {
@@ -7583,11 +7860,6 @@
         )
       );
 
-      const birlikteIstisnaSet = new Set(
-        (birlikteIstisnalari || []).map(ist =>
-          `${String(ist.personelId)}|${parseInt(ist.gun, 10)}`
-        )
-      );
       const araGunIstisnaSet = new Set(
         (araGunIstisnalari || []).map(ist =>
           `${String(ist.personelId)}|${Math.min(ist.gun1, ist.gun2)}|${Math.max(ist.gun1, ist.gun2)}`
@@ -7597,14 +7869,6 @@
       const ayriPairs = kurallar
         .filter(k => k.tur === 'ayri')
         .map(k => [String(k.p1), String(k.p2)]);
-      const birlikteUyeSet = new Set(
-        kurallar
-          .filter(k => k.tur === 'birlikte')
-          .flatMap(k => (k.kisiler || []).map(String))
-      );
-      const ayriBinaSlotlar = new Set(
-        gorevler.map((g, idx) => ({ g, idx })).filter(x => x.g.ayriBina === true).map(x => x.idx)
-      );
       const roleAllowedMap = {};
       Object.entries(gorevHavuzlari || {}).forEach(([role, ids]) => {
         roleAllowedMap[normalizeGorevAdi(role)] = new Set((ids || []).map(String));
@@ -7617,6 +7881,7 @@
 
       const perPersonDay = {};
       const perSlotDay = {};
+      const manuelBinalarByDay = new Map();
 
       manuelAtamalar.forEach((m, idx) => {
         const pid = String(m.personelId);
@@ -7642,6 +7907,14 @@
         const keySD = `${gun}|${slotIdx}`;
         perPersonDay[keyPD] = (perPersonDay[keyPD] || 0) + 1;
         perSlotDay[keySD] = (perSlotDay[keySD] || 0) + 1;
+        const gorev = gorevler[slotIdx];
+        const binaId = String(
+          gorev?.binaId || (gorev?.ayriBina ? `AYRI_BINA:${gorev.baseName || gorev.ad}` : 'ANA_BINA')
+        );
+        if (!manuelBinalarByDay.has(gun)) manuelBinalarByDay.set(gun, new Map());
+        const gunBinalari = manuelBinalarByDay.get(gun);
+        if (!gunBinalari.has(pid)) gunBinalari.set(pid, new Set());
+        gunBinalari.get(pid).add(binaId);
 
         if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) {
           if (m.mazeretOnayli === true) {
@@ -7675,14 +7948,6 @@
           }
         }
 
-        if (ayriBinaSlotlar.has(slotIdx) && birlikteUyeSet.has(pid)) {
-          const birlikteKey = `${pid}|${gun}`;
-          if (birlikteIstisnaSet.has(birlikteKey)) {
-            uyari.push(`[M${idx}] ${p.ad}: birlikte kurali uyesi ama ayri bina slotuna atanmis (${gun}. gun) [istisna onaylanmis]`);
-          } else {
-            kritik.push(`[M${idx}] ${p.ad}: birlikte kurali uyesi ama ayri bina slotuna atanmis (${gun}. gun)`);
-          }
-        }
       });
 
       Object.entries(perPersonDay).forEach(([key, cnt]) => {
@@ -7725,19 +7990,16 @@
         }
       });
 
-      const ayriMapByDay = {};
-      manuelAtamalar.forEach(m => {
-        const gun = parseInt(m.gun, 10);
-        if (!(gun >= 1 && gun <= gunSayisi)) return;
-        if (!ayriMapByDay[gun]) ayriMapByDay[gun] = new Set();
-        ayriMapByDay[gun].add(String(m.personelId));
-      });
-      Object.entries(ayriMapByDay).forEach(([gun, pidSet]) => {
+      manuelBinalarByDay.forEach((kisiBinalari, gun) => {
         ayriPairs.forEach(([p1, p2]) => {
-          if (pidSet.has(p1) && pidSet.has(p2)) {
+          const p1Binalari = kisiBinalari.get(p1);
+          const p2Binalari = kisiBinalari.get(p2);
+          if (p1Binalari && p2Binalari) {
+            const ortakBinalar = [...p1Binalari].filter(binaId => p2Binalari.has(binaId));
+            if (ortakBinalar.length === 0) return;
             const n1 = personelListesi.find(x => String(x.id) === p1)?.ad || p1;
             const n2 = personelListesi.find(x => String(x.id) === p2)?.ad || p2;
-            kritik.push(`${gun}. gunde ayri kurali ihlali: ${n1} & ${n2}`);
+            kritik.push(`${gun}. gunde ayni bina ayri kurali ihlali: ${n1} & ${n2} (${ortakBinalar.join(', ')})`);
           }
         });
       });
@@ -7746,7 +8008,7 @@
         uyari.push(`Kisitlama istisnasi aktif: ${kisitlamaIstisnalari.length} adet`);
       }
       if (birlikteIstisnalari.length > 0) {
-        uyari.push(`Birlikte+ayri bina istisnasi aktif: ${birlikteIstisnalari.length} adet`);
+        uyari.push(`Birlikte kurali istisnasi aktif: ${birlikteIstisnalari.length} adet`);
       }
       if (araGunIstisnalari.length > 0) {
         uyari.push(`Ara gun istisnasi aktif: ${araGunIstisnalari.length} adet`);
@@ -7940,29 +8202,20 @@
         // Kısıtlamalı görev
         const kisitlama = gorevKisitlamalari.find(k => String(k.personelId) === String(p.id));
 
-        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
-        const yillikGerceklesen = {};
-        const gecmisGorevler = {};
-        const gecmis = p.yillikGecmis?.[yil] || {};
-        for (let m = 1; m < ay; m++) {
-          const ayData = gecmis[m] || {};
-          GUN_TIPLERI.forEach(tip => {
-            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (ayData[tip] || 0);
-          });
-          if (ayData.gorevler) {
-            Object.entries(ayData.gorevler).forEach(([gorev, sayi]) => {
-              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
-            });
-          }
-        }
+        const gecmisOzeti = gecmisOzetOlustur(p, yil, ay);
 
         return {
           id: p.id,
           ad: p.ad,
           mazeretler: mazeretler,
           kisitliGorev: kisitlama?.gorevAdi || null,
-          yillikGerceklesen: yillikGerceklesen,
-          gecmisGorevler: gecmisGorevler
+          isYukuKatsayisi: p.isYukuKatsayisi ?? 1,
+          minNobet: p.minNobet ?? 0,
+          maxNobet: p.maxNobet ?? null,
+          esitlemedenMuaf: p.esitlemedenMuaf === true,
+          adaletGrubu: p.adaletGrubu || 'normal',
+          yetkiliGorevler: normalizeYetkiliGorevler(p.yetkiliGorevler),
+          ...gecmisOzeti
         };
       });
 
@@ -7972,7 +8225,10 @@
         ad: g.ad,
         baseName: g.baseName || g.ad,
         exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad)),
-        ayriBina: g.ayriBina === true
+        ayriBina: g.ayriBina === true,
+        binaId: g.binaId || (g.ayriBina ? `AYRI_BINA:${g.baseName || g.ad}` : 'ANA_BINA'),
+        kritik: g.kritik === true,
+        istisnaPolitikasi: g.kritik ? 'asla' : (g.istisnaPolitikasi || 'kullanici_onayli')
       }));
 
       // Kuralları hazırla
@@ -7981,9 +8237,9 @@
       console.log(`[HEDEF] Kurallar: ${birlikteCount} birlikte, ${ayriCount} ayrı`);
       const kuralData = kurallar.map(k => {
         if (k.tur === 'birlikte') {
-          return { tur: 'birlikte', kisiler: k.kisiler };
+          return { tur: 'birlikte', kisiler: k.kisiler, ...kuralPolitikaAlanlari(k) };
         } else {
-          return { tur: 'ayri', kisiler: [k.p1, k.p2] };
+          return { tur: 'ayri', kisiler: [k.p1, k.p2], ...kuralPolitikaAlanlari(k) };
         }
       });
 
@@ -8015,6 +8271,8 @@
       });
 
       const requestData = {
+        sozlesmeSurumu: 2,
+        gecmisDonemPolitikasi: GECMIS_DONEM_POLITIKASI,
         gunSayisi,
         gunTipleri,
         araGun,
@@ -8073,8 +8331,10 @@
           return toplam === 0;
         }).length;
 
-        if (hedefBosKisi > personelListesi.length / 2) {
-          console.log('[LOCK] Hedefler boş, önce hesaplanıyor...');
+        if (hedeflerBayat || hedefBosKisi > personelListesi.length / 2) {
+          console.log(hedeflerBayat
+            ? '[LOCK] Hedef girdileri değişti, hedefler yeniden hesaplanıyor...'
+            : '[LOCK] Hedefler boş, önce hesaplanıyor...');
           // Lock kontrolü - zaten çalışıyorsa bekle
           if (hedefHesaplamaAktif) {
             console.warn('[LOCK] Hedef hesaplama zaten çalışıyor, listeOlustur bekliyor...');
@@ -8085,7 +8345,9 @@
               beklemeSayaci++;
             }
             if (hedefHesaplamaAktif) {
-              console.error('[LOCK] Hedef hesaplama 30sn içinde bitmedi, devam ediliyor...');
+              throw new Error('Hedef hesaplama 30 saniye içinde tamamlanmadı; çözüm başlatılmadı.');
+            } else if (hedeflerBayat) {
+              throw new Error('Hedef hesaplama tamamlanamadı; bayat hedeflerle çözüm başlatılmadı.');
             }
           } else {
             // OR-Tools aktifse OR-Tools ile hesapla
@@ -8185,36 +8447,28 @@
     }
 
     // OR-Tools ile liste oluştur
-    async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk, ignoreManualConflicts = false) {
+    async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
       solverSorunRaporu = null;
       solverTeshisGuncelle();
       const ozelGorevler = getOzelGorevler();
+      const saatDegerleri = Object.fromEntries(
+        GUN_TIPLERI.map(tip => [tip, getSaatDeger(tip)])
+      );
 
       // Görev listesi - baseName önemli!
       const gorevlerData = gorevler.map((g, idx) => ({
         id: g.id,
         ad: g.ad,
         baseName: g.baseName || g.ad.replace(/ #\d+$/, ''), // "AMELİYATHANE #1" -> "AMELİYATHANE"
-        ayriBina: g.ayriBina === true
+        ayriBina: g.ayriBina === true,
+        binaId: g.binaId || (g.ayriBina ? `AYRI_BINA:${g.baseName || g.ad}` : 'ANA_BINA'),
+        kritik: g.kritik === true,
+        istisnaPolitikasi: g.kritik ? 'asla' : (g.istisnaPolitikasi || 'kullanici_onayli')
       }));
 
       // Personel verileri - gün tipi hedefleri + görev kotaları
       const personelVerileri = personelListesi.map(p => {
-        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
-        const yillikGerceklesen = {};
-        const gecmisGorevler = {};
-        const gecmis = p.yillikGecmis?.[yil] || {};
-        for (let m = 1; m < ay; m++) {
-          const mData = gecmis[m] || {};
-          GUN_TIPLERI.forEach(tip => {
-            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (mData[tip] || 0);
-          });
-          if (mData.gorevler) {
-            Object.entries(mData.gorevler).forEach(([gorev, sayi]) => {
-              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
-            });
-          }
-        }
+        const gecmisOzeti = gecmisOzetOlustur(p, yil, ay);
 
         return {
           id: p.id,
@@ -8230,17 +8484,28 @@
           pzr: p.hedef?.pzr || 0,
           // Görev kotaları (AMELİYATHANE, MAVİ KOD, AMATEM vb.)
           gorevKotalari: p.gorevKotalari || {},
-          yillikGerceklesen: yillikGerceklesen,
-          gecmisGorevler: gecmisGorevler
+          isYukuKatsayisi: p.isYukuKatsayisi ?? 1,
+          minNobet: p.minNobet ?? 0,
+          maxNobet: p.maxNobet ?? null,
+          esitlemedenMuaf: p.esitlemedenMuaf === true,
+          adaletGrubu: p.adaletGrubu || 'normal',
+          yetkiliGorevler: normalizeYetkiliGorevler(p.yetkiliGorevler),
+          ...gecmisOzeti
         };
       });
 
       // Kurallar
       const kurallarData = kurallar.map(k => {
         if (k.tur === 'birlikte') {
-          return { tur: 'birlikte', p1: k.kisiler?.[0], p2: k.kisiler?.[1], p3: k.kisiler?.[2] };
+          return {
+            tur: 'birlikte',
+            p1: k.kisiler?.[0],
+            p2: k.kisiler?.[1],
+            p3: k.kisiler?.[2],
+            ...kuralPolitikaAlanlari(k)
+          };
         } else {
-          return { tur: 'ayri', p1: k.p1, p2: k.p2 };
+          return { tur: 'ayri', p1: k.p1, p2: k.p2, ...kuralPolitikaAlanlari(k) };
         }
       });
 
@@ -8293,10 +8558,12 @@
       }));
 
       const requestData = {
+        sozlesmeSurumu: 2,
         yil,
         ay,
         slotSayisi: gunluk,
         araGun,
+        saatDegerleri,
         maxSure: 300, // 5 dakika
         gorevler: gorevlerData,
         personeller: personelVerileri,
@@ -8307,9 +8574,12 @@
         kisitlamaIstisnalari: kisitlamaIstisnalariData,
         birlikteIstisnalari: birlikteIstisnalariData,
         araGunIstisnalari: araGunIstisnalariData,
+        kilitliHedefler: kilitliHedefler,
+        gecmisDonemPolitikasi: GECMIS_DONEM_POLITIKASI,
+        tamirPolitikasi: { ...VARSAYILAN_TAMIR_POLITIKASI },
+        planHash: aktifPlanHash,
         kisitlamaExclusive: kisitlamaExclusive,
-        resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip })),
-        ignoreManualConflicts: ignoreManualConflicts
+        resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };
 
       console.log(
@@ -8346,24 +8616,7 @@
         solverSorunRaporu = solverSorunRaporuHazirla(result, requestData);
         solverTeshisGuncelle();
 
-        // Çözüm bulunamadı - manuel çakışma varsa kullanıcıya sor
         const istatistikler = result.istatistikler || {};
-        if (istatistikler.status === 'MANUAL_CONFLICT' && istatistikler.manual_conflicts?.length) {
-          const conflicts = istatistikler.manual_conflicts;
-          const onizleme = conflicts.slice(0, 10).map(c => `• ${c.mesaj || c.code}`).join('\n');
-          const devam = confirm(
-            `⚠️ Manuel atamalarda ${conflicts.length} çakışma bulundu:\n\n` +
-            `${onizleme}\n` +
-            (conflicts.length > 10 ? `\n...ve ${conflicts.length - 10} tane daha\n` : '') +
-            `\nBu çakışmaları yok sayıp çözüme devam etmek ister misiniz?\n\n` +
-            `[Tamam] = Çakışmalar görmezden gelinir, çözüm denenir\n` +
-            `[İptal] = İşlem durdurulur`
-          );
-          if (devam) {
-            console.log('Manuel çakışmalar kullanıcı onayıyla yok sayılıyor, tekrar deneniyor...');
-            return await listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk, true);
-          }
-        }
 
         // Çözüm bulunamadı - ara gün 1 ile tekrar denenebilir mi?
         if (istatistikler.status === 'INFEASIBLE' && istatistikler.ara_gun_1_dene && araGun > 1) {
@@ -8461,19 +8714,38 @@
       const atanan = {};
       let toplamAtama = 0;
 
-      for (let d = 1; d <= gunSayisi; d++) {
-        atanan[d] = {};
-        const gunAtamalari = result.cizelge?.[String(d)] || result.cizelge?.[d] || [];
+      for (let gunNo = 1; gunNo <= gunSayisi; gunNo++) {
+        atanan[gunNo] = {};
+      }
 
-        if (d <= 3) {
-          console.log(`Gün ${d} atamaları:`, gunAtamalari);
+      // Yeni sözleşmede ID tabanlı ham atamalar önceliklidir.
+      if (Array.isArray(result.atamalar)) {
+        result.atamalar.forEach(atama => {
+          const gunNo = Number.parseInt(atama.gun, 10);
+          const slotIdx = Number.parseInt(atama.slot_idx ?? atama.slotIdx, 10);
+          const personelId = atama.personel_id ?? atama.personelId;
+          const personel = personelListesi.find(kisi => String(kisi.id) === String(personelId));
+          if (!personel || !atanan[gunNo] || !(slotIdx >= 0 && slotIdx < siraliGorevler.length)) return;
+          if (atanan[gunNo][slotIdx] === undefined) {
+            atanan[gunNo][slotIdx] = personel.id;
+            toplamAtama++;
+          }
+        });
+      }
+
+      // Eski backend yanıtları ve normalize edilmiş legacy ID'ler için isim fallback'i.
+      for (let gunNo = 1; gunNo <= gunSayisi; gunNo++) {
+        const gunAtamalari = result.cizelge?.[String(gunNo)] || result.cizelge?.[gunNo] || [];
+
+        if (gunNo <= 3) {
+          console.log(`Gün ${gunNo} atamaları:`, gunAtamalari);
         }
 
         gunAtamalari.forEach((isim, idx) => {
-          if (isim && isim !== '-' && isim !== null) {
-            const p = personelListesi.find(x => x.ad === isim);
-            if (p) {
-              atanan[d][idx] = p.id;
+          if (atanan[gunNo][idx] === undefined && isim && isim !== '-' && isim !== null) {
+            const personel = personelListesi.find(kisi => kisi.ad === isim);
+            if (personel) {
+              atanan[gunNo][idx] = personel.id;
               toplamAtama++;
             } else {
               console.warn(`Personel bulunamadı: "${isim}"`);
@@ -8528,7 +8800,10 @@
         id: g.id,
         ad: g.ad,
         baseName: g.baseName || g.ad.replace(/ #\d+$/, ''), // "Mavi Kod #1" -> "Mavi Kod"
-        ayriBina: g.ayriBina === true
+        ayriBina: g.ayriBina === true,
+        binaId: g.binaId || (g.ayriBina ? `AYRI_BINA:${g.baseName || g.ad}` : 'ANA_BINA'),
+        kritik: g.kritik === true,
+        istisnaPolitikasi: g.kritik ? 'asla' : (g.istisnaPolitikasi || 'kullanici_onayli')
       }));
 
       // Personel verileri
@@ -8537,21 +8812,7 @@
         const yillik = yillikToplamHesapla(p);
         const yillikToplam = GUN_TIPLERI.reduce((s, t) => s + yillik[t], 0);
 
-        // Yıllık geçmiş toplamları (seçili aydan önceki aylar)
-        const yillikGerceklesen = {};
-        const gecmisGorevler = {};
-        const gecmis = p.yillikGecmis?.[yil] || {};
-        for (let m = 1; m < ay; m++) {
-          const mData = gecmis[m] || {};
-          GUN_TIPLERI.forEach(tip => {
-            yillikGerceklesen[tip] = (yillikGerceklesen[tip] || 0) + (mData[tip] || 0);
-          });
-          if (mData.gorevler) {
-            Object.entries(mData.gorevler).forEach(([gorev, sayi]) => {
-              gecmisGorevler[gorev] = (gecmisGorevler[gorev] || 0) + sayi;
-            });
-          }
-        }
+        const gecmisOzeti = gecmisOzetOlustur(p, yil, ay);
 
         return {
           id: p.id,
@@ -8567,8 +8828,13 @@
           nobetIzinleri: p.nobetIzinleri || [],
           yillikToplam: yillikToplam,
           devir: {}, // Devir bilgisi (şimdilik boş)
-          yillikGerceklesen: yillikGerceklesen,
-          gecmisGorevler: gecmisGorevler
+          isYukuKatsayisi: p.isYukuKatsayisi ?? 1,
+          minNobet: p.minNobet ?? 0,
+          maxNobet: p.maxNobet ?? null,
+          esitlemedenMuaf: p.esitlemedenMuaf === true,
+          adaletGrubu: p.adaletGrubu || 'normal',
+          yetkiliGorevler: normalizeYetkiliGorevler(p.yetkiliGorevler),
+          ...gecmisOzeti
         };
       });
 
@@ -8580,13 +8846,15 @@
             tur: 'birlikte',
             p1: personelListesi.find(p => p.id == kisiler[0])?.ad || '',
             p2: personelListesi.find(p => p.id == kisiler[1])?.ad || '',
-            p3: personelListesi.find(p => p.id == kisiler[2])?.ad || ''
+            p3: personelListesi.find(p => p.id == kisiler[2])?.ad || '',
+            ...kuralPolitikaAlanlari(k)
           };
         } else {
           return {
             tur: 'ayri',
             p1: personelListesi.find(p => p.id == k.p1)?.ad || '',
-            p2: personelListesi.find(p => p.id == k.p2)?.ad || ''
+            p2: personelListesi.find(p => p.id == k.p2)?.ad || '',
+            ...kuralPolitikaAlanlari(k)
           };
         }
       });
@@ -9833,6 +10101,9 @@
       devirListesi = [];
       selectedCells = [];
       mazeretDegisti = false;
+      hedeflerBayat = true;
+      aktifPlanKontrati = null;
+      aktifPlanHash = null;
       document.getElementById('inp-yil').value = String(yil);
       document.getElementById('inp-ay').value = String(ay);
       document.getElementById('inp-gunluk').value = 5;
@@ -9867,6 +10138,9 @@
       const yil = parseInt(document.getElementById('inp-yil').value, 10);
       const ay = parseInt(document.getElementById('inp-ay').value, 10);
       veriYuklendi = false;
+      hedeflerBayat = true;
+      aktifPlanKontrati = null;
+      aktifPlanHash = null;
 
       let saved = null;
       let kaynakFirestore = false;
@@ -9926,15 +10200,10 @@
       if (saved) {
         try {
           const data = JSON.parse(saved);
-          personelListesi = data.personelListesi || [];
+          personelListesi = (data.personelListesi || []).map(normalizeLoadedPersonel);
           resmiTatiller = data.resmiTatiller || [];
           kurallar = data.kurallar || [];
-          gorevler = (data.gorevler || []).map((g, idx) => ({
-            ...g,
-            id: g?.id ?? (idx + 1),
-            ad: g?.ad || `Nöbet Yeri ${idx + 1}`,
-            ayriBina: g?.ayriBina === true
-          }));
+          gorevler = (data.gorevler || []).map(normalizeLoadedGorev);
           manuelAtamalar = data.manuelAtamalar || [];
           gorevKisitlamalari = (data.gorevKisitlamalari || []).map(normalizeLoadedGorevKisitlamasi);
 
@@ -10131,7 +10400,7 @@
         const data = JSON.parse(oncekiData);
 
         // KALICI VERİLER — önceki aydan çek
-        personelListesi = (data.personelListesi || []).map(p => ({
+        personelListesi = (data.personelListesi || []).map(p => normalizeLoadedPersonel({
           ...p,
           // Mazeretleri, izinleri temizle (aya özgü)
           mazeretler: [],
@@ -10140,12 +10409,7 @@
           // hedef, yillikOzet, gorevKotalari vb. korunur
         }));
 
-        gorevler = (data.gorevler || []).map((g, idx) => ({
-          ...g,
-          id: g?.id ?? (idx + 1),
-          ad: g?.ad || `Nöbet Yeri ${idx + 1}`,
-          ayriBina: g?.ayriBina === true
-        }));
+        gorevler = (data.gorevler || []).map(normalizeLoadedGorev);
 
         kurallar = data.kurallar || [];
 
@@ -10163,6 +10427,7 @@
         araGunIstisnalari = [];
         kilitliHedefler = {};
         devirListesi = [];
+        hedefleriBayatIsaretle('Önceki aydan kalıcı veriler taşındı.');
 
         // Genel ayarları çek (saat değerleri vb.) ama yıl/ay değiştirme
         if (data.ayarlar) {
