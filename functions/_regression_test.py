@@ -957,6 +957,60 @@ def test_plan_hash_changes_with_relaxation():
     assert ilk["plan_hash"] != ikinci["plan_hash"]
 
 
+def test_kilitli_hucre_atamalari_kismi_cozum():
+    # Kısmi yeniden çözüm: önceki çözüm + kilit seçiminden sabitlenecek hücreler.
+    from planlayici import kilitli_hucre_atamalari
+
+    onceki = [
+        {"personel_id": 1, "gun": 1, "slot_idx": 0, "gorev_base": "A"},
+        {"personel_id": 2, "gun": 1, "slot_idx": 1, "gorev_base": "B"},
+        {"personel_id": 3, "gun": 5, "slot_idx": 0, "gorev_base": "A"},
+        {"personel_id": 4, "gun": 8, "slot_idx": 1, "gorev_base": "B"},
+    ]
+
+    # Kilit yoksa boş (davranış değişmez).
+    assert kilitli_hucre_atamalari(onceki, []) == []
+    assert kilitli_hucre_atamalari([], [{"tur": "hucre", "gun": 1, "slot_idx": 0}]) == []
+
+    # Tek hücre kilidi.
+    tek = kilitli_hucre_atamalari(onceki, [{"tur": "hucre", "gun": 1, "slot_idx": 0}])
+    assert [(a.personel_id, a.gun, a.slot_idx) for a in tek] == [(1, 1, 0)]
+
+    # Hafta (gün aralığı) kilidi: gün 1..5 arası tüm hücreler.
+    hafta = kilitli_hucre_atamalari(
+        onceki, [{"tur": "hafta", "gun_baslangic": 1, "gun_bitis": 5}]
+    )
+    assert {(a.gun, a.slot_idx) for a in hafta} == {(1, 0), (1, 1), (5, 0)}
+
+    # Görev kilidi (slot_idx ile): slot 1'in tüm günleri.
+    gorev_slot = kilitli_hucre_atamalari(onceki, [{"tur": "gorev", "slot_idx": 1}])
+    assert {(a.gun, a.slot_idx) for a in gorev_slot} == {(1, 1), (8, 1)}
+
+    # Görev kilidi (ad ile): base "A" olan tüm hücreler.
+    gorev_ad = kilitli_hucre_atamalari(onceki, [{"tur": "gorev", "gorev": "A"}])
+    assert {(a.gun, a.slot_idx) for a in gorev_ad} == {(1, 0), (5, 0)}
+
+    # Personel kilidi: 4 numaranın tüm nöbetleri.
+    kisi = kilitli_hucre_atamalari(onceki, [{"tur": "personel", "personel_id": 4}])
+    assert [(a.personel_id, a.gun, a.slot_idx) for a in kisi] == [(4, 8, 1)]
+
+    # Çakışan kilitler tekilleştirilir (hücre + hafta aynı hücreyi kapsar).
+    karisik = kilitli_hucre_atamalari(
+        onceki,
+        [{"tur": "hucre", "gun": 1, "slot_idx": 0},
+         {"tur": "hafta", "gun_baslangic": 1, "gun_bitis": 1}],
+    )
+    assert {(a.gun, a.slot_idx) for a in karisik} == {(1, 0), (1, 1)}
+    assert len(karisik) == 2  # (1,0) iki kez eşleşse de tek kayıt
+
+    # camelCase toleransı (frontend alan adları).
+    camel = kilitli_hucre_atamalari(
+        [{"personelId": 9, "gun": 2, "slotIdx": 0}],
+        [{"tur": "hucre", "gun": 2, "slotIdx": 0}],
+    )
+    assert [(a.personel_id, a.gun, a.slot_idx) for a in camel] == [(9, 2, 0)]
+
+
 def test_plan_hash_bayat_kontrolu():
     # Optimistik eşzamanlılık: gönderilen planHash güncel planla uyuşmuyorsa
     # (girdi değişmiş) bayat sayılır → nobet_coz 409 döner.

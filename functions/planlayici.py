@@ -197,6 +197,104 @@ def plan_kontrati_hash_yenile(plan_kontrati):
     return yenilenmis
 
 
+def _kilit_alan(kaynak, *anahtarlar, default=None):
+    """İlk dolu anahtarı döndürür (camelCase/snake_case toleransı)."""
+    if not isinstance(kaynak, dict):
+        return default
+    for anahtar in anahtarlar:
+        deger = kaynak.get(anahtar)
+        if deger is not None:
+            return deger
+    return default
+
+
+def kilitli_hucre_atamalari(onceki_atamalar, kilitler) -> List[SolverAtama]:
+    """Önceki çözüm + kilit seçiminden kısmi yeniden çözümde SABİTLENECEK
+    hücreleri (``SolverAtama``) üretir.
+
+    Kısmi yeniden çözüm: kullanıcı önceki çizelgeden bazı hücreleri/haftaları/
+    görevleri kilitler; kilitli hücreler solver'a manuel atama gibi HARD
+    (``x==1``) beslenir, kilitsiz kısım yeniden optimize edilir.
+
+    ``onceki_atamalar``: önceki çözümün atamaları; her biri
+    ``personel_id``/``personelId``, ``gun``, ``slot_idx``/``slotIdx`` ve
+    (opsiyonel) ``gorev_base``/``gorev_ad`` alanlarını taşır.
+
+    ``kilitler``: kilit kapsamları (``tur`` ile ayrışır):
+      * ``{'tur':'hucre','gun':g,'slot_idx':s}`` — tek hücre
+      * ``{'tur':'hafta','gun_baslangic':a,'gun_bitis':b}`` — gün aralığı
+      * ``{'tur':'gorev','slot_idx':s}`` veya ``{'tur':'gorev','gorev':'R'}``
+      * ``{'tur':'personel','personel_id':pid}`` — bir kişinin tüm nöbetleri
+
+    Dönen: tekilleştirilmiş ``SolverAtama`` listesi. Kilit/atama yoksa boş liste
+    (davranış değişmez). Geçersiz/eksik alanlı kayıtlar sessizce atlanır.
+    """
+    if not onceki_atamalar or not kilitler:
+        return []
+
+    def _int(deger):
+        try:
+            return int(deger)
+        except (TypeError, ValueError):
+            return None
+
+    def _eslesir(pid, gun, slot, gorev_base, gorev_ad, kilit) -> bool:
+        tur = str(_kilit_alan(kilit, 'tur', 'type', default='')).strip().lower()
+        if tur == 'hucre':
+            return gun == _int(_kilit_alan(kilit, 'gun')) and \
+                   slot == _int(_kilit_alan(kilit, 'slot_idx', 'slotIdx'))
+        if tur == 'hafta':
+            a = _int(_kilit_alan(kilit, 'gun_baslangic', 'gunBaslangic', 'baslangic'))
+            b = _int(_kilit_alan(kilit, 'gun_bitis', 'gunBitis', 'bitis'))
+            if a is None or b is None:
+                return False
+            return a <= gun <= b
+        if tur == 'gorev':
+            k_slot = _int(_kilit_alan(kilit, 'slot_idx', 'slotIdx'))
+            if k_slot is not None:
+                return slot == k_slot
+            k_gorev = _kilit_alan(kilit, 'gorev', 'gorev_base', 'gorevBase', 'gorev_ad')
+            if k_gorev is None:
+                return False
+            k_gorev = str(k_gorev)
+            return k_gorev in (gorev_base, gorev_ad)
+        if tur == 'personel':
+            k_pid = _kilit_alan(kilit, 'personel_id', 'personelId', 'id')
+            if k_pid is None:
+                return False
+            try:
+                return normalize_id(pid) == normalize_id(k_pid)
+            except (TypeError, ValueError):
+                return False
+        return False
+
+    gorulen = set()
+    sonuc: List[SolverAtama] = []
+    for atama in onceki_atamalar:
+        ham_pid = _kilit_alan(atama, 'personel_id', 'personelId', 'id')
+        gun = _int(_kilit_alan(atama, 'gun'))
+        slot = _int(_kilit_alan(atama, 'slot_idx', 'slotIdx'))
+        if ham_pid is None or gun is None or slot is None:
+            continue
+        gorev_base = _kilit_alan(atama, 'gorev_base', 'gorevBase', default=None)
+        gorev_ad = _kilit_alan(atama, 'gorev_ad', 'gorevAd', 'gorev', default=None)
+        gorev_base = str(gorev_base) if gorev_base is not None else None
+        gorev_ad = str(gorev_ad) if gorev_ad is not None else None
+
+        if not any(_eslesir(ham_pid, gun, slot, gorev_base, gorev_ad, k) for k in kilitler):
+            continue
+        try:
+            norm_pid = normalize_id(ham_pid)
+        except (TypeError, ValueError):
+            continue
+        anahtar = (norm_pid, gun, slot)
+        if anahtar in gorulen:
+            continue
+        gorulen.add(anahtar)
+        sonuc.append(SolverAtama(personel_id=norm_pid, gun=gun, slot_idx=slot))
+    return sonuc
+
+
 def plan_hash_bayat_mi(gonderilen_hash, guncel_hash) -> bool:
     """İstemcinin gönderdiği ``planHash`` güncel plana göre bayat mı?
 

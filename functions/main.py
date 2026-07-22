@@ -24,6 +24,7 @@ from firestore_logger import log_session
 from planlayici import (
     frontend_gorev_kota_override_topla,
     frontend_kilitli_hedefleri_topla,
+    kilitli_hucre_atamalari,
     ortak_plan_uret,
     plan_hash_bayat_mi,
 )
@@ -568,6 +569,29 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
         kurallar = parse_kurallar(data, personeller)
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
+
+        # Kismi yeniden cozum: onceki cozumden kilitlenen hucreler manuel atama
+        # gibi HARD sabitlenir; kilitsiz kisim yeniden optimize edilir. Additive:
+        # kilitler yoksa davranis degismez.
+        kilitler = data.get("kilitler") or data.get("kilitliHucreler")
+        onceki_atamalar = data.get("oncekiAtamalar") or data.get("oncekiCizelge")
+        if kilitler and onceki_atamalar:
+            kilitli_hucreler = kilitli_hucre_atamalari(onceki_atamalar, kilitler)
+            mevcut_anahtarlar = {
+                (normalize_id(m.personel_id), m.gun, m.slot_idx) for m in manuel_atamalar
+            }
+            mevcut_slotlar = {(m.gun, m.slot_idx) for m in manuel_atamalar}
+            eklenen = 0
+            for k in kilitli_hucreler:
+                anahtar = (normalize_id(k.personel_id), k.gun, k.slot_idx)
+                # Zaten manuel atanmis (ayni kisi) veya slot baska kisiyle dolu → atla.
+                if anahtar in mevcut_anahtarlar or (k.gun, k.slot_idx) in mevcut_slotlar:
+                    continue
+                manuel_atamalar.append(k)
+                mevcut_anahtarlar.add(anahtar)
+                mevcut_slotlar.add((k.gun, k.slot_idx))
+                eklenen += 1
+            logger.info("nobet_coz kismi yeniden cozum: %d kilitli hucre sabitlendi", eklenen)
 
         # Ortak planlayici: preview ve final ayni plani kullansin
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
