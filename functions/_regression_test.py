@@ -477,6 +477,68 @@ def test_together_capacity_uses_real_date_intersection():
     assert hesaplayici._birlikte_ortak_musait_tipler([1, 2])["cum"] == 1
 
 
+def _takas_solver(personeller, gorevler=None, ara_gun=2):
+    if gorevler is None:
+        gorevler = [SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")]
+    hedefler = {
+        p.id: {"hedef_toplam": 1, "hedef_tipler": {"hici": 1}} for p in personeller
+    }
+    return NobetSolver(
+        gun_sayisi=3,
+        gun_tipleri={1: "hici", 2: "hici", 3: "hici"},
+        personeller=personeller,
+        gorevler=gorevler,
+        hedefler=hedefler,
+        ara_gun=ara_gun,
+        max_sure_saniye=2,
+    )
+
+
+def test_takas_onerileri_ikili_takas_dogrudan_ve_negatif():
+    # "Atanamama durumunda sor" — boş slotlar için salt-okunur, doğrulanmış
+    # eyleme dönük öneriler (çoklu çözüm kartı). Analiz solve'dan bağımsız
+    # (elle kurulmuş çözüm üzerinden) test edilir; her öneri sert kısıtlara
+    # (mazeret/ara_gün/kota/ayrı) karşı geçerlidir.
+
+    # 1) İKİLİ TAKAS: (2,0) boş; P yalnız ara_gün nedeniyle giremiyor (gün1'de
+    #    nöbeti var), Q gün2'de mazeretli ama gün1'i doldurabilir → P'yi gün2'ye
+    #    taşı, P'nin gün1 yerini Q doldursun.
+    solver = _takas_solver([
+        SolverPersonel(id=1, ad="P"),
+        SolverPersonel(id=2, ad="Q", mazeret_gunleri={2}),
+        SolverPersonel(id=3, ad="F"),
+    ])
+    atamalar = [
+        {"gun": 1, "slot_idx": 0, "personel_id": 1},
+        {"gun": 3, "slot_idx": 0, "personel_id": 3},
+    ]
+    oneriler = solver._bos_slot_takas_onerileri(atamalar)
+    ikili = [o for o in oneriler if o["gun"] == 2 and o["tur"] == "ikili_takas"]
+    assert len(ikili) == 1, oneriler
+    o = ikili[0]
+    assert o["tasinan_personel_id"] == 1
+    assert o["tasinan_kaynak_gun"] == 1
+    assert o["yerine_personel_id"] == 2
+
+    # 2) DOĞRUDAN ATAMA: (2,0) boş; Q boşta, uygun ve müsait → doğrudan atanır.
+    solver2 = _takas_solver([
+        SolverPersonel(id=1, ad="P"),
+        SolverPersonel(id=2, ad="Q"),
+        SolverPersonel(id=3, ad="F"),
+    ])
+    oneriler2 = solver2._bos_slot_takas_onerileri(atamalar)
+    dogrudan = [o for o in oneriler2 if o["gun"] == 2 and o["tur"] == "dogrudan_atama"]
+    assert len(dogrudan) == 1, oneriler2
+    assert dogrudan[0]["personel_id"] == 2
+
+    # 3) NEGATİF: tek kişi, kotası dolu, takas için ikinci kişi yok → öneri yok.
+    solver3 = _takas_solver([SolverPersonel(id=1, ad="P")])
+    oneriler3 = solver3._bos_slot_takas_onerileri(
+        [{"gun": 1, "slot_idx": 0, "personel_id": 1}]
+    )
+    assert oneriler3 == [], oneriler3
+
+
 def test_leksikografik_bos_slot_onceligi_ve_gozlemlenebilir():
     # Leksikografik (çok geçişli) çözüm: Tier 1 boş slotu kesin öncelikle
     # minimize eder, Tier 2 bunu sabitleyip ağırlıklı amacı çözer. Tamamen

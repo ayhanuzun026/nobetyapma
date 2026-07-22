@@ -1107,6 +1107,159 @@ class NobetSolver:
         ek = "" if len(engelli) <= 4 else f"; +{len(engelli) - 4} kişi daha"
         return f"{baslik} — {aday_sayisi} uygun aday vardı ama: {gosterilecek}{ek}."
 
+    def _bos_slot_takas_onerileri(self, atamalar: List[Dict],
+                                  limit: int = 20) -> List[Dict]:
+        """Boş slotlar için eyleme dönük 1-taşıma ve 2-kişilik takas önerileri.
+
+        "Atanamama durumunda sor" akışı: çözüm bir slotu dolduramadığında
+        kullanıcıya SOMUT alternatifler (çoklu çözüm kartı) sunulur. Bu analiz
+        SALT-OKUNUR'dur; çözümü değiştirmez, yalnız uygulanabilir öneriler üretir
+        (her öneri tüm sert kısıtlara — mazeret/havuz/ara_gün/ayrı/kota — karşı
+        doğrulanır, uygulanırsa geçerli çizelge verir):
+
+          * ``dogrudan_atama`` (1-taşıma): boş slota uygun, müsait, o gün boşta,
+            kotası dolmamış, ara_gün/ayrı çakışması olmayan biri doğrudan atanır.
+            (CP-SAT OPTIMAL çözdüyse nadir; FEASIBLE/timeout'ta değerli.)
+          * ``ikili_takas`` (2-kişi): boş slota YALNIZ ara_gün nedeniyle
+            giremeyen P, yakın gündeki nöbetini boş slota taşır; P'nin boşalan
+            yerini uygun bir Q doldurur. CP-SAT'ın sert ara_gün yüzünden
+            yapamadığı yerel iyileştirmeyi öneri olarak açar.
+
+        Yönlülük: öneriler tek yönlüdür (boş slotu doldurmaya doğru); asla dolu
+        bir slotu boşaltacak yönde üretilmez.
+        """
+        exclusive_roles = self._exclusive_roles_without_pool()
+        birlikte_uye_ids = self._birlikte_uye_ids()
+        ayri_map = self._ayri_cift_haritasi()
+        kisi_ad = {p.id: (p.ad or f"#{p.id}") for p in self.personel_listesi}
+
+        dolu = set()
+        gun_atananlar: Dict[int, Set[int]] = {}
+        kisi_gunler: Dict[int, Set[int]] = {}
+        kisi_atama_sayisi: Dict[int, int] = {}
+        kisi_gun_slot: Dict[tuple, int] = {}   # (pid, gun) -> slot_idx
+        for a in atamalar:
+            g = a.get('gun'); s = a.get('slot_idx'); pid = a.get('personel_id')
+            if g is None or s is None or pid is None:
+                continue
+            dolu.add((g, s))
+            gun_atananlar.setdefault(g, set()).add(pid)
+            kisi_gunler.setdefault(pid, set()).add(g)
+            kisi_atama_sayisi[pid] = kisi_atama_sayisi.get(pid, 0) + 1
+            kisi_gun_slot[(pid, g)] = s
+
+        def _hedef_toplam(pid: int) -> int:
+            return int((self.hedefler.get(pid, {}) or {}).get('hedef_toplam', 0) or 0)
+
+        def _ara_gun_uygun(pid: int, hedef_gun: int, haric_gun: int = None) -> bool:
+            if self.ara_gun <= 0:
+                return True
+            for gg in kisi_gunler.get(pid, set()):
+                if gg == hedef_gun or gg == haric_gun:
+                    continue
+                if abs(gg - hedef_gun) < self.ara_gun:
+                    return False
+            return True
+
+        def _yerlestirilebilir(pid: int, g: int, s: int, gunku_atananlar: Set[int],
+                               haric_gun: int = None) -> bool:
+            # Yapısal uygunluk (mazeret/havuz/exclusive/kısıtlı görev)
+            if not self._person_can_take_slot_on_day(pid, s, g, exclusive_roles, birlikte_uye_ids):
+                return False
+            if pid in gunku_atananlar:
+                return False
+            if kisi_atama_sayisi.get(pid, 0) >= _hedef_toplam(pid):
+                return False
+            if not _ara_gun_uygun(pid, g, haric_gun=haric_gun):
+                return False
+            if ayri_map.get(pid, set()) & gunku_atananlar:
+                return False
+            return True
+
+        oneriler: List[Dict] = []
+        for g in range(1, self.gun_sayisi + 1):
+            if len(oneriler) >= limit:
+                break
+            gun_tipi = self.gun_tipleri.get(g, 'hici')
+            atananlar_g = gun_atananlar.get(g, set())
+            for s in range(self.slot_sayisi):
+                if (g, s) in dolu:
+                    continue
+                gorev = self._role_name_by_slot(s) or f"Slot {s}"
+
+                # 1) Doğrudan atama (1-taşıma)
+                dogrudan = None
+                for p in self.personel_listesi:
+                    if _yerlestirilebilir(p.id, g, s, atananlar_g):
+                        dogrudan = p.id
+                        break
+                if dogrudan is not None:
+                    oneriler.append({
+                        'tur': 'dogrudan_atama',
+                        'gun': g, 'gun_tipi': gun_tipi, 'slot_idx': s, 'gorev': gorev,
+                        'personel_id': dogrudan,
+                        'aciklama': (f"{g}. gün '{gorev}' boş → {kisi_ad.get(dogrudan)} "
+                                     f"doğrudan atanabilir (uygun, boşta, kota müsait)."),
+                    })
+                    if len(oneriler) >= limit:
+                        break
+                    continue
+
+                # 2) İkili takas: yalnız ara_gün nedeniyle giremeyen P'yi taşı
+                takas = None
+                for p in self.personel_listesi:
+                    pid = p.id
+                    if not self._person_can_take_slot_on_day(pid, s, g, exclusive_roles, birlikte_uye_ids):
+                        continue
+                    if pid in atananlar_g:
+                        continue
+                    if ayri_map.get(pid, set()) & atananlar_g:
+                        continue
+                    # P yalnız ara_gün'e mi takılı? Yakın günde nöbeti olmalı.
+                    yakin_gunler = [
+                        gg for gg in kisi_gunler.get(pid, set())
+                        if abs(gg - g) < self.ara_gun and gg != g
+                    ]
+                    if self.ara_gun <= 0 or not yakin_gunler:
+                        continue
+                    # P'yi g'ye taşımak için diğer günleri ara_gün'e uygun olmalı
+                    if not all(_ara_gun_uygun(pid, g, haric_gun=gg) for gg in yakin_gunler):
+                        continue
+                    # Tek bir yakın gün taşınabilir (birden fazlaysa muhafazakâr atla)
+                    if len(yakin_gunler) != 1:
+                        continue
+                    gg = yakin_gunler[0]
+                    sP = kisi_gun_slot.get((pid, gg))
+                    if sP is None:
+                        continue
+                    # P gg'den ayrılınca boşalan (gg, sP)'yi dolduracak Q bul
+                    gg_atananlar_haric = gun_atananlar.get(gg, set()) - {pid}
+                    for q in self.personel_listesi:
+                        if q.id == pid:
+                            continue
+                        if _yerlestirilebilir(q.id, gg, sP, gg_atananlar_haric, haric_gun=None):
+                            takas = (pid, gg, sP, q.id)
+                            break
+                    if takas is not None:
+                        break
+                if takas is not None:
+                    pid, gg, sP, qid = takas
+                    gg_gorev = self._role_name_by_slot(sP) or f"Slot {sP}"
+                    oneriler.append({
+                        'tur': 'ikili_takas',
+                        'gun': g, 'gun_tipi': gun_tipi, 'slot_idx': s, 'gorev': gorev,
+                        'tasinan_personel_id': pid,
+                        'tasinan_kaynak_gun': gg, 'tasinan_kaynak_slot': sP,
+                        'yerine_personel_id': qid,
+                        'aciklama': (
+                            f"{g}. gün '{gorev}' boş → {kisi_ad.get(pid)} {gg}. gündeki "
+                            f"'{gg_gorev}' nöbetini buraya taşısın; {gg}. günkü yerini "
+                            f"{kisi_ad.get(qid)} doldursun (ara gün kuralı korunur)."),
+                    })
+                    if len(oneriler) >= limit:
+                        break
+        return oneriler
+
     def _diagnose_infeasible(self, diagnostics: Dict) -> 'List[Dict]':
         """INFEASIBLE nedenini analiz et, akıllı gevşetme aksiyonları öner.
 
@@ -2371,6 +2524,7 @@ class NobetSolver:
             'kisitlama_istisna_debug': self.kisitlama_istisna_debug,
             'feasibility_debug': self._build_feasibility_diagnostics(limit_preview=30) if bos_slot_sayisi > 0 else {},
             'bos_slot_aciklamalari': self._bos_slot_aciklamalari(atamalar) if bos_slot_sayisi > 0 else [],
+            'takas_onerileri': self._bos_slot_takas_onerileri(atamalar) if bos_slot_sayisi > 0 else [],
             'gorev_listesi': [{'idx': i, 'ad': g.ad, 'base_name': g.base_name} for i, g in enumerate(self.gorevler)]
         }
         return SolverSonuc(basarili=True, atamalar=atamalar, istatistikler=istatistikler,

@@ -76,3 +76,10 @@ test('stale plan (409/PlanBayat) is handled distinctly and refreshes the hash', 
   // Güncel hash benimsenmeli ki aynı verilerle tekrar deneme uyuşsun.
   assert.match(html, /aktifPlanHash = result\.guncelPlanHash/);
 });
+
+test('empty-slot swap suggestions (takas_onerileri) are surfaced in the diagnostic panel', () => {
+  // Backend'in ürettiği eyleme dönük öneriler rapora alınmalı ve render edilmeli.
+  assert.match(html, /takasOnerileri:\s*ist\.takas_onerileri \|\| \[\]/);
+  assert.match(html, /Boş Slot İçin Uygulanabilir Öneriler/);
+  assert.match(html, /o\.tur === 'dogrudan_atama'/);
+});

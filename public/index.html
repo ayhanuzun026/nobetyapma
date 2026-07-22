@@ -8103,6 +8103,7 @@
         feasibilityDebug: feas,
         zeroPreview: feas.slot_day_zero_candidate_preview || [],
         roleIssues: feas.role_ara_gun_capacity_issues || [],
+        takasOnerileri: ist.takas_onerileri || [],
       };
     }
 
@@ -8122,6 +8123,7 @@
       const manualConflicts = rapor.manualConflicts.slice(0, 8);
       const zeroPreview = rapor.zeroPreview.slice(0, 8);
       const roleIssues = rapor.roleIssues.slice(0, 8);
+      const takasOnerileri = (rapor.takasOnerileri || []).slice(0, 8);
 
       panel.style.display = 'block';
       icerik.innerHTML = `
@@ -8158,6 +8160,14 @@
             <strong>Rol / Ara Gün Kapasite Sorunları (${rapor.roleIssues.length})</strong>
             <div style="margin-top:8px; max-height:200px; overflow:auto;">
               ${roleIssues.map(x => `<div class="badge badge-info" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(x.gorev))}: talep ${escapeHtml(String(x.talep))}, üst kapasite ${escapeHtml(String(x.ara_gun_ust_kapasite))}, eksik ${escapeHtml(String(x.eksik))}</div>`).join('')}
+            </div>
+          </div>` : ''}
+        ${takasOnerileri.length ? `
+          <div class="rule-box" style="background:#fff; margin-bottom:12px;">
+            <strong>Boş Slot İçin Uygulanabilir Öneriler (${rapor.takasOnerileri.length})</strong>
+            <div class="help" style="margin-top:4px;">Atanamayan slotları doldurmak için sert kısıtlara uygun (ara gün/kota korunur) somut öneriler:</div>
+            <div style="margin-top:8px; max-height:220px; overflow:auto;">
+              ${takasOnerileri.map(o => `<div class="badge ${o.tur === 'dogrudan_atama' ? 'badge-ok' : 'badge-info'}" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(o.aciklama || o.tur))}</div>`).join('')}
             </div>
           </div>` : ''}
         <div class="rule-box" style="background:#fff;">
