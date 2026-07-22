@@ -957,6 +957,28 @@ def test_plan_hash_changes_with_relaxation():
     assert ilk["plan_hash"] != ikinci["plan_hash"]
 
 
+def test_detay_cozum_sure_adaptif():
+    # Performans: detay adalet geçişi süre bütçesi örnek boyutuyla ölçeklenir.
+    # Küçük örnekler tabanı kullanır (mevcut davranış korunur); büyük örnekler
+    # tavana kadar daha fazla süre alır (50×31×6 timeout riski azalır).
+    def _yap(n_personel, gun):
+        gt = {g: "hici" for g in range(1, gun + 1)}
+        pers = [SolverPersonel(id=i, ad=f"P{i}") for i in range(1, n_personel + 1)]
+        gor = [SolverGorev(id=1, ad="A", slot_idx=0, base_name="A")]
+        return HedefHesaplayici(
+            gun_sayisi=gun, gun_tipleri=gt, personeller=pers, gorevler=gor, ara_gun=2
+        )
+
+    kucuk = _yap(3, 4)._detay_cozum_sure_saniye()
+    buyuk = _yap(50, 31)._detay_cozum_sure_saniye()
+    devasa = _yap(200, 31)._detay_cozum_sure_saniye()
+
+    assert kucuk == HedefHesaplayici.DETAY_SURE_TABAN
+    assert kucuk < buyuk <= HedefHesaplayici.DETAY_SURE_TAVAN
+    assert devasa >= buyuk
+    assert devasa == HedefHesaplayici.DETAY_SURE_TAVAN
+
+
 def test_kilitli_hucre_atamalari_kismi_cozum():
     # Kısmi yeniden çözüm: önceki çözüm + kilit seçiminden sabitlenecek hücreler.
     from planlayici import kilitli_hucre_atamalari

@@ -264,6 +264,27 @@ class HedefHesaplayici:
                 katilanlar = [x[pid, rol] for pid in pids if (pid, rol) in x]
                 model.Add(sum(katilanlar) == talep)
 
+    # Detay adalet geçişi taban/tavan süre bütçesi (saniye).
+    DETAY_SURE_TABAN = 7
+    DETAY_SURE_TAVAN = 30
+
+    def _detay_cozum_sure_saniye(self) -> int:
+        """Detay adalet geçişi için örnek boyutuna göre ADAPTİF süre bütçesi (sn).
+
+        Küçük örnekler tavandan çok önce OPTIMAL'e ulaşıp erken durar → tavan
+        onları etkilemez (mevcut çıktılar/testler değişmez). Büyük örnekler
+        (ör. 50×31×6) sabit 7 sn'de FEASIBLE'da takılıp adaleti optimuma
+        taşıyamıyordu; kişi×gün ölçeğiyle büyüyen tavan onlara daha fazla süre
+        tanır. Fonksiyon timeout'ları (nobet_hedef_hesapla=300s, nobet_coz=540s)
+        bol headroom sağlar; üst sınır (``DETAY_SURE_TAVAN``) latency'i korur.
+
+        Güvenli: tavanı yükseltmek yalnız ÜST sınırı büyütür — CP-SAT OPTIMAL'i
+        kanıtlayınca erken durduğundan hızlı çözülen örneklerin sonucu aynı kalır.
+        """
+        yuk = len(self.personel_listesi) * max(1, self.gun_sayisi)
+        # Taban 7 sn; ~150 kişi-gün başına +1 sn; DETAY_SURE_TAVAN ile sınırlı.
+        return int(min(self.DETAY_SURE_TAVAN, max(self.DETAY_SURE_TABAN, yuk // 150)))
+
     def _hesapla_kapasiteler(self):
         manuel_mazeret_onayli_gunler = {}
         for atama in self.manuel_atamalar:
@@ -1149,7 +1170,7 @@ class HedefHesaplayici:
                     t[pid], int(projection_solver.Value(projection_t[pid]))
                 )
             projection_sinirli_model.Minimize(adalet_objective)
-            solver.parameters.max_time_in_seconds = 7
+            solver.parameters.max_time_in_seconds = self._detay_cozum_sure_saniye()
             solver.parameters.num_search_workers = 4
             status = solver.Solve(projection_sinirli_model)
             optimizasyon_status = status
@@ -1187,7 +1208,7 @@ class HedefHesaplayici:
 
             model.Minimize(adalet_objective)
             solver = cp.CpSolver()
-            solver.parameters.max_time_in_seconds = 7
+            solver.parameters.max_time_in_seconds = self._detay_cozum_sure_saniye()
             solver.parameters.num_search_workers = 4
             status = solver.Solve(model)
             optimizasyon_status = status
