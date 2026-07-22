@@ -131,7 +131,8 @@ class NobetSolver:
                  hedefler: Dict[int, Dict] = None,
                  plan_kontrati: Dict = None,
                  ara_gun: int = 2, max_sure_saniye: int = 300,
-                 ignore_manual_conflicts: bool = False):
+                 ignore_manual_conflicts: bool = False,
+                 leksikografik: bool = True):
         self.gun_sayisi = gun_sayisi
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
@@ -146,6 +147,8 @@ class NobetSolver:
         self.plan_uygulama = self.plan_kontrati.get("uygulama", {}) if isinstance(self.plan_kontrati, dict) else {}
         self.ara_gun = ara_gun
         self.max_sure = max_sure_saniye
+        self.leksikografik = leksikografik
+        self._leksikografik_kullanildi = False
         self.slot_sayisi = len(gorevler)
         self.manual_mazeret_override_days = set()
         self.manual_mazeret_override_slots = set()
@@ -2166,13 +2169,61 @@ class NobetSolver:
         )
 
     def _solve(self, context: _SolveContext):
-        # COZUM
-        solver = context.cp.CpSolver()
-        solver.parameters.max_time_in_seconds = self.max_sure
+        """Leksikografik (çok geçişli) çözüm.
+
+        Tier 1 boş slot sayısını KESİN öncelikle minimize eder; Tier 2 bu
+        minimumu sabitleyip (``Σ bos ≤ en_az_bos``) tam ağırlıklı amacı
+        (adalet/kota/plan) minimize eder. Böylece hiçbir yumuşak ceza bir boş
+        slot pahasına iyileştirilemez — bu, ağırlık büyüklüğünden (WEIGHT_BOS_SLOT)
+        bağımsız YAPISAL bir garantidir. Zaman bütçesi iki geçişe paylaştırılır;
+        herhangi bir geçiş çözülemezse tek geçişli ağırlıklı çözüme düşülür.
+        """
+        cp = context.cp
+        model = context.model
+        toplam_sure = max(1, int(self.max_sure))
+        self._leksikografik_kullanildi = False
+
+        # 1 saniyelik bütçe ikiye bölünemez → tek geçiş (davranış değişmez).
+        leksikografik_aktif = (
+            self.leksikografik
+            and toplam_sure >= 2
+            and bool(context.penalties)
+            and bool(context.bos_slotlar)
+        )
+
+        if leksikografik_aktif:
+            tier1_solver = cp.CpSolver()
+            tier1_solver.parameters.num_search_workers = 4
+            tier1_solver.parameters.max_time_in_seconds = max(
+                1, min(toplam_sure - 1, (toplam_sure * 2) // 5)
+            )
+            model.Minimize(sum(context.bos_slotlar))
+            tier1_status = tier1_solver.Solve(model)
+
+            if tier1_status in (cp.OPTIMAL, cp.FEASIBLE):
+                en_az_bos = int(round(tier1_solver.ObjectiveValue()))
+                model.Add(sum(context.bos_slotlar) <= en_az_bos)
+
+                tier2_solver = cp.CpSolver()
+                tier2_solver.parameters.num_search_workers = 4
+                tier2_solver.parameters.max_time_in_seconds = max(
+                    1, toplam_sure - (int(tier1_solver.WallTime()) + 1)
+                )
+                model.Minimize(sum(context.penalties))
+                tier2_status = tier2_solver.Solve(model)
+                self._leksikografik_kullanildi = True
+                if tier2_status in (cp.OPTIMAL, cp.FEASIBLE):
+                    return tier2_solver, tier2_status
+                # Tier 2 sonuç veremedi → boş slotu minimal olan Tier 1 çözümü.
+                return tier1_solver, tier1_status
+            # Tier 1 çözülemedi → tek geçişli çözüme düş.
+
+        solver = cp.CpSolver()
+        solver.parameters.max_time_in_seconds = toplam_sure
         solver.parameters.num_search_workers = 4
-        
-        status = solver.Solve(context.model)
-        
+        if context.penalties:
+            model.Minimize(sum(context.penalties))
+        status = solver.Solve(model)
         return solver, status
 
     def diagnose_with_unsat_core(self, max_sure_saniye: int = 10) -> Dict:
@@ -2285,6 +2336,7 @@ class NobetSolver:
         istatistikler = {
             'status': 'OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE',
             'objective': solver.ObjectiveValue() if context.penalties else 0,
+            'leksikografik_kullanildi': self._leksikografik_kullanildi,
             'toplam_atama': toplam_atama, 'toplam_slot': toplam_slot,
             'bos_slot_sayisi': bos_slot_sayisi,
             'ara_gun': self.ara_gun,

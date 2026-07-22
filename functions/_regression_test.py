@@ -477,6 +477,49 @@ def test_together_capacity_uses_real_date_intersection():
     assert hesaplayici._birlikte_ortak_musait_tipler([1, 2])["cum"] == 1
 
 
+def test_leksikografik_bos_slot_onceligi_ve_gozlemlenebilir():
+    # Leksikografik (çok geçişli) çözüm: Tier 1 boş slotu kesin öncelikle
+    # minimize eder, Tier 2 bunu sabitleyip ağırlıklı amacı çözer. Tamamen
+    # doldurulabilir bir senaryoda boş slot 0 olmalı ve leksikografik yolun
+    # kullanıldığı istatistikte gözlemlenebilir olmalı (yeni sözleşme).
+    gun_tipleri = {1: "hici", 2: "hici", 3: "hici", 4: "hici"}
+    personeller = [
+        SolverPersonel(id=1, ad="A"),
+        SolverPersonel(id=2, ad="B"),
+        SolverPersonel(id=3, ad="C"),
+        SolverPersonel(id=4, ad="D"),
+    ]
+    gorevler = [
+        SolverGorev(id=1, ad="S1", slot_idx=0, base_name="S1"),
+        SolverGorev(id=2, ad="S2", slot_idx=1, base_name="S2"),
+    ]
+    hedefler = {
+        p.id: {"hedef_toplam": 2, "hedef_tipler": {"hici": 2}} for p in personeller
+    }
+    ortak = dict(
+        gun_sayisi=4,
+        gun_tipleri=gun_tipleri,
+        gorevler=gorevler,
+        hedefler=hedefler,
+        ara_gun=0,
+        max_sure_saniye=3,
+    )
+
+    leks = NobetSolver(personeller=deepcopy(personeller), **ortak).coz()
+    assert leks.basarili is True, leks.mesaj
+    assert leks.istatistikler["leksikografik_kullanildi"] is True
+    assert leks.istatistikler["bos_slot_sayisi"] == 0, leks.istatistikler
+
+    # Kontrol: leksikografik kapalıyken tek geçiş kullanılır (bayrak False) ve
+    # yine geçerli çözüm üretir. Leksikografik boş slotu asla artırmaz.
+    tek = NobetSolver(
+        personeller=deepcopy(personeller), leksikografik=False, **ortak
+    ).coz()
+    assert tek.basarili is True, tek.mesaj
+    assert tek.istatistikler["leksikografik_kullanildi"] is False
+    assert leks.istatistikler["bos_slot_sayisi"] <= tek.istatistikler["bos_slot_sayisi"]
+
+
 def test_separate_rule_is_building_based():
     gun_tipleri = {1: "hici"}
     personeller = [SolverPersonel(id=1, ad="A"), SolverPersonel(id=2, ad="B")]
