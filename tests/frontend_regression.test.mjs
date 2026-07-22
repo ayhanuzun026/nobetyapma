@@ -67,3 +67,12 @@ test('strict contract sends authority fields without global manual bypass', () =
   assert.doesNotMatch(html, /listeOlusturOrtools\([^\n]*,\s*true\)/);
   assert.doesNotMatch(html, /çakışmalar kullanıcı onayıyla yok sayılıyor/i);
 });
+
+test('stale plan (409/PlanBayat) is handled distinctly and refreshes the hash', () => {
+  // İstemci solve isteğinde tuttuğu planHash'i gönderir.
+  assert.match(html, /planHash:\s*aktifPlanHash/);
+  // 409 + PlanBayat özel olarak yakalanmalı (genel hataya karışmadan).
+  assert.match(html, /response\.status === 409 && result\.error_type === 'PlanBayat'/);
+  // Güncel hash benimsenmeli ki aynı verilerle tekrar deneme uyuşsun.
+  assert.match(html, /aktifPlanHash = result\.guncelPlanHash/);
+});

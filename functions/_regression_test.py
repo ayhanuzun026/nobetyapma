@@ -895,6 +895,25 @@ def test_plan_hash_changes_with_relaxation():
     assert ilk["plan_hash"] != ikinci["plan_hash"]
 
 
+def test_plan_hash_bayat_kontrolu():
+    # Optimistik eşzamanlılık: gönderilen planHash güncel planla uyuşmuyorsa
+    # (girdi değişmiş) bayat sayılır → nobet_coz 409 döner.
+    from planlayici import plan_hash_bayat_mi
+
+    # İlk çalıştırma / eksik hash → bayat değil (hash göndermeyen istemci korunur).
+    assert plan_hash_bayat_mi(None, "H2") is False
+    assert plan_hash_bayat_mi("", "H2") is False
+    assert plan_hash_bayat_mi("H1", None) is False
+    assert plan_hash_bayat_mi("H1", "") is False
+    # Aynı hash → güncel.
+    assert plan_hash_bayat_mi("H1", "H1") is False
+    # Farklı dolu hash → bayat.
+    assert plan_hash_bayat_mi("H1", "H2") is True
+    # Tip toleransı (int/str karışık gelebilir).
+    assert plan_hash_bayat_mi(123, "123") is False
+    assert plan_hash_bayat_mi(123, "456") is True
+
+
 def test_explicit_strict_policy_blocks_plan_relaxation():
     gun_tipleri, personeller, gorevler, hedefler = _minimal_veri()
 

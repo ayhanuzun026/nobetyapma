@@ -8595,6 +8595,18 @@
       });
 
       const result = await response.json();
+
+      // Bayat-plan (409): araya giren veri değişikliği önceki planHash'i
+      // geçersiz kıldı. Güncel hash'i benimseyip kullanıcıdan yeniden
+      // oluşturmasını iste (aynı verilerle tekrar deneme artık uyuşur).
+      if (response.status === 409 && result.error_type === 'PlanBayat') {
+        aktifPlanHash = result.guncelPlanHash || null;
+        const bayatMesaj = 'Veriler değiştiği için önceki plan bayat kaldı. '
+          + 'Plan güncellendi; lütfen "Liste Oluştur"u tekrar çalıştırın.';
+        alert('⚠️ ' + bayatMesaj);
+        throw new Error(bayatMesaj);
+      }
+
       console.log(`[SOLVER] Sonuç: basari=${result.basari}, mesaj=${result.mesaj || 'yok'}, süre=${result.sureMs || 'yok'}ms`);
       if (result.cizelge) {
         console.log(`[SOLVER] Çizelge: ${Object.keys(result.cizelge).length} gün`);

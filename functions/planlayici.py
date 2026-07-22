@@ -197,6 +197,23 @@ def plan_kontrati_hash_yenile(plan_kontrati):
     return yenilenmis
 
 
+def plan_hash_bayat_mi(gonderilen_hash, guncel_hash) -> bool:
+    """İstemcinin gönderdiği ``planHash`` güncel plana göre bayat mı?
+
+    Optimistik eşzamanlılık kontrolü: istemci bir önizlemeden (nobet_hedef_hesapla)
+    aldığı planHash ile çözüm ister; arada girdi verisi değiştiyse backend'in
+    yeniden ürettiği plan_hash farklı olur → plan bayattır (409 sinyali).
+
+    Yalnız HER İKİ hash de doluysa ve farklıysa ``True`` döner. İlk çalıştırmada
+    (istemci hash göndermedi → ``None``/boş) veya backend hash üretemediyse
+    ``False`` döner; böylece hash göndermeyen mevcut istemcilerin davranışı
+    değişmez. Karşılaştırma tip-toleranslıdır (int/str normalize edilir).
+    """
+    if not gonderilen_hash or not guncel_hash:
+        return False
+    return str(gonderilen_hash) != str(guncel_hash)
+
+
 def plan_kontrati_olustur(
     hedef_sonuc: HedefSonuc,
     personeller: List[SolverPersonel],

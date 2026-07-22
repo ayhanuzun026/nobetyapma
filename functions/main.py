@@ -25,6 +25,7 @@ from planlayici import (
     frontend_gorev_kota_override_topla,
     frontend_kilitli_hedefleri_topla,
     ortak_plan_uret,
+    plan_hash_bayat_mi,
 )
 from parsers import (
     build_gun_tipleri,
@@ -611,6 +612,24 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 "error": "Planlama sonucu bos. Personel ve gorev verilerini kontrol edin.",
                 "error_type": "PlanBos"
             }, status=400)
+
+        # Bayat-plan (optimistik eszamanlilik) kontrolu: istemci onceki
+        # onizlemeden aldigi planHash'i gonderir. Arada girdi degistiyse
+        # yeniden uretilen plan_hash farkli olur -> pahali cozumden ONCE 409.
+        gonderilen_plan_hash = data.get("planHash")
+        guncel_plan_hash = plan_kontrati.plan_hash if plan_kontrati else None
+        if plan_hash_bayat_mi(gonderilen_plan_hash, guncel_plan_hash):
+            logger.info(
+                "nobet_coz bayat plan reddedildi: gonderilen=%s guncel=%s",
+                gonderilen_plan_hash, guncel_plan_hash,
+            )
+            return _json_response({
+                "error": "Plan bayat: gonderilen planHash guncel veriyle uyusmuyor. "
+                         "Onizlemeyi yenileyip tekrar deneyin.",
+                "error_type": "PlanBayat",
+                "gonderilenPlanHash": gonderilen_plan_hash,
+                "guncelPlanHash": guncel_plan_hash,
+            }, status=409)
 
         def _plan_yenileyici(yeni_ara_gun: int):
             return ortak_plan_uret(
