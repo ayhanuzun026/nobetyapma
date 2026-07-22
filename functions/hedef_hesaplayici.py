@@ -113,6 +113,24 @@ class HedefHesaplayici:
         """Slot'un rol adı = base_name (yoksa ad). Final solver ile aynı tanım."""
         return gorev.base_name if gorev.base_name else gorev.ad
 
+    def _havuz_coz(self) -> Dict[str, set]:
+        """``gorev_havuzlari``yı gerçek (normalize) personel id kümelerine çözer.
+
+        Yalnız tanımlı rollere (mevcut slotlara karşılık gelen) ait havuzlar
+        döner; id normalizasyonuna dayanıklıdır (``find_matching_id``).
+        Dönen: ``{rol: {normalize_id, ...}}``. Havuz yoksa boş sözlük.
+        """
+        tum_roller = set(self.rol_slot_sayilari.keys())
+        havuz: Dict[str, set] = {}
+        for rol, uyeler in self.gorev_havuzlari.items():
+            if rol not in tum_roller:
+                continue
+            cozulmus = {
+                find_matching_id(pid, self.personeller.keys()) for pid in uyeler
+            }
+            havuz[rol] = {mid for mid in cozulmus if mid is not None}
+        return havuz
+
     def _havuz_arz_kapasiteleri(self) -> Dict[str, tuple]:
         """Kişi-gün-görev birleşik kapasite katmanı.
 
@@ -136,15 +154,7 @@ class HedefHesaplayici:
             return {}
 
         tum_roller = set(self.rol_slot_sayilari.keys())
-        # Rol -> izinli gerçek personel id kümesi (id normalizasyonuna dayanıklı)
-        havuz: Dict[str, set] = {}
-        for rol, uyeler in self.gorev_havuzlari.items():
-            if rol not in tum_roller:
-                continue
-            cozulmus = {
-                find_matching_id(pid, self.personeller.keys()) for pid in uyeler
-            }
-            havuz[rol] = {mid for mid in cozulmus if mid is not None}
+        havuz = self._havuz_coz()
 
         def _calisabilir_roller(pid) -> set:
             # Havuzda olmayan rol herkese açık; havuzdaki rol yalnız üyelerine.
@@ -168,6 +178,91 @@ class HedefHesaplayici:
             }
             sonuc[rol] = (confined, arz_tipleri)
         return sonuc
+
+    def _manuel_rol_kenarlari(self) -> Dict[int, set]:
+        """Manuel atamaların hangi rollere yapıldığını çıkarır.
+
+        Transport modelinde uygunluk kenarı olarak kullanılır: kullanıcı bir
+        kişiyi havuz dışı bir role manuel atadıysa (bilinçli override), bu
+        kenar eklenerek transport modelinin o atamayı yanlışlıkla infeasible
+        yapması önlenir. Kenar eklemek yalnızca KAPASITE ekler → hiçbir geçerli
+        çözümü elemez. Rol, önce ``slot_idx`` ile, olmazsa görev adıyla eşlenir.
+        Dönen: ``{personel_id: {rol, ...}}``.
+        """
+        slot_rol = {g.slot_idx: self._rol_adi(g) for g in self.gorevler}
+        kenarlar: Dict[int, set] = {}
+        for atama in self.manuel_atamalar:
+            pid = find_matching_id(atama.personel_id, self.personeller.keys())
+            if pid is None:
+                continue
+            rol = slot_rol.get(getattr(atama, 'slot_idx', None))
+            if rol is None and getattr(atama, 'gorev_adi', ''):
+                for g in self.gorevler:
+                    if atama.gorev_adi in (g.ad, g.base_name):
+                        rol = self._rol_adi(g)
+                        break
+            if rol is not None:
+                kenarlar.setdefault(pid, set()).add(rol)
+        return kenarlar
+
+    def _rol_transport_kisitlari_ekle(self, model, h) -> None:
+        """Kişi-gün-görev BİRLEŞİK count-seviyesi transport fizibilitesi.
+
+        ``h[pid,tip]`` hedeflerinin gerçek rollere (görev tiplerine)
+        dağıtılabilir olmasını garanti eder. Kısmi-rol (ör. 3 rolden 2'sini
+        yapabilen) kişilerde, confined-tekil üst sınırın KAÇIRDIĞI Hall-tipi
+        çapraz uygunluğu yakalar: bir rolü yalnız az sayıda/kısıtlı-müsait kişi
+        yapabiliyorsa ve o rolün talebi count seviyesinde karşılanamıyorsa model
+        INFEASIBLE olur — çizelge modelinin dolduramayacağı hedef üretip boş
+        slot bırakmak yerine kökten engeller.
+
+        Transport değişkeni ``x[pid,tip,rol]``:
+          * ``Σ_rol x[pid,tip,rol] == h[pid,tip]`` (kişinin tipteki yükü rollere dağılır)
+          * ``Σ_pid x[pid,tip,rol] == rol_slot_sayısı[rol] × o_tipteki_gün_sayısı``
+          * ``x[pid,tip,rol]`` yalnız pid'in yapabildiği (havuz) VEYA manuel
+            atandığı roller için > 0 olabilir.
+
+        Bu, transportasyon politopu (tamamen unimodüler) olduğundan count
+        seviyesinde tam Gale–Hoffman fizibilitesidir: güvenli bir yapıdır,
+        gerçekten fizibil hiçbir hedef dağılımını elemez. ``gorev_havuzlari``
+        yoksa tüm roller açık → transport trivial → hiç kurulmaz (davranış
+        değişmez, ek değişken üretilmez).
+        """
+        if not self.gorev_havuzlari:
+            return
+
+        havuz = self._havuz_coz()
+        manuel_kenarlar = self._manuel_rol_kenarlari()
+        tum_roller = sorted(self.rol_slot_sayilari.keys())
+        pids = [p.id for p in self.personel_listesi]
+
+        def _uygun_roller(pid) -> set:
+            roller = {
+                rol for rol in tum_roller
+                if rol not in havuz or pid in havuz[rol]
+            }
+            roller |= manuel_kenarlar.get(pid, set())
+            return roller
+
+        for tip in GUN_TIPLERI:
+            tipteki_gun = self.tip_sayilari.get(tip, 0)
+            if tipteki_gun == 0:
+                continue
+
+            x = {}
+            for pid in pids:
+                uygun = _uygun_roller(pid)
+                for rol in uygun:
+                    x[pid, rol] = model.NewIntVar(0, tipteki_gun, f'x_{pid}_{tip}_{rol}')
+                # Kişinin bu tipteki yükü yapabildiği rollere dağılmalı.
+                # Uygun rolü yoksa toplam 0 → h[pid,tip] == 0 zorlanır.
+                model.Add(h[pid, tip] == sum(x[pid, rol] for rol in uygun))
+
+            # Her rolün bu tipteki talebi tam karşılanmalı.
+            for rol in tum_roller:
+                talep = self.rol_slot_sayilari[rol] * tipteki_gun
+                katilanlar = [x[pid, rol] for pid in pids if (pid, rol) in x]
+                model.Add(sum(katilanlar) == talep)
 
     def _hesapla_kapasiteler(self):
         manuel_mazeret_onayli_gunler = {}
@@ -600,6 +695,11 @@ class HedefHesaplayici:
                 continue
             for tip, arz_tip in arz_tipleri.items():
                 model.Add(sum(h[pid, tip] for pid in uygun_uyeler) <= arz_tip)
+
+        # Kişi-gün-görev BİRLEŞİK transport fizibilitesi: hedeflerin gerçek
+        # rollere dağıtılabilirliğini count seviyesinde garanti eder (confined
+        # sınırın kaçırdığı kısmi-rol Hall ihlallerini yakalar).
+        self._rol_transport_kisitlari_ekle(model, h)
 
         # --- 5. AYLIK KATSAYI VE TARİHSEL BORÇ ADALETİ ---
         current_dimensions = {

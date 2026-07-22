@@ -318,6 +318,86 @@ def test_havuz_arzi_gun_tipi_bazinda_sinirlar():
     assert sum(toplam.values()) == 12, toplam
 
 
+def test_rol_transport_hall_alt_kume_ihlalini_yakalar():
+    # Kişi-gün-görev BİRLEŞİK model (transport fizibilitesi): confined-tekil üst
+    # sınırın KAÇIRDIĞI Hall-tipi çapraz uygunluğu yakalar. A,B rolleri herkese
+    # açık; C rolünü yalnız P1,P2,P3 yapabilir ama her biri tek bir güne müsait
+    # → C talebi (1 slot × 4 gün = 4) yalnız 3 kişi-gün ile karşılanabilir ve
+    # gün4'te hiç C-yapabilen müsait değil → count seviyesinde infeasible.
+    # Kimse TEK role hapsedilmediği için eski confined sınır bunu göremez;
+    # transport fizibilitesi hedef modelini INFEASIBLE yapar (çizelge modelinin
+    # dolduramayacağı hedef üretmek yerine boş slotu kökten engeller).
+    gun_tipleri = {1: "hici", 2: "hici", 3: "hici", 4: "hici"}
+    gorevler = [
+        SolverGorev(id=1, ad="A", slot_idx=0, base_name="A"),
+        SolverGorev(id=2, ad="B", slot_idx=1, base_name="B"),
+        SolverGorev(id=3, ad="C", slot_idx=2, base_name="C"),
+    ]
+    personeller = [
+        SolverPersonel(id=1, ad="P1", mazeret_gunleri={2, 3, 4}),  # C yapabilir, yalnız gün1
+        SolverPersonel(id=2, ad="P2", mazeret_gunleri={1, 3, 4}),  # C yapabilir, yalnız gün2
+        SolverPersonel(id=3, ad="P3", mazeret_gunleri={1, 2, 4}),  # C yapabilir, yalnız gün3
+        SolverPersonel(id=4, ad="P4"),
+        SolverPersonel(id=5, ad="P5"),
+        SolverPersonel(id=6, ad="P6"),
+        SolverPersonel(id=7, ad="P7"),
+    ]
+    sonuc = HedefHesaplayici(
+        gun_sayisi=4,
+        gun_tipleri=gun_tipleri,
+        personeller=personeller,
+        gorevler=gorevler,
+        gorev_havuzlari={
+            "A": {1, 2, 3, 4, 5, 6, 7},
+            "B": {1, 2, 3, 4, 5, 6, 7},
+            "C": {1, 2, 3},
+        },
+        ara_gun=0,
+    ).hesapla()
+    assert sonuc.basarili is False, (
+        "Rol-transport karşılanamayan C talebini yakalamalı; üretilen hedefler: "
+        f"{[(h['id'], h['hedef_toplam']) for h in sonuc.hedefler]}"
+    )
+
+
+def test_rol_transport_gecerli_kismi_rol_dagilimini_elemez():
+    # Transport güvenli üst sınırdır: gerçekten fizibil kısmi-rol dağılımını
+    # ASLA elemez. C'yi 3 kişi yapabilir ve 4 günün her birinde en az biri
+    # müsait → C talebi (4) karşılanabilir; model feasible kalmalı.
+    gun_tipleri = {1: "hici", 2: "hici", 3: "hici", 4: "hici"}
+    gorevler = [
+        SolverGorev(id=1, ad="A", slot_idx=0, base_name="A"),
+        SolverGorev(id=2, ad="B", slot_idx=1, base_name="B"),
+        SolverGorev(id=3, ad="C", slot_idx=2, base_name="C"),
+    ]
+    personeller = [
+        SolverPersonel(id=1, ad="P1"),  # C yapabilir, tüm günler müsait
+        SolverPersonel(id=2, ad="P2"),  # C yapabilir, tüm günler müsait
+        SolverPersonel(id=3, ad="P3"),  # C yapabilir, tüm günler müsait
+        SolverPersonel(id=4, ad="P4"),
+        SolverPersonel(id=5, ad="P5"),
+        SolverPersonel(id=6, ad="P6"),
+        SolverPersonel(id=7, ad="P7"),
+    ]
+    sonuc = HedefHesaplayici(
+        gun_sayisi=4,
+        gun_tipleri=gun_tipleri,
+        personeller=personeller,
+        gorevler=gorevler,
+        gorev_havuzlari={
+            "A": {1, 2, 3, 4, 5, 6, 7},
+            "B": {1, 2, 3, 4, 5, 6, 7},
+            "C": {1, 2, 3},
+        },
+        ara_gun=0,
+    ).hesapla()
+    assert sonuc.basarili is True, sonuc.mesaj
+    hedefler = {h["id"]: h["hedef_toplam"] for h in sonuc.hedefler}
+    # C talebi 4; yalnız {1,2,3} yapabilir → toplam hedefleri ≥ 4 olmalı.
+    assert hedefler[1] + hedefler[2] + hedefler[3] >= 4, hedefler
+    assert sum(hedefler.values()) == 12, hedefler
+
+
 def test_unknown_history_is_not_treated_as_zero_debt():
     sonuc = HedefHesaplayici(
         gun_sayisi=4,
