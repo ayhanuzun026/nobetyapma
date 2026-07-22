@@ -247,6 +247,77 @@ def test_fairness_redistributes_unavailable_and_exempt_capacity():
     assert muaf_hedefleri == {1: 2, 2: 1, 3: 3}, muaf_hedefleri
 
 
+def test_havuz_arzi_confined_kisilerin_toplam_hedefini_sinirlar():
+    # Kişi-gün-görev birleşik kapasite: yalnız TEK role çalışabilen (confined)
+    # kişilerin toplam hedefi, o rolün fiziksel slot arzını (slot × gün) aşamaz.
+    # C,D'ye büyük geçmiş borç verilir → adalet onları azaltıp tüm yükü
+    # AMATEM'e hapsedilmiş A,B,E'ye yığmak ister; havuz arzı buna sınır koyar.
+    gun_tipleri = {gun: "hici" for gun in range(1, 7)}  # 6 gün
+    gorevler = [
+        SolverGorev(id=1, ad="AMATEM", slot_idx=0, base_name="AMATEM", exclusive=True),
+        SolverGorev(id=2, ad="MAVI", slot_idx=1, base_name="MAVI"),
+    ]
+    personeller = [
+        SolverPersonel(id=1, ad="A", gecmis_veri_durumu="tam", yillik_gerceklesen={"hici": 0}),
+        SolverPersonel(id=2, ad="B", gecmis_veri_durumu="tam", yillik_gerceklesen={"hici": 0}),
+        SolverPersonel(id=3, ad="E", gecmis_veri_durumu="tam", yillik_gerceklesen={"hici": 0}),
+        SolverPersonel(id=4, ad="C", gecmis_veri_durumu="tam", yillik_gerceklesen={"hici": 50}),
+        SolverPersonel(id=5, ad="D", gecmis_veri_durumu="tam", yillik_gerceklesen={"hici": 50}),
+    ]
+    sonuc = HedefHesaplayici(
+        gun_sayisi=6,
+        gun_tipleri=gun_tipleri,
+        personeller=personeller,
+        gorevler=gorevler,
+        gorev_havuzlari={"AMATEM": {1, 2, 3}, "MAVI": {4, 5}},
+        ara_gun=0,
+    ).hesapla()
+    assert sonuc.basarili is True, sonuc.mesaj
+    hedefler = {h["id"]: h["hedef_toplam"] for h in sonuc.hedefler}
+    # AMATEM arzı = 1 slot × 6 gün = 6 → hapsedilmiş {1,2,3} toplamı ≤ 6
+    assert hedefler[1] + hedefler[2] + hedefler[3] <= 6, hedefler
+    # MAVI arzı = 6 → hapsedilmiş {4,5} toplamı ≤ 6
+    assert hedefler[4] + hedefler[5] <= 6, hedefler
+    # Toplam slot korunur (2 slot × 6 gün = 12)
+    assert sum(hedefler.values()) == 12, hedefler
+
+
+def test_havuz_arzi_gun_tipi_bazinda_sinirlar():
+    # Gün tipi granülerliği: toplam kapasite bol olsa bile, confined kişilerin
+    # tek bir gün tipindeki hedefi o rolün o tipteki slot arzını aşamaz.
+    # 4 gün hici + 2 gün cmt. AMATEM cmt arzı = 1 slot × 2 gün = 2.
+    # C,D'ye büyük cmt borcu → adalet tüm cmt yükünü AMATEM'e hapsedilmiş
+    # A,B'ye yığmak ister (toplam kapasite buna izin verir) → gün tipi sınırı keser.
+    gun_tipleri = {1: "hici", 2: "hici", 3: "hici", 4: "hici", 5: "cmt", 6: "cmt"}
+    gorevler = [
+        SolverGorev(id=1, ad="AMATEM", slot_idx=0, base_name="AMATEM", exclusive=True),
+        SolverGorev(id=2, ad="MAVI", slot_idx=1, base_name="MAVI"),
+    ]
+    personeller = [
+        SolverPersonel(id=1, ad="A", gecmis_veri_durumu="tam", yillik_gerceklesen={"cmt": 0}),
+        SolverPersonel(id=2, ad="B", gecmis_veri_durumu="tam", yillik_gerceklesen={"cmt": 0}),
+        SolverPersonel(id=3, ad="C", gecmis_veri_durumu="tam", yillik_gerceklesen={"cmt": 50}),
+        SolverPersonel(id=4, ad="D", gecmis_veri_durumu="tam", yillik_gerceklesen={"cmt": 50}),
+    ]
+    sonuc = HedefHesaplayici(
+        gun_sayisi=6,
+        gun_tipleri=gun_tipleri,
+        personeller=personeller,
+        gorevler=gorevler,
+        gorev_havuzlari={"AMATEM": {1, 2}, "MAVI": {3, 4}},
+        ara_gun=0,
+    ).hesapla()
+    assert sonuc.basarili is True, sonuc.mesaj
+    tipler = {h["id"]: h["hedef_tipler"] for h in sonuc.hedefler}
+    # AMATEM cmt arzı = 2 → hapsedilmiş {1,2}'nin cmt toplamı ≤ 2
+    assert tipler[1]["cmt"] + tipler[2]["cmt"] <= 2, tipler
+    # AMATEM hici arzı = 1 × 4 = 4 → {1,2} hici toplamı ≤ 4
+    assert tipler[1]["hici"] + tipler[2]["hici"] <= 4, tipler
+    # Tüm cmt slotları (2 rol × 2 gün = 4) dağıtılmalı → toplam korunur
+    toplam = {h["id"]: h["hedef_toplam"] for h in sonuc.hedefler}
+    assert sum(toplam.values()) == 12, toplam
+
+
 def test_unknown_history_is_not_treated_as_zero_debt():
     sonuc = HedefHesaplayici(
         gun_sayisi=4,

@@ -349,6 +349,7 @@ def ortak_plan_uret(
         ara_gun=ara_gun,
         saat_degerleri=saat_degerleri,
         kilitli_hedefler=kilitli_hedefler,
+        gorev_havuzlari=gorev_havuzlari or {},
     )
     hedef_sonuc = hesaplayici.hesapla()
     if not hedef_sonuc or not hedef_sonuc.basarili:

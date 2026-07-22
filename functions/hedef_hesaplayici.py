@@ -69,7 +69,8 @@ class HedefHesaplayici:
                  gorev_kisitlamalari: Dict[int, str] = None,
                  manuel_atamalar: List[SolverAtama] = None,
                  ara_gun: int = 2, saat_degerleri: Dict[str, int] = None,
-                 kilitli_hedefler: Dict[int, Dict[str, int]] = None):
+                 kilitli_hedefler: Dict[int, Dict[str, int]] = None,
+                 gorev_havuzlari: Dict[str, set] = None):
         self.gun_sayisi = gun_sayisi
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
@@ -82,6 +83,22 @@ class HedefHesaplayici:
         self.saat = saat_degerleri or SAAT_DEGERLERI
         self.slot_sayisi = len(gorevler) if gorevler else 6
         self.kilitli_hedefler = kilitli_hedefler or {}
+        self.gorev_havuzlari = {
+            str(rol): set(ids)
+            for rol, ids in (gorev_havuzlari or {}).items()
+        }
+
+        # Rol yapıları (kişi-gün-görev birleşik kapasite katmanı için).
+        # Rol = slot'un base_name'i (yoksa adı); final solver ile aynı tanım.
+        self.rol_slot_sayilari: Dict[str, int] = {}
+        self.rol_slot_adlari: Dict[str, set] = {}
+        self.exclusive_roller: set = set()
+        for g in self.gorevler:
+            rol = self._rol_adi(g)
+            self.rol_slot_sayilari[rol] = self.rol_slot_sayilari.get(rol, 0) + 1
+            self.rol_slot_adlari.setdefault(rol, set()).add(g.ad)
+            if g.exclusive or bool(getattr(g, 'kritik', False)):
+                self.exclusive_roller.add(rol)
 
         self.tip_sayilari = {t: 0 for t in GUN_TIPLERI}
         for g, tip in gun_tipleri.items():
@@ -90,6 +107,67 @@ class HedefHesaplayici:
         self.tip_slotlari = {t: self.tip_sayilari[t] * self.slot_sayisi for t in GUN_TIPLERI}
         self.toplam_slot = sum(self.tip_slotlari.values())
         self._hesapla_kapasiteler()
+
+    @staticmethod
+    def _rol_adi(gorev: SolverGorev) -> str:
+        """Slot'un rol adı = base_name (yoksa ad). Final solver ile aynı tanım."""
+        return gorev.base_name if gorev.base_name else gorev.ad
+
+    def _havuz_arz_kapasiteleri(self) -> Dict[str, tuple]:
+        """Kişi-gün-görev birleşik kapasite katmanı.
+
+        Yalnız TEK role çalışabilen (confined) kişilerin GÜN TİPİ bazındaki
+        toplam hedefi, o rolün ilgili gün tipindeki fiziksel slot arzını
+        (slot_sayısı × o tipteki gün sayısı) aşamaz. Aksi halde hedef modeli,
+        çizelge modelinin dolduramayacağı görev hedefleri üretir → boş slot.
+        Gün tipi sınırları toplam sınırı da kapsar (örn. "4 uygun cuma var ama
+        sadece 2'sinde AMATEM boş" durumunu kökten çözer).
+
+        Yetki kaynağı otoriter ``gorev_havuzlari``dır: bir rol havuzda listeliyse
+        yalnız üyeleri o rolü yapabilir; havuzda olmayan (açık) rol herkese açıktır.
+        Açık rol varsa hiç kimse confined olmaz → kısıt üretilmez. Üretilen sınır
+        güvenli bir üst sınırdır: geçerli hiçbir çözümü elemez (yalnız fiziksel
+        olarak imkânsız hedef dağılımlarını keser).
+
+        Dönen: ``{rol: (confined_personel_id_kümesi, {gün_tipi: arz_ust_siniri})}``.
+        ``gorev_havuzlari`` verilmemişse boş sözlük (davranış değişmez).
+        """
+        if not self.gorev_havuzlari:
+            return {}
+
+        tum_roller = set(self.rol_slot_sayilari.keys())
+        # Rol -> izinli gerçek personel id kümesi (id normalizasyonuna dayanıklı)
+        havuz: Dict[str, set] = {}
+        for rol, uyeler in self.gorev_havuzlari.items():
+            if rol not in tum_roller:
+                continue
+            cozulmus = {
+                find_matching_id(pid, self.personeller.keys()) for pid in uyeler
+            }
+            havuz[rol] = {mid for mid in cozulmus if mid is not None}
+
+        def _calisabilir_roller(pid) -> set:
+            # Havuzda olmayan rol herkese açık; havuzdaki rol yalnız üyelerine.
+            return {
+                rol for rol in tum_roller
+                if rol not in havuz or pid in havuz[rol]
+            }
+
+        sonuc: Dict[str, tuple] = {}
+        for rol in havuz:
+            confined = {
+                pid for pid in self.personeller
+                if _calisabilir_roller(pid) == {rol}
+            }
+            if not confined:
+                continue
+            slot_sayisi = self.rol_slot_sayilari.get(rol, 0)
+            arz_tipleri = {
+                tip: slot_sayisi * self.tip_sayilari.get(tip, 0)
+                for tip in GUN_TIPLERI
+            }
+            sonuc[rol] = (confined, arz_tipleri)
+        return sonuc
 
     def _hesapla_kapasiteler(self):
         manuel_mazeret_onayli_gunler = {}
@@ -512,6 +590,16 @@ class HedefHesaplayici:
         # Gün tipi toplamları tutmalı
         for tip in GUN_TIPLERI:
             model.Add(sum(h[pid, tip] for pid in pids) == self.tip_slotlari[tip])
+
+        # Kişi-gün-görev birleşik kapasite: role hapsedilmiş kişilerin gün tipi
+        # bazındaki hedefi, rolün o tipteki fiziksel slot arzını aşamaz
+        # (güvenli üst sınır kesidi; gün tipi sınırları toplamı da kapsar).
+        for rol, (uyeler, arz_tipleri) in self._havuz_arz_kapasiteleri().items():
+            uygun_uyeler = [pid for pid in uyeler if pid in t]
+            if not uygun_uyeler:
+                continue
+            for tip, arz_tip in arz_tipleri.items():
+                model.Add(sum(h[pid, tip] for pid in uygun_uyeler) <= arz_tip)
 
         # --- 5. AYLIK KATSAYI VE TARİHSEL BORÇ ADALETİ ---
         current_dimensions = {
