@@ -145,6 +145,26 @@ class HedefHesaplayici:
         saat = net * 8
         return -(-saat // 24)  # ceil(saat / 24)
 
+    def _min_acik_neden_oneri(self, s: dict):
+        """Min nöbet açığının bağlayıcı nedenini teşhis edip somut öneri döner.
+
+        Kapasite üst sınırı (``kapasite``) mesai hedefinin altında kaldığında,
+        hangi kısıtın bağladığına göre kullanıcıya "nasıl tamamlanır" önerisi
+        üretir. Kesin atıf her zaman mümkün değildir; en olası neden seçilir.
+        """
+        kapasite = s.get('kapasite', s.get('uygulanan_ust_sinir', 0))
+        max_nobet = s.get('max_nobet')
+        ara_kap = s.get('ara_gun_kapasitesi')
+        if max_nobet is not None and max_nobet < kapasite:
+            return ('max_nobet',
+                    f"Maksimum nöbet sınırı ({max_nobet}) mesai hedefinin altında; sınırı yükseltin.")
+        if ara_kap is not None and ara_kap == kapasite:
+            return ('ara_gun',
+                    f"Ara gün kuralı ({self.ara_gun}) uygun günü sınırlıyor; "
+                    f"mazeret kaldırın ya da ara günü düşürün.")
+        return ('musaitlik',
+                "Uygun gün az (mazeret/izin yoğun); bazı mazeret/izinleri kaldırarak kapasite açın.")
+
     def _havuz_coz(self) -> Dict[str, set]:
         """``gorev_havuzlari``yı gerçek (normalize) personel id kümelerine çözer.
 
@@ -1549,11 +1569,33 @@ class HedefHesaplayici:
                     'tasma_gorevi': tasma
                 })
 
+        # Min nöbet açığı özeti (112 profili): mesai hedefine ulaşamayan kişiler.
+        # Çizelge kırılmaz; kullanıcıya kim/ne kadar eksik + nasıl tamamlanır sunulur.
+        min_nobet_aciklari = []
+        if self.kurum_profili == "112":
+            for pid, s in personel_sinirlar.items():
+                acik = s.get('min_nobet_acigi', 0)
+                if acik > 0:
+                    p = self.personeller.get(pid)
+                    ulasilan = s.get('uygulanan_ust_sinir', 0)
+                    neden, oneri = self._min_acik_neden_oneri(s)
+                    min_nobet_aciklari.append({
+                        'personel_id': pid,
+                        'personel_ad': p.ad if p else str(pid),
+                        'hedef_min_nobet': ulasilan + acik,
+                        'ulasilabilen': ulasilan,
+                        'acik': acik,
+                        'neden': neden,
+                        'oneri': oneri,
+                    })
+            min_nobet_aciklari.sort(key=lambda x: x['acik'], reverse=True)
+
         istatistikler = {
             'toplam_slot': self.toplam_slot,
             'toplam_hedef': sum(h['hedef_toplam'] for h in hedefler),
             'tip_slotlari': self.tip_slotlari,
             'personel_sayisi': n,
+            'min_nobet_aciklari': min_nobet_aciklari,
             'birlikte_gruplar': birlikte_bilgi,
             'birlikte_debug': birlikte_debug,
             'birlikte_kural_sayisi': len(self.birlikte_kurallar),

@@ -1557,6 +1557,19 @@ def test_mesai_bazli_min_nobet_112_soft():
     assert h1["adalet"]["sinirlar"]["min_nobet_acigi"] == 2   # 3 hedef - 1 kapasite
     assert h1["hedef_toplam"] <= 1
 
+    # (f) Acik ozeti istatistiklerde: kim/ne kadar eksik + neden + oneri.
+    aciklar = sonuc.istatistikler.get("min_nobet_aciklari", [])
+    kisitli = next(a for a in aciklar if a["personel_id"] == 1)
+    assert kisitli["acik"] == 2
+    assert kisitli["hedef_min_nobet"] == 3 and kisitli["ulasilabilen"] == 1
+    assert kisitli["neden"] == "max_nobet"       # max_nobet=1 baglayici
+    assert kisitli["oneri"]                        # somut oneri metni dolu
+
+    # (g) Genel profilde acik ozeti bos (mesai hesabi pasif).
+    genel_sonuc = HedefHesaplayici(gun_sayisi=11, gun_tipleri=is_gunu9, personeller=kisiler,
+                                   gorevler=gorev, ara_gun=0).hesapla()
+    assert genel_sonuc.istatistikler.get("min_nobet_aciklari", []) == []
+
 
 if __name__ == "__main__":
     tests = [name for name in globals() if name.startswith("test_")]

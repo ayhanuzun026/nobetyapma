@@ -84,6 +84,16 @@ test('empty-slot swap suggestions (takas_onerileri) are surfaced in the diagnost
   assert.match(html, /o\.tur === 'dogrudan_atama'/);
 });
 
+test('min nobet shortfall (112) is warned with completion suggestion', () => {
+  // Backend istatistikleri min_nobet_aciklari uretir; frontend uyari panelinde gosterir.
+  assert.match(html, /window\.ortoolsIstatistikler\?\.min_nobet_aciklari \|\| \[\]/);
+  assert.match(html, /kişi min nöbetine ulaşamadı/);
+  // Kim/ne kadar eksik + somut oneri (escape'li — XSS guvenli).
+  assert.match(html, /escapeHtml\(a\.personel_ad\)/);
+  assert.match(html, /escapeHtml\(a\.oneri\)/);
+  assert.match(html, /a\.acik/);
+});
+
 test('leave types egitim/rapor are first-class and consistently gate availability', () => {
   // Ayrı Eğitim + Rapor giriş butonları.
   assert.match(html, /mazeretUygula\('egitim'\)/);
