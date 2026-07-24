@@ -432,6 +432,18 @@
       font-weight: 800;
     }
 
+    .cal-egitim {
+      background: #8b5cf6 !important;
+      color: #fff;
+      font-weight: 800;
+    }
+
+    .cal-rapor {
+      background: #0ea5e9 !important;
+      color: #fff;
+      font-weight: 800;
+    }
+
     /* Mazeret Özet Panel */
     .mazeret-ozet-panel {
       background: linear-gradient(135deg, #0f172a, #1e293b);
@@ -1198,6 +1210,12 @@
         </button>
         <button class="btn btn-sm" style="background:#f97316; color:#fff;" onclick="mazeretUygula('nobetizni')">
           <i class="fa-solid fa-bed"></i> Nöbet İzni
+        </button>
+        <button class="btn btn-sm" style="background:#8b5cf6; color:#fff;" onclick="mazeretUygula('egitim')">
+          <i class="fa-solid fa-graduation-cap"></i> Eğitim
+        </button>
+        <button class="btn btn-sm" style="background:#0ea5e9; color:#fff;" onclick="mazeretUygula('rapor')">
+          <i class="fa-solid fa-notes-medical"></i> Rapor
         </button>
         <button class="btn btn-sm btn-secondary" onclick="mazeretUygula('temizle')">
           <i class="fa-solid fa-eraser"></i> Temizle
@@ -2127,6 +2145,8 @@
         mazeretler: [],
         yillikIzinler: [],
         nobetIzinleri: [],
+        egitimler: [],
+        raporlar: [],
         sabitler: [],
         // Hedefler (Step 5'te hesaplanır)
         hedef: { hici: 0, prs: 0, cum: 0, cmt: 0, pzr: 0 },
@@ -3182,9 +3202,7 @@
       const gunSayisi = getGunSayisi(yil, ay);
       const musaitGunler = { hici: 0, prs: 0, cum: 0, cmt: 0, pzr: 0 };
       for (let d = 1; d <= gunSayisi; d++) {
-        const mazeretli = personel.mazeretler?.includes(d) ||
-          personel.yillikIzinler?.includes(d) ||
-          personel.nobetIzinleri?.includes(d);
+        const mazeretli = personelIzinliMi(personel, d);
         if (!mazeretli) {
           const tip = getGunTipi(yil, ay, d);
           musaitGunler[tip]++;
@@ -3421,12 +3439,12 @@
       }
 
       // MAZERET ÇAKIŞMA KONTROLÜ
-      const mazeretliGun = personel.mazeretler?.includes(gun) ||
-        personel.yillikIzinler?.includes(gun) ||
-        personel.nobetIzinleri?.includes(gun);
+      const mazeretliGun = personelIzinliMi(personel, gun);
       if (mazeretliGun) {
         const izinTuru = personel.yillikIzinler?.includes(gun) ? 'Yillik Izin' :
-          personel.nobetIzinleri?.includes(gun) ? 'Nobet Izni' : 'Mazeret';
+          personel.nobetIzinleri?.includes(gun) ? 'Nobet Izni' :
+          personel.egitimler?.includes(gun) ? 'Egitim' :
+          personel.raporlar?.includes(gun) ? 'Rapor' : 'Mazeret';
         const mazeretOnay = confirm(
           `⚠️ Mazeret Çakışması!\n\n` +
           `${personel.ad} için ${gun}. gün "${izinTuru}" kayıtlı.\n\n` +
@@ -3652,9 +3670,7 @@
         const musaitGunler = { hici: 0, prs: 0, cum: 0, cmt: 0, pzr: 0 };
         let toplamMusait = 0;
         for (let d = 1; d <= gunSayisi; d++) {
-          const mazeretli = personel.mazeretler?.includes(d) ||
-            personel.yillikIzinler?.includes(d) ||
-            personel.nobetIzinleri?.includes(d);
+          const mazeretli = personelIzinliMi(personel, d);
           if (!mazeretli) {
             const tip = getGunTipi(yil, ay, d);
             musaitGunler[tip]++;
@@ -3815,9 +3831,7 @@
         // Kişinin müsait gün tiplerini hesapla
         const musaitGunler = { hici: 0, prs: 0, cum: 0, cmt: 0, pzr: 0 };
         for (let d = 1; d <= gunSayisi; d++) {
-          const mazeretli = personel?.mazeretler?.includes(d) ||
-            personel?.yillikIzinler?.includes(d) ||
-            personel?.nobetIzinleri?.includes(d);
+          const mazeretli = personelIzinliMi(personel, d);
           if (!mazeretli) {
             const tip = getGunTipi(yil, ay, d);
             musaitGunler[tip]++;
@@ -4046,6 +4060,8 @@
               personel.mazeretler = (personel.mazeretler || []).filter(d => d !== gun);
               personel.yillikIzinler = (personel.yillikIzinler || []).filter(d => d !== gun);
               personel.nobetIzinleri = (personel.nobetIzinleri || []).filter(d => d !== gun);
+              personel.egitimler = (personel.egitimler || []).filter(d => d !== gun);
+              personel.raporlar = (personel.raporlar || []).filter(d => d !== gun);
 
               // Değerlendirme
               // Satır sonlarını ve fazla boşlukları temizle
@@ -4256,6 +4272,15 @@
     // ============================================
     // MAZERET GRİD
     // ============================================
+    // Kişi o gün herhangi bir izin/mazeret türünde mi (schedule bloklanır).
+    // Türler: mazeret, yıllık izin, nöbet izni, eğitim, rapor. Tek kaynak
+    // olsun diye tüm müsaitlik kontrolleri bunu kullanır (tür eklemek kolay).
+    function personelIzinliMi(p, gun) {
+      return !!(p?.mazeretler?.includes(gun) || p?.yillikIzinler?.includes(gun) ||
+        p?.nobetIzinleri?.includes(gun) || p?.egitimler?.includes(gun) ||
+        p?.raporlar?.includes(gun));
+    }
+
     function mazeretGridOlustur() {
       const { yil, ay } = getYilAy();
       const gunSayisi = getGunSayisi(yil, ay);
@@ -4308,6 +4333,12 @@
           } else if (p.nobetIzinleri?.includes(d)) {
             cell.classList.add('cal-nobetizni');
             cell.textContent = 'Nİ';
+          } else if (p.egitimler?.includes(d)) {
+            cell.classList.add('cal-egitim');
+            cell.textContent = 'Eğ';
+          } else if (p.raporlar?.includes(d)) {
+            cell.classList.add('cal-rapor');
+            cell.textContent = 'Rp';
           } else if (p.sabitler?.includes(d)) {
             cell.classList.add('cal-sabit');
             cell.textContent = 'NB';
@@ -4350,12 +4381,16 @@
         p.mazeretler = (p.mazeretler || []).filter(d => d !== gun);
         p.yillikIzinler = (p.yillikIzinler || []).filter(d => d !== gun);
         p.nobetIzinleri = (p.nobetIzinleri || []).filter(d => d !== gun);
+        p.egitimler = (p.egitimler || []).filter(d => d !== gun);
+        p.raporlar = (p.raporlar || []).filter(d => d !== gun);
         p.sabitler = (p.sabitler || []).filter(d => d !== gun);
 
         // Yeni durumu ekle
         if (tur === 'mazeret') p.mazeretler.push(gun);
         else if (tur === 'yillik') p.yillikIzinler.push(gun);
         else if (tur === 'nobetizni') p.nobetIzinleri.push(gun);
+        else if (tur === 'egitim') p.egitimler.push(gun);
+        else if (tur === 'rapor') p.raporlar.push(gun);
         else if (tur === 'sabit') p.sabitler.push(gun);
       });
 
@@ -4372,6 +4407,8 @@
         p.mazeretler = [];
         p.yillikIzinler = [];
         p.nobetIzinleri = [];
+        p.egitimler = [];
+        p.raporlar = [];
       });
       mazeretGridOlustur();
       mazeretDegisti = true;
@@ -4414,8 +4451,11 @@
         const mazeretli = p.mazeretler?.includes(m.gun);
         const yillikli = p.yillikIzinler?.includes(m.gun);
         const nobetIzinli = p.nobetIzinleri?.includes(m.gun);
-        if (mazeretli || yillikli || nobetIzinli) {
-          const izinTuru = yillikli ? 'Yillik Izin' : nobetIzinli ? 'Nobet Izni' : 'Mazeret';
+        const egitimli = p.egitimler?.includes(m.gun);
+        const raporlu = p.raporlar?.includes(m.gun);
+        if (mazeretli || yillikli || nobetIzinli || egitimli || raporlu) {
+          const izinTuru = yillikli ? 'Yillik Izin' : nobetIzinli ? 'Nobet Izni' :
+            egitimli ? 'Egitim' : raporlu ? 'Rapor' : 'Mazeret';
           cakismalar.push({ ad: p.ad, gun: m.gun, izinTuru, gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
         }
       });
@@ -4457,9 +4497,7 @@
       const musaitGunler = { hici: [], prs: [], cum: [], cmt: [], pzr: [] };
 
       for (let d = 1; d <= gunSayisi; d++) {
-        const mazeretli = personel.mazeretler?.includes(d) ||
-          personel.yillikIzinler?.includes(d) ||
-          personel.nobetIzinleri?.includes(d);
+        const mazeretli = personelIzinliMi(personel, d);
         if (!mazeretli) {
           const tip = getGunTipi(yil, ay, d);
           musaitGunler[tip].push(d);
@@ -4504,9 +4542,7 @@
       for (let d = 1; d <= gunSayisi; d++) {
         // Tüm kişiler bu günde müsait mi?
         const hepsiMusait = kisiler.every(p => {
-          const mazeretli = p.mazeretler?.includes(d) ||
-            p.yillikIzinler?.includes(d) ||
-            p.nobetIzinleri?.includes(d);
+          const mazeretli = personelIzinliMi(p, d);
           return !mazeretli;
         });
 
@@ -4841,7 +4877,7 @@
           // Çok mazeretli gün = az kişi müsait = o güne birlikte grubu atamak mantıklı
           function gunMazeretSayisi(gun) {
             return personelListesi.filter(p =>
-              p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)
+              personelIzinliMi(p, gun)
             ).length;
           }
 
@@ -4992,7 +5028,7 @@
           const zorluk = { cmt: 5, pzr: 4, cum: 4, prs: 2, hici: 2 }[tip];
 
           const mazeretliSayisi = personelListesi.filter(p =>
-            p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d)
+            personelIzinliMi(p, d)
           ).length;
 
           gunSirasi.push({ gun: d, tip, zorluk, mazeretliSayisi });
@@ -5221,7 +5257,7 @@
         // Simülasyonda kişi atanabilir mi kontrolü
         function simKisiAtanabilirMi(p, gun, gorev, mevcutAraGun, softLimit = true) {
           if (Object.values(simAtanan[gun]).includes(p.id)) return false;
-          if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) return false;
+          if (personelIzinliMi(p, gun)) return false;
 
           // EXCLUSIVE MOD: Bu görev sadece kısıtlamalı kişilere mi ait?
           // Artık kişi bazlı exclusive kontrolü
@@ -5294,7 +5330,7 @@
               const mazeretSayisi = (p.mazeretler?.length || 0) + (p.yillikIzinler?.length || 0) + (p.nobetIzinleri?.length || 0);
               const musaitGunler = [];
               for (let d = 1; d <= gunSayisi; d++) {
-                if (!p.mazeretler?.includes(d) && !p.yillikIzinler?.includes(d) && !p.nobetIzinleri?.includes(d)) {
+                if (!personelIzinliMi(p, d)) {
                   musaitGunler.push(d);
                 }
               }
@@ -5330,7 +5366,7 @@
           const tip = getGunTipi(yil, ay, gun);
           const zorluk = { cmt: 5, pzr: 4, cum: 4 }[tip] || 3;
           const mazeretliSayisi = personelListesi.filter(p =>
-            p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)
+            personelIzinliMi(p, gun)
           ).length;
           return { gun, tip, zorluk, mazeretliSayisi };
         }).sort((a, b) => {
@@ -5343,7 +5379,7 @@
           const tip = getGunTipi(yil, ay, gun);
           const zorluk = { prs: 2, hici: 2 }[tip] || 2;
           const mazeretliSayisi = personelListesi.filter(p =>
-            p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)
+            personelIzinliMi(p, gun)
           ).length;
           return { gun, tip, zorluk, mazeretliSayisi };
         }).sort((a, b) => {
@@ -6573,7 +6609,7 @@
         // Bu gün müsait olan personel sayısı
         let musaitSayisi = 0;
         personelAnalizleri.forEach(p => {
-          const mazeretli = p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d);
+          const mazeretli = personelIzinliMi(p, d);
           if (!mazeretli) musaitSayisi++;
         });
 
@@ -6838,6 +6874,8 @@
         if (p.mazeretler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Mazeret', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
         else if (p.yillikIzinler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Yillik Izin', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
         else if (p.nobetIzinleri?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Nobet Izni', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
+        else if (p.egitimler?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Egitim', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
+        else if (p.raporlar?.includes(m.gun)) manuelCakismalar.push({ ad: p.ad, gun: m.gun, tur: 'Rapor', gorev: m.gorevAdi, onayli: m.mazeretOnayli === true });
       });
       if (manuelCakismalar.length > 0) {
         html += `
@@ -6856,7 +6894,7 @@
         ${Array.from({ length: gunSayisi }, (_, i) => i + 1).map(d => {
         let mazeretCount = 0;
         personelAnalizleri.forEach(p => {
-          if (p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d)) mazeretCount++;
+          if (personelIzinliMi(p, d)) mazeretCount++;
         });
         const heatClass = mazeretCount >= 4 ? 'heat-4' : mazeretCount >= 3 ? 'heat-3' : mazeretCount >= 2 ? 'heat-2' : mazeretCount >= 1 ? 'heat-1' : 'heat-0';
         return `<div class="heat-cell ${heatClass}" title="${d}. gun: ${mazeretCount} kisi mazeretli">${d}</div>`;
@@ -7536,7 +7574,7 @@
 
             // Tüm grup üyeleri müsait mi?
             const tumMusait = grupUyeleri.every(p => {
-              if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) return false;
+              if (personelIzinliMi(p, gun)) return false;
               // Ara gün kontrolü (bu gün hariç)
               for (const atananGun of kisiAtama[p.id].gunler) {
                 if (atananGun !== gun && araGunIhlaliVar(atananGun, gun, araGun)) return false;
@@ -7943,7 +7981,7 @@
         if (!gunBinalari.has(pid)) gunBinalari.set(pid, new Set());
         gunBinalari.get(pid).add(binaId);
 
-        if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) {
+        if (personelIzinliMi(p, gun)) {
           if (m.mazeretOnayli === true) {
             uyari.push(`[M${idx}] ${p.ad}: mazeretli gune manuel atama (${gun}. gun) [onaylanmis]`);
           } else {
@@ -8514,6 +8552,8 @@
           mazeretler: p.mazeretler || [],
           yillikIzinler: p.yillikIzinler || [],
           nobetIzinleri: p.nobetIzinleri || [],
+          egitimler: p.egitimler || [],
+          raporlar: p.raporlar || [],
           // Gün tipi hedefleri
           hici: p.hedef?.hici || 0,
           prs: p.hedef?.prs || 0,
@@ -8877,6 +8917,8 @@
           mazeretler: p.mazeretler || [],
           yillikIzinler: p.yillikIzinler || [],
           nobetIzinleri: p.nobetIzinleri || [],
+          egitimler: p.egitimler || [],
+          raporlar: p.raporlar || [],
           yillikToplam: yillikToplam,
           devir: {}, // Devir bilgisi (şimdilik boş)
           isYukuKatsayisi: p.isYukuKatsayisi ?? 1,
@@ -9115,7 +9157,7 @@
         // Çok mazeretli gün = az kişi müsait = o güne birlikte grubu atamak mantıklı
         function gunMazeretSayisiYerel(gun) {
           return personelListesi.filter(p =>
-            p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)
+            personelIzinliMi(p, gun)
           ).length;
         }
 
@@ -9202,7 +9244,7 @@
 
         // Bu günde kaç kişi mazeretli?
         const mazeretliSayisi = personelListesi.filter(p =>
-          p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d)
+          personelIzinliMi(p, d)
         ).length;
 
         gunSirasi.push({ gun: d, tip, zorluk, mazeretliSayisi });
@@ -9223,7 +9265,7 @@
       // Kişinin belirli bir günde atanabilir olup olmadığını kontrol et
       function kisiAtanabilirMi(p, gun, gorev, isOzelGorev, mevcutAraGun = araGun) {
         if (Object.values(atanan[gun]).includes(p.id)) return false;
-        if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) return false;
+        if (personelIzinliMi(p, gun)) return false;
 
         // Ara gün kontrolü (minimum 1 gün ara ZORUNLU)
         for (const atananGun of kisiAtama[p.id].gunler) {
@@ -9270,7 +9312,7 @@
         let kalanMusaitGun = 0;
         for (let d = 1; d <= gunSayisi; d++) {
           if (kisiAtama[p.id].gunler.includes(d)) continue;
-          if (p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d)) continue;
+          if (personelIzinliMi(p, d)) continue;
 
           let araGunUygun = true;
           for (const atananGun of kisiAtama[p.id].gunler) {
@@ -9325,7 +9367,7 @@
             if (Object.values(atanan[gun]).includes(p.id)) return true;
 
             // Mazeret kontrolü
-            if (p.mazeretler?.includes(gun) || p.yillikIzinler?.includes(gun) || p.nobetIzinleri?.includes(gun)) return false;
+            if (personelIzinliMi(p, gun)) return false;
 
             // Ara gün kontrolü
             for (const atananGun of kisiAtama[p.id].gunler) {
@@ -9605,12 +9647,12 @@
 
           // Mazeretli sayısı
           const mazeretliSayisi = personelListesi.filter(p =>
-            p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d)
+            personelIzinliMi(p, d)
           ).length;
 
           // Ara gün kuralı nedeniyle müsait olmayan sayısı
           const araGunEngeli = personelListesi.filter(p => {
-            if (p.mazeretler?.includes(d) || p.yillikIzinler?.includes(d) || p.nobetIzinleri?.includes(d)) return false;
+            if (personelIzinliMi(p, d)) return false;
             return kisiAtama[p.id].gunler.some(g => Math.abs(g - d) <= 1); // Minimum 1 gün ara
           }).length;
 

@@ -1461,6 +1461,50 @@ def test_kurum_profili_bayragi_akisi():
     assert isinstance(plan, dict)
 
 
+def test_izin_turu_ayrimi_veri_modeli():
+    """Madde 1: izin turleri (izin/egitim/rapor/nobet_izni/mazeret) ayristirilir.
+
+    Mevcut ``mazeret_gunleri`` (schedule bloklayan birlesim) korunur; paralel
+    ``izin_turleri`` haritasi tur bilgisini SAKLAR (madde 2 mesai-borcu dususu
+    ve madde 5 izin yerlesimi bunu tuketecek). Bu asamada davranis degismez.
+    """
+    from utils import _extract_izin_turleri, _extract_mazeret_gunleri
+
+    p = {
+        "yillikIzinler": [3, 4],
+        "raporlar": [5],
+        "egitimler": [6],
+        "nobetIzinleri": [7],
+        "mazeretler": [8],
+    }
+    turler = _extract_izin_turleri(p)
+    assert turler[3] == "izin"
+    assert turler[4] == "izin"
+    assert turler[5] == "rapor"
+    assert turler[6] == "egitim"
+    assert turler[7] == "nobet_izni"
+    assert turler[8] == "mazeret"
+
+    # Cakisma: yuksek oncelikli kaynak (izin/rapor/egitim) plain mazeret'i yener.
+    assert _extract_izin_turleri({"mazeretler": [3], "yillikIzinler": [3]})[3] == "izin"
+    # Bos girdi -> bos harita (geriye tam uyumlu).
+    assert _extract_izin_turleri({}) == {}
+
+    # mazeret_gunleri artik egitim/rapor gunlerini de kapsamali (schedule bloklanir).
+    mg = _extract_mazeret_gunleri({"raporlar": [5], "egitimler": [6], "yillikIzinler": [3]})
+    assert {3, 5, 6} <= mg
+
+    # SolverPersonel izin_turleri tasir; default bos (geriye uyumlu).
+    assert SolverPersonel(id=1, ad="X").izin_turleri == {}
+
+    # Parser ucu: izin_turleri SolverPersonel'e akar.
+    kisiler = parse_solver_personeller_hedef({
+        "personeller": [{"id": 1, "ad": "A", "yillikIzinler": [2], "raporlar": [3]}]
+    })
+    assert kisiler[0].izin_turleri == {2: "izin", 3: "rapor"}
+    assert {2, 3} <= kisiler[0].mazeret_gunleri
+
+
 if __name__ == "__main__":
     tests = [name for name in globals() if name.startswith("test_")]
     for name in sorted(tests):

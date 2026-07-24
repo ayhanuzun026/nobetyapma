@@ -29,6 +29,10 @@ class SolverPersonel:
     id: int
     ad: str
     mazeret_gunleri: Set[int] = field(default_factory=set)
+    # Gün -> izin türü ("izin"/"egitim"/"rapor"/"nobet_izni"/"mazeret").
+    # mazeret_gunleri'nin türlü kırılımı; madde 2 (mesai-borcu) + madde 5
+    # (izin yerleşimi) tüketir. Boş = tür bilgisi yok (geriye uyumlu).
+    izin_turleri: Dict[int, str] = field(default_factory=dict)
     kisitli_gorev: Optional[str] = None
     tasma_gorevi: Optional[str] = None
     yetkili_gorevler: Set[str] = field(default_factory=set)

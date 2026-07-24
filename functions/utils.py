@@ -202,23 +202,61 @@ def gun_tipi_hesapla(yil: int, ay: int, gun: int, resmi_tatiller: list) -> str:
         return 'hici'
 
 
+# İzin türü kaynak anahtarları (frontend) -> tür etiketi.
+# Sıra = öncelik: bir gün birden çok anahtarda görünürse ÜSTTEKİ (mesai
+# borcunu düşüren izin/rapor/eğitim) düz mazereti yener. "izin/egitim/rapor"
+# mesaiye sayılır (madde 2); "mazeret" sayılmaz. "nobet_izni" ayrı tutulur.
+_IZIN_TURU_KAYNAKLARI = [
+    ('raporlar', 'rapor'),
+    ('yillikIzinler', 'izin'),
+    ('egitimler', 'egitim'),
+    ('nobetIzinleri', 'nobet_izni'),
+    ('mazeretler', 'mazeret'),
+]
+
+
+def _gunleri_ayikla(raw) -> list:
+    """list veya dict-anahtarı biçimindeki ham gün verisini int listeye çevirir."""
+    gunler = []
+    if isinstance(raw, list):
+        kaynak = raw
+    elif isinstance(raw, dict):
+        kaynak = raw.keys()
+    else:
+        return gunler
+    for x in kaynak:
+        try:
+            gunler.append(int(x))
+        except (ValueError, TypeError):
+            continue
+    return gunler
+
+
 def _extract_mazeret_gunleri(personel_data: Dict) -> Set[int]:
+    """Schedule'ı bloklayan tüm müsait-olmama günlerinin birleşimi.
+
+    Tür fark etmez: izin/rapor/eğitim/nöbet-izni/mazeret hepsi o gün nöbet
+    yazılamaz demektir. Tür bilgisi için ``_extract_izin_turleri`` kullanılır.
+    """
     mazeretler = set()
-    for key in ['mazeretler', 'yillikIzinler', 'nobetIzinleri']:
-        raw = personel_data.get(key, [])
-        if isinstance(raw, list):
-            for x in raw:
-                try:
-                    mazeretler.add(int(x))
-                except (ValueError, TypeError):
-                    continue
-        elif isinstance(raw, dict):
-            for k in raw.keys():
-                try:
-                    mazeretler.add(int(k))
-                except (ValueError, TypeError):
-                    continue
+    for key, _tur in _IZIN_TURU_KAYNAKLARI:
+        for g in _gunleri_ayikla(personel_data.get(key, [])):
+            mazeretler.add(g)
     return mazeretler
+
+
+def _extract_izin_turleri(personel_data: Dict) -> Dict[int, str]:
+    """Gün -> izin türü haritası ("izin"/"egitim"/"rapor"/"nobet_izni"/"mazeret").
+
+    Aynı gün birden çok kaynakta ise öncelik sırası (``_IZIN_TURU_KAYNAKLARI``)
+    belirler; ``setdefault`` ile ilk (yüksek öncelikli) kaynak kazanır.
+    Boş girdi -> boş harita (geriye tam uyumlu; kimse tüketmezse etkisiz).
+    """
+    turler: Dict[int, str] = {}
+    for key, tur in _IZIN_TURU_KAYNAKLARI:
+        for g in _gunleri_ayikla(personel_data.get(key, [])):
+            turler.setdefault(g, tur)
+    return turler
 
 
 def build_personel_lookup(personeller) -> Dict:

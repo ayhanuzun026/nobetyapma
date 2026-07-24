@@ -7,7 +7,8 @@ from typing import List, Dict, Set
 
 from utils import (
     _safe_int, get_days_in_month, gun_adi_bul, gun_tipi_hesapla,
-    _extract_mazeret_gunleri, _resolve_personel_id, _find_duplicate_personel_ids,
+    _extract_mazeret_gunleri, _extract_izin_turleri,
+    _resolve_personel_id, _find_duplicate_personel_ids,
     normalize_id, ids_match, build_personel_lookup,
 )
 from solver_models import (
@@ -162,6 +163,7 @@ def parse_kapasite_personeller(data: Dict) -> List[SolverPersonel]:
             id=normalize_id(p_data.get("id", len(personeller))),
             ad=p_data.get("ad"),
             mazeret_gunleri=mazeretler,
+            izin_turleri=_extract_izin_turleri(p_data),
             kisitli_gorev=p_data.get("kisitliGorev"),
             yillik_gerceklesen=yillik_gerceklesen,
             **adalet_alanlari,
@@ -263,6 +265,7 @@ def parse_solver_personeller_hedef(data: Dict) -> List[SolverPersonel]:
             id=pid,
             ad=p_data.get("ad", ""),
             mazeret_gunleri=mazeret_set,
+            izin_turleri=_extract_izin_turleri(p_data),
             kisitli_gorev=p_data.get("kisitliGorev"),
             yillik_gerceklesen=yillik_gerceklesen,
             gecmis_gorevler=gecmis_gorevler,
@@ -338,6 +341,7 @@ def parse_solver_personeller_coz(data: Dict, gorevler: List[SolverGorev]) -> Lis
             id=pid,
             ad=p_data.get("ad"),
             mazeret_gunleri=mazeretler,
+            izin_turleri=_extract_izin_turleri(p_data),
             kisitli_gorev=kisitli_gorev,
             tasma_gorevi=tasma_gorevi,
             hedef_tipler=hedef_tipler,

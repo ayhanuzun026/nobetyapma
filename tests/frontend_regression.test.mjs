@@ -84,6 +84,24 @@ test('empty-slot swap suggestions (takas_onerileri) are surfaced in the diagnost
   assert.match(html, /o\.tur === 'dogrudan_atama'/);
 });
 
+test('leave types egitim/rapor are first-class and consistently gate availability', () => {
+  // Ayrı Eğitim + Rapor giriş butonları.
+  assert.match(html, /mazeretUygula\('egitim'\)/);
+  assert.match(html, /mazeretUygula\('rapor'\)/);
+  // Tek kaynak müsaitlik yardımcısı beş türü de kapsamalı.
+  assert.match(html, /function personelIzinliMi\(p, gun\)/);
+  assert.match(html, /p\?\.egitimler\?\.includes\(gun\)/);
+  assert.match(html, /p\?\.raporlar\?\.includes\(gun\)/);
+  // Grid görünürlüğü + CSS.
+  assert.match(html, /cell\.classList\.add\('cal-egitim'\)/);
+  assert.match(html, /cell\.classList\.add\('cal-rapor'\)/);
+  assert.match(html, /\.cal-egitim\s*{/);
+  assert.match(html, /\.cal-rapor\s*{/);
+  // Her iki endpoint payload'ında egitimler+raporlar (hedef + coz = 2'şar).
+  assert.ok([...html.matchAll(/egitimler:\s*p\.egitimler \|\| \[\]/g)].length >= 2);
+  assert.ok([...html.matchAll(/raporlar:\s*p\.raporlar \|\| \[\]/g)].length >= 2);
+});
+
 test('kurum profili (112) selection persists and is sent to both endpoints', () => {
   // Adım 1'de profil seçimi UI'si (Genel / 112).
   assert.match(html, /id="inp-kurum-profili"/);
