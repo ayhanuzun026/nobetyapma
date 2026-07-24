@@ -84,6 +84,12 @@ test('empty-slot swap suggestions (takas_onerileri) are surfaced in the diagnost
   assert.match(html, /o\.tur === 'dogrudan_atama'/);
 });
 
+test('12/12 half-shift fill suggestions (yari_vardiya) are rendered distinctly', () => {
+  // Son çare 12/12 önerisi takas kartında ayrı badge + saat ikonu ile görünür.
+  assert.match(html, /o\.tur === 'yari_vardiya' \? 'badge-warn'/);
+  assert.match(html, /o\.tur === 'yari_vardiya' \? '⏱️ '/);
+});
+
 test('max ara gun (112) is configurable and sent to the solve endpoint', () => {
   assert.match(html, /id="inp-max-aragun"/);
   assert.match(html, /maxAraGun:\s*parseInt\(document\.getElementById\('inp-max-aragun'\)\?\.value\) \|\| 0/);

@@ -478,20 +478,21 @@ def test_together_capacity_uses_real_date_intersection():
     assert hesaplayici._birlikte_ortak_musait_tipler([1, 2])["cum"] == 1
 
 
-def _takas_solver(personeller, gorevler=None, ara_gun=2):
+def _takas_solver(personeller, gorevler=None, ara_gun=2, gun_sayisi=3, kurum_profili="genel"):
     if gorevler is None:
         gorevler = [SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")]
     hedefler = {
         p.id: {"hedef_toplam": 1, "hedef_tipler": {"hici": 1}} for p in personeller
     }
     return NobetSolver(
-        gun_sayisi=3,
-        gun_tipleri={1: "hici", 2: "hici", 3: "hici"},
+        gun_sayisi=gun_sayisi,
+        gun_tipleri={g: "hici" for g in range(1, gun_sayisi + 1)},
         personeller=personeller,
         gorevler=gorevler,
         hedefler=hedefler,
         ara_gun=ara_gun,
         max_sure_saniye=2,
+        kurum_profili=kurum_profili,
     )
 
 
@@ -1613,6 +1614,40 @@ def test_max_ara_gun_112_soft():
     # (c) SOFT: max-gap sağlanamayan senaryo (2 nöbet/20 gün) INFEASIBLE OLMAZ.
     s_soft = _coz(20, 2, "112", 5)
     assert s_soft.basarili is True, s_soft.mesaj
+
+
+def test_yari_vardiya_onerileri_112():
+    """Madde 4: 12/12 son çare doldurma (yalnız 112 profili, kullanıcı onaylı).
+
+    Boş slot normal/takasla dolamayınca, yapısal uygun kişiler gündüz+gece
+    12'şer saatle böler. Gece adayı g-1'de nöbette OLMAMALI (sabah çıkan o
+    akşam yazılamaz) ve g+1'de olmamalı. Salt-okunur; Madde 2 (24s) değişmez.
+    """
+    personeller = [
+        SolverPersonel(id=1, ad="A"),
+        SolverPersonel(id=2, ad="B"),
+        SolverPersonel(id=3, ad="C"),
+    ]
+    # A@gün1, B@gün5 (kotaları dolu ama gündüz/gece uygun); C@gün2 = (3. günün
+    # g-1'i) → C gece adayı OLAMAZ (dinlenme). 3. gün boş → 12/12 önerisi.
+    atamalar = [
+        {"gun": 1, "slot_idx": 0, "personel_id": 1},
+        {"gun": 5, "slot_idx": 0, "personel_id": 2},
+        {"gun": 2, "slot_idx": 0, "personel_id": 3},
+    ]
+    solver = _takas_solver(personeller, ara_gun=0, gun_sayisi=5, kurum_profili="112")
+    oneriler = solver._bos_slot_takas_onerileri(atamalar)
+    yari = [o for o in oneriler if o["gun"] == 3 and o["tur"] == "yari_vardiya"]
+    assert len(yari) >= 1, oneriler
+    o = yari[0]
+    assert o["gece_personel_id"] != 3          # C (g-1'de nöbette) gece olamaz
+    assert o["gunduz_personel_id"] != o["gece_personel_id"]  # iki farklı kişi
+    assert {o["gunduz_personel_id"], o["gece_personel_id"]} <= {1, 2}
+
+    # Genel profilde 12/12 önerisi YOK (yalnız 112'ye özel).
+    genel = _takas_solver(personeller, ara_gun=0, gun_sayisi=5, kurum_profili="genel")
+    oneriler_g = genel._bos_slot_takas_onerileri(atamalar)
+    assert not [o for o in oneriler_g if o["tur"] == "yari_vardiya"], oneriler_g
 
 
 if __name__ == "__main__":

@@ -1184,6 +1184,48 @@ class NobetSolver:
                 return False
             return True
 
+        def _atanmis(pid: int, gun: int) -> bool:
+            return pid in gun_atananlar.get(gun, set())
+
+        def _yari_vardiya_onerisi(g: int, s: int, gorev: str, gun_tipi: str):
+            """112 son çare: boş 24s slotu gündüz+gece 12'şer saatle böl.
+
+            Gündüz (08-20) adayı: o gün müsait, boşta ve önceki gün nöbette
+            değil (sabah dinlenmiş). Gece (20-08) adayı: aynılara ek olarak
+            ertesi gün de nöbette değil (gece çıkışı sonraki nöbete çakışmasın).
+            İki YARI farklı kişilere gider; ``ara_gün`` bilinçli gevşetilir
+            (12s yarım vardiya, son çare) ama gece-dinlenme kuralı korunur.
+            """
+            atananlar_g = gun_atananlar.get(g, set())
+            gunduz, gece = [], []
+            for p in self.personel_listesi:
+                pid = p.id
+                if pid in atananlar_g:
+                    continue
+                if not self._person_can_take_slot_on_day(pid, s, g, exclusive_roles, birlikte_uye_ids):
+                    continue
+                if ayri_map.get(pid, set()) & atananlar_g:
+                    continue
+                if _atanmis(pid, g - 1):
+                    continue  # önceki gün nöbette → sabah çıkmış, dinlenmeli
+                gunduz.append(pid)
+                if not _atanmis(pid, g + 1):
+                    gece.append(pid)  # gece çıkışı ertesi nöbete çakışmasın
+            for d in gunduz:
+                for n in gece:
+                    if d == n or n in ayri_map.get(d, set()):
+                        continue
+                    return {
+                        'tur': 'yari_vardiya',
+                        'gun': g, 'gun_tipi': gun_tipi, 'slot_idx': s, 'gorev': gorev,
+                        'gunduz_personel_id': d, 'gece_personel_id': n,
+                        'aciklama': (
+                            f"{g}. gün '{gorev}' boş → son çare 12/12 bölme: "
+                            f"gündüz (08-20) {kisi_ad.get(d)}, gece (20-08) {kisi_ad.get(n)}. "
+                            f"Gece nöbetçisi sabah çıktığı için ertesi akşam yazılamaz."),
+                    }
+            return None
+
         oneriler: List[Dict] = []
         for g in range(1, self.gun_sayisi + 1):
             if len(oneriler) >= limit:
@@ -1266,6 +1308,15 @@ class NobetSolver:
                     })
                     if len(oneriler) >= limit:
                         break
+                    continue
+
+                # 3) Son çare (yalnız 112): 12/12 bölme ile doldurma önerisi.
+                if self.kurum_profili == "112":
+                    yari = _yari_vardiya_onerisi(g, s, gorev, gun_tipi)
+                    if yari is not None:
+                        oneriler.append(yari)
+                        if len(oneriler) >= limit:
+                            break
         return oneriler
 
     def _diagnose_infeasible(self, diagnostics: Dict) -> 'List[Dict]':

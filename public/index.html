@@ -8255,7 +8255,7 @@
             <strong>Boş Slot İçin Uygulanabilir Öneriler (${rapor.takasOnerileri.length})</strong>
             <div class="help" style="margin-top:4px;">Atanamayan slotları doldurmak için sert kısıtlara uygun (ara gün/kota korunur) somut öneriler:</div>
             <div style="margin-top:8px; max-height:220px; overflow:auto;">
-              ${takasOnerileri.map(o => `<div class="badge ${o.tur === 'dogrudan_atama' ? 'badge-ok' : 'badge-info'}" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(o.aciklama || o.tur))}</div>`).join('')}
+              ${takasOnerileri.map(o => `<div class="badge ${o.tur === 'dogrudan_atama' ? 'badge-ok' : o.tur === 'yari_vardiya' ? 'badge-warn' : 'badge-info'}" style="display:block; margin:4px 0; white-space:normal;">${o.tur === 'yari_vardiya' ? '⏱️ ' : ''}${escapeHtml(String(o.aciklama || o.tur))}</div>`).join('')}
             </div>
           </div>` : ''}
         <div class="rule-box" style="background:#fff;">
