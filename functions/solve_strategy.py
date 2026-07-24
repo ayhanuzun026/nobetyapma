@@ -5,6 +5,7 @@ import logging
 import time as _time
 
 from ortools_solver import NobetSolver
+from parsers import parse_kurum_profili
 from planlayici import plan_kontrati_hash_yenile
 from solver_models import SolverSonuc
 from utils import find_matching_id
@@ -131,6 +132,7 @@ def solve_with_diagnostics(
         otomatik_gevsetme_degeri is False
         or str(otomatik_gevsetme_degeri).strip().lower() in {"false", "0", "hayir", "hayır"}
     )
+    kurum_profili = parse_kurum_profili(data_dict.get("kurumProfili"))
     explicit_strict = tamir_modu == "strict" or otomatik_gevsetme_kapali
     kilitli_hedefler_var = bool(data_dict.get("kilitliHedefler"))
     plan_gevsetme_izinli = not explicit_strict and not kilitli_hedefler_var
@@ -279,6 +281,7 @@ def solve_with_diagnostics(
             max_sure_saniye=ayrilan_sure,
             ignore_manual_conflicts=False,
             plan_kontrati=aktif_plan_kontrati,
+            kurum_profili=kurum_profili,
         )
         aday = solver.coz()
         logger.info(

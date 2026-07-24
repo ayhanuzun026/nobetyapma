@@ -11,6 +11,7 @@ from hedef_hesaplayici import HedefHesaplayici
 from ortools_solver import NobetSolver
 from parsers import (
     parse_gorev_havuzlari,
+    parse_kurum_profili,
     parse_manuel_atamalar,
     parse_solver_gorevler,
     parse_solver_personeller_hedef,
@@ -1404,6 +1405,60 @@ def test_zero_budget_starts_no_solver():
         )
     assert sonuc.istatistikler["status"] == "DEADLINE_EXCEEDED"
     assert teshis["kok_neden"] == "global_sure_butcesi_doldu"
+
+
+def test_kurum_profili_bayragi_akisi():
+    """Madde 0: kurumProfili bayragi parse edilir + iki solver modeline akar.
+
+    Geriye tam uyumlu: bayrak verilmezse default 'genel' (mevcut davranis).
+    Bu asamada bayrak yalnizca SAKLANIR; hicbir kisit degisikligi yapmaz.
+    """
+    # 1) Saf normalizer: 112 varyantlari -> "112", digerleri -> "genel".
+    assert parse_kurum_profili("112") == "112"
+    assert parse_kurum_profili("112 Ambulans") == "112"
+    assert parse_kurum_profili("AMBULANS") == "112"
+    assert parse_kurum_profili("Genel Hastane") == "genel"
+    assert parse_kurum_profili("hastane") == "genel"
+    assert parse_kurum_profili(None) == "genel"
+    assert parse_kurum_profili("") == "genel"
+    assert parse_kurum_profili("bilinmeyen") == "genel"
+
+    gun_tipleri, personeller, gorevler, hedefler = _minimal_veri()
+
+    # 2) Hedef modeli bayragi saklar; default geriye uyumlu "genel".
+    h_default = HedefHesaplayici(
+        gun_sayisi=2, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler,
+    )
+    assert h_default.kurum_profili == "genel"
+    h_112 = HedefHesaplayici(
+        gun_sayisi=2, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler,
+        kurum_profili="112",
+    )
+    assert h_112.kurum_profili == "112"
+
+    # 3) Cizelge modeli bayragi saklar; default "genel".
+    s_default = NobetSolver(
+        gun_sayisi=2, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler, hedefler=hedefler,
+    )
+    assert s_default.kurum_profili == "genel"
+    s_112 = NobetSolver(
+        gun_sayisi=2, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler, hedefler=hedefler,
+        kurum_profili="112",
+    )
+    assert s_112.kurum_profili == "112"
+
+    # 4) ortak_plan_uret bayragi hedef modeline gecirir (imza akis dogrulama).
+    from planlayici import ortak_plan_uret
+    plan = ortak_plan_uret(
+        gun_sayisi=2, gun_tipleri=gun_tipleri,
+        personeller=personeller, gorevler=gorevler,
+        kurum_profili="112",
+    )
+    assert isinstance(plan, dict)
 
 
 if __name__ == "__main__":

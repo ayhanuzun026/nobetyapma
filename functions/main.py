@@ -37,6 +37,7 @@ from parsers import (
     parse_gorev_kisitlamalari, parse_manuel_atamalar, parse_gorev_havuzlari,
     parse_kisitlama_istisnalari,
     parse_birlikte_istisnalari, parse_aragun_istisnalari,
+    parse_kurum_profili,
 )
 
 initialize_app()
@@ -239,6 +240,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             gorev_kota_overrides=gorev_kota_overrides,
             kaynak="nobet_dagit_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
+            kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
         )
         hedefler = planlama.get("hedefler_map", {})
         plan_kontrati = planlama.get("plan_kontrati")
@@ -473,6 +475,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             kilitli_hedefler=kilitli_hedefler,
             kaynak="nobet_hedef_hesapla_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
+            kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
         )
         sonuc = planlama.get("hedef_sonuc")
         plan_kontrati = planlama.get("plan_kontrati")
@@ -616,6 +619,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 kilitli_hedefler=kilitli_hedefler,
                 gorev_kota_overrides=gorev_kota_overrides,
                 gorev_havuzlari=gorev_havuzlari,
+                kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
             )
         except Exception as hedef_err:
             logger.exception("Ortak planlama basarisiz: %s", hedef_err)
@@ -671,6 +675,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 gorev_kota_overrides=gorev_kota_overrides,
                 kaynak=(plan_kontrati.kaynak if plan_kontrati else None),
                 gorev_havuzlari=gorev_havuzlari,
+                kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
             )
 
         sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(

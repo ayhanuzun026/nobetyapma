@@ -885,6 +885,14 @@
           <input type="number" id="inp-aragun" value="2" min="0">
           <div class="help">İki nöbet arası minimum gün</div>
         </div>
+        <div class="input-group">
+          <label>Kurum Profili</label>
+          <select id="inp-kurum-profili">
+            <option value="genel" selected>Genel Hastane</option>
+            <option value="112">112 / Ambulans</option>
+          </select>
+          <div class="help">112: nöbet/dinlenme özel kuralları aktif olur</div>
+        </div>
       </div>
 
       <!-- ÖNCEKİ AYDAN ÇEK -->
@@ -1490,6 +1498,25 @@
     const GUN_TIPLERI = ['hici', 'prs', 'cum', 'cmt', 'pzr'];
     const AY_ISIMLERI = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran', 'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
     const GECMIS_DONEM_POLITIKASI = 'yil_basi_onceki_ay';
+
+    // Kurum profili (kalıcı UI tercihi): "genel" | "112".
+    // 112 profilinde 112'ye özel domain kuralları backend'de aktifleşir;
+    // genel hastanelerle karışmaması için ayrı bir bayrak olarak gönderilir.
+    const KURUM_PROFILI_KEY = 'nobet_kurum_profili';
+    function getKurumProfili() {
+      const deger = (document.getElementById('inp-kurum-profili')?.value || '').trim();
+      return deger === '112' ? '112' : 'genel';
+    }
+    function kurumProfiliniGeriYukle() {
+      const sec = document.getElementById('inp-kurum-profili');
+      if (!sec) return;
+      const kayitli = localStorage.getItem(KURUM_PROFILI_KEY);
+      if (kayitli === '112' || kayitli === 'genel') sec.value = kayitli;
+      sec.addEventListener('change', () => {
+        localStorage.setItem(KURUM_PROFILI_KEY, getKurumProfili());
+      });
+    }
+
     const VARSAYILAN_TAMIR_POLITIKASI = Object.freeze({
       mod: 'strict',
       otomatikGevsetme: false,
@@ -8293,7 +8320,8 @@
         gorevKisitlamalari: gorevKisitData,
         gorevHavuzlari: gorevHavuzlari,
         manuelAtamalar: manuelData,
-        kilitliHedefler: kilitliHedefler
+        kilitliHedefler: kilitliHedefler,
+        kurumProfili: getKurumProfili()
       };
 
       console.log(`[HEDEF] OR-Tools hedef isteği: ${personelData.length} personel, ${gunSayisi} gün, ${gorevData.length} görev, ${kuralData.length} kural`);
@@ -8588,6 +8616,7 @@
         gecmisDonemPolitikasi: GECMIS_DONEM_POLITIKASI,
         tamirPolitikasi: { ...VARSAYILAN_TAMIR_POLITIKASI },
         planHash: aktifPlanHash,
+        kurumProfili: getKurumProfili(),
         kisitlamaExclusive: kisitlamaExclusive,
         resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };
@@ -10515,6 +10544,7 @@
     // Sayfa yüklendiğinde
     document.addEventListener('DOMContentLoaded', () => {
       tatilListesiGuncelle();
+      kurumProfiliniGeriYukle();
       document.getElementById('inp-yil')?.addEventListener('change', donemDegisti);
       document.getElementById('inp-ay')?.addEventListener('change', donemDegisti);
     });

@@ -83,3 +83,19 @@ test('empty-slot swap suggestions (takas_onerileri) are surfaced in the diagnost
   assert.match(html, /Boş Slot İçin Uygulanabilir Öneriler/);
   assert.match(html, /o\.tur === 'dogrudan_atama'/);
 });
+
+test('kurum profili (112) selection persists and is sent to both endpoints', () => {
+  // Adım 1'de profil seçimi UI'si (Genel / 112).
+  assert.match(html, /id="inp-kurum-profili"/);
+  assert.match(html, /112 \/ Ambulans/);
+  // Saf yardımcı: yalnız "112" -> "112", geri kalan her şey "genel" (geriye uyumlu default).
+  assert.match(html, /function getKurumProfili\(\)/);
+  assert.match(html, /deger === '112' \? '112' : 'genel'/);
+  // Kalıcı saklama: localStorage anahtarı + değişimde kaydet + açılışta geri yükle.
+  assert.match(html, /const KURUM_PROFILI_KEY = 'nobet_kurum_profili'/);
+  assert.match(html, /localStorage\.setItem\(KURUM_PROFILI_KEY, getKurumProfili\(\)\)/);
+  assert.match(html, /kurumProfiliniGeriYukle\(\)/);
+  // Her iki endpoint payload'ında da gönderilmeli.
+  const coz = [...html.matchAll(/kurumProfili:\s*getKurumProfili\(\)/g)];
+  assert.ok(coz.length >= 2, 'kurumProfili hem hedef hem coz payloadinda olmali');
+});

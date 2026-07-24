@@ -70,8 +70,12 @@ class HedefHesaplayici:
                  manuel_atamalar: List[SolverAtama] = None,
                  ara_gun: int = 2, saat_degerleri: Dict[str, int] = None,
                  kilitli_hedefler: Dict[int, Dict[str, int]] = None,
-                 gorev_havuzlari: Dict[str, set] = None):
+                 gorev_havuzlari: Dict[str, set] = None,
+                 kurum_profili: str = "genel"):
         self.gun_sayisi = gun_sayisi
+        # Kurum profili: "112" ise 112'ye ozel domain kurallari aktiflesir;
+        # "genel" (default) mevcut davranis. Bu asamada yalniz saklanir.
+        self.kurum_profili = kurum_profili if kurum_profili in ("genel", "112") else "genel"
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
         self.personel_listesi = personeller

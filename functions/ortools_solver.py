@@ -132,8 +132,12 @@ class NobetSolver:
                  plan_kontrati: Dict = None,
                  ara_gun: int = 2, max_sure_saniye: int = 300,
                  ignore_manual_conflicts: bool = False,
-                 leksikografik: bool = True):
+                 leksikografik: bool = True,
+                 kurum_profili: str = "genel"):
         self.gun_sayisi = gun_sayisi
+        # Kurum profili: "112" ise 112'ye ozel kurallar aktiflesir; "genel"
+        # (default) mevcut davranis. Bu asamada yalniz saklanir.
+        self.kurum_profili = kurum_profili if kurum_profili in ("genel", "112") else "genel"
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
         self.personel_listesi = personeller

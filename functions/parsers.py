@@ -48,6 +48,26 @@ def parse_bool(value, default: bool = False) -> bool:
     return default
 
 
+def parse_kurum_profili(value, default: str = "genel") -> str:
+    """Kurum profili bayragini normalize eder: "genel" | "112".
+
+    112'ye ozel domain kurallari (mesai-bazli min nobet, max ara gun,
+    gece/gunduz dinlenme, izin yerlesimi, yetkinlik) yalniz "112" profilinde
+    aktiflesir. Taninmayan/bos deger -> ``default`` ("genel"): boylece bayrak
+    gonderilmeyen mevcut istekler eskisi gibi calisir (geriye tam uyumlu).
+    """
+    if value is None:
+        return default
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return default
+    if "112" in normalized or "ambulans" in normalized:
+        return "112"
+    if "genel" in normalized or "hastane" in normalized:
+        return "genel"
+    return default
+
+
 def _parse_string_set(value) -> Set[str]:
     if not isinstance(value, (list, tuple, set)):
         return set()

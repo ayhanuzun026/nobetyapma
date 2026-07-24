@@ -432,6 +432,7 @@ def ortak_plan_uret(
     kaynak: Optional[str] = None,
     uygulama_override: Optional[Dict] = None,
     gorev_havuzlari: Optional[Dict[str, set]] = None,
+    kurum_profili: str = "genel",
 ) -> Dict:
     kilitli_hedefler = dict(kilitli_hedefler or {})
     gorev_kota_overrides = dict(gorev_kota_overrides or {})
@@ -465,6 +466,7 @@ def ortak_plan_uret(
         saat_degerleri=saat_degerleri,
         kilitli_hedefler=kilitli_hedefler,
         gorev_havuzlari=gorev_havuzlari or {},
+        kurum_profili=kurum_profili,
     )
     hedef_sonuc = hesaplayici.hesapla()
     if not hedef_sonuc or not hedef_sonuc.basarili:
