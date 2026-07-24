@@ -15,6 +15,7 @@ WEIGHT_GOREV_KOTA = 1000
 WEIGHT_GUN_TIPI = 500
 WEIGHT_YILLIK = 400    # Yıllık dengeleme (geçmiş ay eksiklerini eşitle)
 WEIGHT_HOMOJEN = 300   # Nöbetleri ay geneline yayma
+WEIGHT_MAX_ARA = 1200  # 112: iki nöbet arası sabit üst sınır (soft, kör-hard değil)
 WEIGHT_PANIK = 250     # Sıkışık kişilere öncelik
 WEIGHT_TOPLAM = 100
 WEIGHT_BIRLIKTE = 50

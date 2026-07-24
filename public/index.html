@@ -905,6 +905,11 @@
           </select>
           <div class="help">112: nöbet/dinlenme özel kuralları aktif olur</div>
         </div>
+        <div class="input-group">
+          <label>Max Ara Gün (112)</label>
+          <input type="number" id="inp-max-aragun" value="5" min="0">
+          <div class="help">İki nöbet arası en fazla gün (yalnız 112 profilinde)</div>
+        </div>
       </div>
 
       <!-- ÖNCEKİ AYDAN ÇEK -->
@@ -8676,6 +8681,7 @@
         tamirPolitikasi: { ...VARSAYILAN_TAMIR_POLITIKASI },
         planHash: aktifPlanHash,
         kurumProfili: getKurumProfili(),
+        maxAraGun: parseInt(document.getElementById('inp-max-aragun')?.value) || 0,
         kisitlamaExclusive: kisitlamaExclusive,
         resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };

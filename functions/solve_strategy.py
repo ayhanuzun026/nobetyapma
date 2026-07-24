@@ -133,6 +133,16 @@ def solve_with_diagnostics(
         or str(otomatik_gevsetme_degeri).strip().lower() in {"false", "0", "hayir", "hayır"}
     )
     kurum_profili = parse_kurum_profili(data_dict.get("kurumProfili"))
+    # Max ara gün (112): iki nöbet arası üst sınır. 112'de default 5, frontend
+    # override edebilir; genel profilde tamamen kapalı (0).
+    try:
+        max_ara_gun = int(data_dict.get("maxAraGun") or 0)
+    except (TypeError, ValueError):
+        max_ara_gun = 0
+    if kurum_profili == "112":
+        max_ara_gun = max_ara_gun if max_ara_gun > 0 else 5
+    else:
+        max_ara_gun = 0
     explicit_strict = tamir_modu == "strict" or otomatik_gevsetme_kapali
     kilitli_hedefler_var = bool(data_dict.get("kilitliHedefler"))
     plan_gevsetme_izinli = not explicit_strict and not kilitli_hedefler_var
@@ -282,6 +292,7 @@ def solve_with_diagnostics(
             ignore_manual_conflicts=False,
             plan_kontrati=aktif_plan_kontrati,
             kurum_profili=kurum_profili,
+            max_ara_gun=max_ara_gun,
         )
         aday = solver.coz()
         logger.info(

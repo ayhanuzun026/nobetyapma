@@ -84,6 +84,11 @@ test('empty-slot swap suggestions (takas_onerileri) are surfaced in the diagnost
   assert.match(html, /o\.tur === 'dogrudan_atama'/);
 });
 
+test('max ara gun (112) is configurable and sent to the solve endpoint', () => {
+  assert.match(html, /id="inp-max-aragun"/);
+  assert.match(html, /maxAraGun:\s*parseInt\(document\.getElementById\('inp-max-aragun'\)\?\.value\) \|\| 0/);
+});
+
 test('min nobet shortfall (112) is warned with completion suggestion', () => {
   // Backend istatistikleri min_nobet_aciklari uretir; frontend uyari panelinde gosterir.
   assert.match(html, /window\.ortoolsIstatistikler\?\.min_nobet_aciklari \|\| \[\]/);

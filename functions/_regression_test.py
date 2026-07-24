@@ -1571,6 +1571,50 @@ def test_mesai_bazli_min_nobet_112_soft():
     assert genel_sonuc.istatistikler.get("min_nobet_aciklari", []) == []
 
 
+def test_max_ara_gun_112_soft():
+    """Madde 3: 112 profilinde max ara gün SOFT ceza (kör-hard DEĞİL).
+
+    H4 (min ara gün, hard) ile makas kurmamak + gevşetme döngüsünü şaşırtmamak
+    için max ara gün penceresi SOFT cezayla uygulanır: sağlanamazsa INFEASIBLE
+    olmaz. Ulaşılabilir senaryoda ceza nöbetleri ≤ max_ara_gun aralıkla yayar.
+    Genel profilde tamamen pasif (davranış değişmez).
+    """
+    gorevler = [SolverGorev(id=0, ad="Acil", slot_idx=0, base_name="Acil")]
+
+    def _coz(gun_sayisi, hedef_toplam, kurum_profili="genel", max_ara_gun=0):
+        gun_tipleri = {g: "hici" for g in range(1, gun_sayisi + 1)}
+        hedefler = {1: {"hedef_toplam": hedef_toplam,
+                        "hedef_tipler": {"hici": hedef_toplam, "prs": 0,
+                                         "cum": 0, "cmt": 0, "pzr": 0}}}
+        return NobetSolver(
+            gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
+            personeller=[SolverPersonel(id=1, ad="A", mazeret_gunleri=set())],
+            gorevler=gorevler, kurallar=[], gorev_havuzlari={},
+            kisitlama_istisnalari=[], birlikte_istisnalari=[], aragun_istisnalari=[],
+            manuel_atamalar=[], hedefler=hedefler, ara_gun=0, max_sure_saniye=10,
+            kurum_profili=kurum_profili, max_ara_gun=max_ara_gun,
+        ).coz()
+
+    def _max_gap(sonuc):
+        gunler = sorted(a["gun"] for a in sonuc.atamalar if a["personel_id"] == 1)
+        farklar = [gunler[i + 1] - gunler[i] for i in range(len(gunler) - 1)]
+        return max(farklar) if farklar else 0
+
+    # (a) Stat bayrağı: genel -> 0, 112 -> 5 (yalnız 112'de aktif).
+    s_genel = _coz(15, 3, "genel", 0)
+    assert s_genel.istatistikler.get("max_ara_gun", 0) == 0
+    s_112 = _coz(15, 3, "112", 5)
+    assert s_112.istatistikler.get("max_ara_gun") == 5
+
+    # (b) 112, ulaşılabilir: 3 nöbet/15 gün -> ardışık max aralık <= 5.
+    assert s_112.basarili is True, s_112.mesaj
+    assert _max_gap(s_112) <= 5
+
+    # (c) SOFT: max-gap sağlanamayan senaryo (2 nöbet/20 gün) INFEASIBLE OLMAZ.
+    s_soft = _coz(20, 2, "112", 5)
+    assert s_soft.basarili is True, s_soft.mesaj
+
+
 if __name__ == "__main__":
     tests = [name for name in globals() if name.startswith("test_")]
     for name in sorted(tests):

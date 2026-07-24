@@ -19,7 +19,7 @@ from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
     SolverSonuc,
     WEIGHT_GOREV_KOTA, WEIGHT_GUN_TIPI, WEIGHT_YILLIK,
-    WEIGHT_HOMOJEN, WEIGHT_PANIK, WEIGHT_TOPLAM, WEIGHT_BIRLIKTE,
+    WEIGHT_HOMOJEN, WEIGHT_MAX_ARA, WEIGHT_PANIK, WEIGHT_TOPLAM, WEIGHT_BIRLIKTE,
 )
 
 # Lazy import for ortools (Firebase deploy timeout fix) — thread-safe
@@ -133,11 +133,15 @@ class NobetSolver:
                  ara_gun: int = 2, max_sure_saniye: int = 300,
                  ignore_manual_conflicts: bool = False,
                  leksikografik: bool = True,
-                 kurum_profili: str = "genel"):
+                 kurum_profili: str = "genel",
+                 max_ara_gun: int = 0):
         self.gun_sayisi = gun_sayisi
         # Kurum profili: "112" ise 112'ye ozel kurallar aktiflesir; "genel"
-        # (default) mevcut davranis. Bu asamada yalniz saklanir.
+        # (default) mevcut davranis.
         self.kurum_profili = kurum_profili if kurum_profili in ("genel", "112") else "genel"
+        # Max ara gun (112): iki nobet arasi izin verilen ust sinir. 0 = kapali.
+        # SOFT ceza olarak uygulanir (H4 min-gap ile makas/dongu cakismasi olmaz).
+        self.max_ara_gun = max(0, int(max_ara_gun or 0))
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
         self.personel_listesi = personeller
@@ -2203,7 +2207,28 @@ class NobetSolver:
                         model.Add(pencere_nobet == 0).OnlyEnforceIf(buyuk_bosluk)
                         model.Add(pencere_nobet >= 1).OnlyEnforceIf(buyuk_bosluk.Not())
                         penalties.append(buyuk_bosluk * WEIGHT_HOMOJEN * 5)
-        
+
+        # S5b. Max ara gün (112 profili) — SABİT üst sınır, SOFT ceza.
+        # ⚠️ KÖR-HARD DEĞİL: H4 (min ara gün, hard) ile makas kurup gevşetme
+        # döngüsünü (yalnız ara_gun_azalt kolu) şaşırtmamak için her max_ara_gun
+        # günlük pencerede >=1 nöbet TERCİH edilir. Soft olduğundan sağlanamasa
+        # bile INFEASIBLE üretmez; yalnız yerleşimi ≤ max_ara_gun aralığa iter.
+        if self.kurum_profili == "112" and self.max_ara_gun > 0 and self.max_ara_gun < self.gun_sayisi:
+            W = self.max_ara_gun
+            for p in self.personel_listesi:
+                if self.hedefler.get(p.id, {}).get('hedef_toplam', 0) < 2:
+                    continue  # tek/sıfır nöbetli kişide "iki nöbet arası" tanımsız
+                for baslangic in range(1, self.gun_sayisi - W + 2):
+                    pencere_nobet = sum(
+                        x[p.id, g, s]
+                        for g in range(baslangic, baslangic + W)
+                        for s in range(self.slot_sayisi)
+                    )
+                    bos = model.NewBoolVar(f'max_ara_bos_{p.id}_{baslangic}')
+                    model.Add(pencere_nobet == 0).OnlyEnforceIf(bos)
+                    model.Add(pencere_nobet >= 1).OnlyEnforceIf(bos.Not())
+                    penalties.append(bos * WEIGHT_MAX_ARA)
+
         if not self._plan_aktif_mi():
             # S6. Yıllık dengeleme - Geçmiş ay eksiklerini bu ay tamamla
             # yillik_gerceklesen: {'hici': 10, 'cmt': 5, ...} şeklinde geçmiş ayların toplamı
@@ -2497,6 +2522,7 @@ class NobetSolver:
             'toplam_atama': toplam_atama, 'toplam_slot': toplam_slot,
             'bos_slot_sayisi': bos_slot_sayisi,
             'ara_gun': self.ara_gun,
+            'max_ara_gun': self.max_ara_gun,
             'solver_status_name': solver.StatusName(status),
             'doluluk_yuzde': round(100 * toplam_atama / toplam_slot, 1) if toplam_slot > 0 else 0,
             'min_nobet': min_nobet, 'max_nobet': max_nobet,
