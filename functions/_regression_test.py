@@ -1650,6 +1650,40 @@ def test_yari_vardiya_onerileri_112():
     assert not [o for o in oneriler_g if o["tur"] == "yari_vardiya"], oneriler_g
 
 
+def test_izin_yerlesim_112():
+    """Madde 5: 112, yıllık izin öncesi 2 gün boşluk + sonrası ilk iş günü (SOFT).
+
+    Yalnız yıllık izin (tur=='izin'); rapor/eğitim hariç. Öncesi: izin başından
+    2 gün önce nöbet yazılmaması tercih edilir. Sonrası: izin bitiminden sonraki
+    ilk iş gününe (hici/prs/cum) nöbet tercih edilir (hafta sonu araya girse de).
+    """
+    gun_tipleri = {1: "hici", 2: "hici", 3: "hici", 4: "hici", 5: "hici",
+                   6: "hici", 7: "hici", 8: "cmt", 9: "pzr", 10: "hici", 11: "hici"}
+    p = SolverPersonel(id=1, ad="A",
+                       izin_turleri={2: "rapor", 5: "izin", 6: "izin", 7: "izin"},
+                       mazeret_gunleri={2, 5, 6, 7})
+    solver = NobetSolver(
+        gun_sayisi=11, gun_tipleri=gun_tipleri, personeller=[p],
+        gorevler=[SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")],
+        kurallar=[], gorev_havuzlari={}, kisitlama_istisnalari=[],
+        birlikte_istisnalari=[], aragun_istisnalari=[], manuel_atamalar=[],
+        hedefler={1: {"hedef_toplam": 1, "hedef_tipler": {"hici": 1}}},
+        ara_gun=0, max_sure_saniye=5, kurum_profili="112",
+    )
+    # Yalnız yıllık izin blokları (rapor gün2 hariç), ardışık gruplanır.
+    assert solver._yillik_izin_bloklari(p) == [[5, 6, 7]]
+    # izin bitişi gün7; 8=cmt,9=pzr hafta sonu -> ilk iş günü gün10.
+    assert solver._ilk_is_gunu_sonrasi(7) == 10
+    assert solver._ilk_is_gunu_sonrasi(3) == 4       # ertesi gün iş günüyse onu döner
+    assert solver._ilk_is_gunu_sonrasi(11) is None   # sonrası iş günü yoksa None
+
+    # Davranışsal (SOFT): tek nöbet izin sonrası ilk iş gününe (gün10) yerleşir.
+    sonuc = solver.coz()
+    assert sonuc.basarili is True, sonuc.mesaj
+    gunler = sorted(a["gun"] for a in sonuc.atamalar if a["personel_id"] == 1)
+    assert gunler == [10], gunler
+
+
 if __name__ == "__main__":
     tests = [name for name in globals() if name.startswith("test_")]
     for name in sorted(tests):

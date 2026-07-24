@@ -19,7 +19,8 @@ from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
     SolverSonuc,
     WEIGHT_GOREV_KOTA, WEIGHT_GUN_TIPI, WEIGHT_YILLIK,
-    WEIGHT_HOMOJEN, WEIGHT_MAX_ARA, WEIGHT_PANIK, WEIGHT_TOPLAM, WEIGHT_BIRLIKTE,
+    WEIGHT_HOMOJEN, WEIGHT_MAX_ARA, WEIGHT_IZIN_YERLESIM,
+    WEIGHT_PANIK, WEIGHT_TOPLAM, WEIGHT_BIRLIKTE,
 )
 
 # Lazy import for ortools (Firebase deploy timeout fix) — thread-safe
@@ -821,6 +822,37 @@ class NobetSolver:
                 if matched_pid is not None:
                     ids.add(matched_pid)
         return ids
+
+    @staticmethod
+    def _yillik_izin_bloklari(p) -> 'List[List[int]]':
+        """Kişinin ardışık YILLIK İZİN (tur=='izin') günlerini bloklara ayırır.
+
+        Yalnız yıllık izin; rapor/eğitim/nöbet-izni/mazeret hariç (Madde 5
+        kuralları yalnız yıllık izne uygulanır). Dönen: artan sıralı bloklar.
+        """
+        izin_gunler = sorted(
+            g for g, tur in (getattr(p, "izin_turleri", None) or {}).items()
+            if tur == "izin"
+        )
+        bloklar: List[List[int]] = []
+        for g in izin_gunler:
+            if bloklar and g == bloklar[-1][-1] + 1:
+                bloklar[-1].append(g)
+            else:
+                bloklar.append([g])
+        return bloklar
+
+    def _ilk_is_gunu_sonrasi(self, gun: int):
+        """``gun``dan SONRA gelen ilk iş günü (hici/prs/cum), ay içinde. Yoksa None.
+
+        Hafta sonu (cmt/pzr) atlanır; böylece "izin bitişi hafta sonuna denk
+        gelirse ilk iş gününe, hafta içine denk gelirse hemen ertesi güne" kuralı
+        tek mantıkla karşılanır.
+        """
+        for g in range(gun + 1, self.gun_sayisi + 1):
+            if self.gun_tipleri.get(g) in ("hici", "prs", "cum"):
+                return g
+        return None
 
     def _person_can_take_slot_on_day(self, pid: int, slot_idx: int, gun: int,
                                      exclusive_roles: Set[str],
@@ -2279,6 +2311,31 @@ class NobetSolver:
                     model.Add(pencere_nobet == 0).OnlyEnforceIf(bos)
                     model.Add(pencere_nobet >= 1).OnlyEnforceIf(bos.Not())
                     penalties.append(bos * WEIGHT_MAX_ARA)
+
+        # S5c. Yıllık izin öncesi/sonrası yerleşim (112 profili) — SOFT tercih.
+        # Öncesi: izin başlangıcından 2 gün önce nöbet YAZMAMA tercihi (dinlenerek
+        # izne girme). Sonrası: izin bitiminden sonraki ilk iş gününe nöbet YAZMA
+        # tercihi (hafta sonu araya girse ilk iş günü, hafta içiyse hemen ertesi).
+        # İkisi de soft; zorlamaz (o gün dolu/uygunsuzsa çizelge kırılmaz).
+        if self.kurum_profili == "112":
+            for p in self.personel_listesi:
+                for blok in self._yillik_izin_bloklari(p):
+                    izin_bas, izin_bit = blok[0], blok[-1]
+                    # Öncesi 2 gün: o günlerde nöbet varsa ceza (boşluk tercihi).
+                    for oncesi in (izin_bas - 1, izin_bas - 2):
+                        if 1 <= oncesi <= self.gun_sayisi:
+                            penalties.append(
+                                sum(x[p.id, oncesi, s] for s in range(self.slot_sayisi))
+                                * WEIGHT_IZIN_YERLESIM
+                            )
+                    # Sonrası ilk iş günü: nöbet YOKSA ceza (yazma tercihi).
+                    sonraki = self._ilk_is_gunu_sonrasi(izin_bit)
+                    if sonraki is not None:
+                        atandi = sum(x[p.id, sonraki, s] for s in range(self.slot_sayisi))
+                        yok = model.NewBoolVar(f'izin_sonrasi_yok_{p.id}_{sonraki}')
+                        model.Add(atandi == 0).OnlyEnforceIf(yok)
+                        model.Add(atandi >= 1).OnlyEnforceIf(yok.Not())
+                        penalties.append(yok * WEIGHT_IZIN_YERLESIM)
 
         if not self._plan_aktif_mi():
             # S6. Yıllık dengeleme - Geçmiş ay eksiklerini bu ay tamamla
