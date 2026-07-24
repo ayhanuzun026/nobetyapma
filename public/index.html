@@ -8359,7 +8359,8 @@
         gorevHavuzlari: gorevHavuzlari,
         manuelAtamalar: manuelData,
         kilitliHedefler: kilitliHedefler,
-        kurumProfili: getKurumProfili()
+        kurumProfili: getKurumProfili(),
+        resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };
 
       console.log(`[HEDEF] OR-Tools hedef isteği: ${personelData.length} personel, ${gunSayisi} gün, ${gorevData.length} görev, ${kuralData.length} kural`);

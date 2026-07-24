@@ -1505,6 +1505,59 @@ def test_izin_turu_ayrimi_veri_modeli():
     assert {2, 3} <= kisiler[0].mazeret_gunleri
 
 
+def test_mesai_bazli_min_nobet_112_soft():
+    """Madde 2: 112 profilinde min nobet mesai saatinden turetilir (SOFT).
+
+    is_gunu = hafta ici (hici/prs/cum), resmi tatil haric. izin/egitim/rapor
+    IS GUNUNE denk gelince borctan duser. min = ceil(net_is_gunu / 3).
+    Kapasite yetmezse INFEASIBLE OLMAZ: alt sinir kapasiteye kirpilir, acik
+    ('min_nobet_acigi') raporlanir. Genel profilde mesai hesabi UYGULANMAZ.
+    """
+    gorev = [SolverGorev(id=1, ad="X", slot_idx=0, base_name="X")]
+    is_gunu9 = {g: "hici" for g in range(1, 10)}          # 9 is gunu
+    is_gunu9[10] = "cmt"; is_gunu9[11] = "pzr"            # hafta sonu (sayilmaz)
+
+    # (a) izinsiz: ceil(9/3) = 3.
+    h = HedefHesaplayici(gun_sayisi=11, gun_tipleri=is_gunu9,
+                         personeller=[SolverPersonel(id=1, ad="A")], gorevler=gorev,
+                         ara_gun=0, kurum_profili="112")
+    assert h._mesai_min_nobet(SolverPersonel(id=1, ad="A")) == 3
+
+    # (b) izin/rapor IS GUNUNDE borctan duser; hafta sonu izni (gun10) sayilmaz.
+    p_izin = SolverPersonel(id=1, ad="A",
+                            izin_turleri={1: "izin", 2: "izin", 3: "rapor", 10: "izin"})
+    assert h._mesai_min_nobet(p_izin) == 2  # net 6 -> ceil(6/3)=2
+
+    # (c) resmi tatil (cum tipli) IS GUNU sayilmaz.
+    gt = {g: "hici" for g in range(1, 10)}
+    gt[10] = "cum"                                        # tip'e gore is gunu gibi
+    h_tatilsiz = HedefHesaplayici(gun_sayisi=10, gun_tipleri=gt,
+                                  personeller=[SolverPersonel(id=1, ad="A")], gorevler=gorev,
+                                  ara_gun=0, kurum_profili="112")
+    assert h_tatilsiz._mesai_min_nobet(SolverPersonel(id=1, ad="A")) == 4  # 10 -> ceil(10/3)=4
+    h_tatil = HedefHesaplayici(gun_sayisi=10, gun_tipleri=gt,
+                               personeller=[SolverPersonel(id=1, ad="A")], gorevler=gorev,
+                               ara_gun=0, kurum_profili="112", resmi_tatil_gunleri={10})
+    assert h_tatil._mesai_min_nobet(SolverPersonel(id=1, ad="A")) == 3  # gun10 haric -> 9 -> 3
+
+    # (d) genel profilde mesai hesabi 0 (mevcut min_nobet mekanizmasi gecerli).
+    h_gen = HedefHesaplayici(gun_sayisi=11, gun_tipleri=is_gunu9,
+                             personeller=[SolverPersonel(id=1, ad="A")], gorevler=gorev,
+                             ara_gun=0)
+    assert h_gen._mesai_min_nobet(SolverPersonel(id=1, ad="A")) == 0
+
+    # (e) SOFT: kapasite (max_nobet) mesai min'in altinda -> INFEASIBLE DEGIL, acik raporlanir.
+    #     Kisi1 max_nobet=1 ama mesai min=3; Kisi2 talebi emer.
+    kisiler = [SolverPersonel(id=1, ad="Kisitli", max_nobet=1),
+               SolverPersonel(id=2, ad="Serbest")]
+    sonuc = HedefHesaplayici(gun_sayisi=11, gun_tipleri=is_gunu9, personeller=kisiler,
+                             gorevler=gorev, ara_gun=0, kurum_profili="112").hesapla()
+    assert sonuc.basarili is True, sonuc.mesaj
+    h1 = next(h for h in sonuc.hedefler if h["id"] == 1)
+    assert h1["adalet"]["sinirlar"]["min_nobet_acigi"] == 2   # 3 hedef - 1 kapasite
+    assert h1["hedef_toplam"] <= 1
+
+
 if __name__ == "__main__":
     tests = [name for name in globals() if name.startswith("test_")]
     for name in sorted(tests):

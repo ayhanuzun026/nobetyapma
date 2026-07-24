@@ -71,11 +71,14 @@ class HedefHesaplayici:
                  ara_gun: int = 2, saat_degerleri: Dict[str, int] = None,
                  kilitli_hedefler: Dict[int, Dict[str, int]] = None,
                  gorev_havuzlari: Dict[str, set] = None,
-                 kurum_profili: str = "genel"):
+                 kurum_profili: str = "genel",
+                 resmi_tatil_gunleri: set = None):
         self.gun_sayisi = gun_sayisi
         # Kurum profili: "112" ise 112'ye ozel domain kurallari aktiflesir;
-        # "genel" (default) mevcut davranis. Bu asamada yalniz saklanir.
+        # "genel" (default) mevcut davranis.
         self.kurum_profili = kurum_profili if kurum_profili in ("genel", "112") else "genel"
+        # Resmi tatil gunleri (mesai-bazli min nobet hesabinda is gunu haric).
+        self.resmi_tatil_gunleri = set(resmi_tatil_gunleri or [])
         self.gun_tipleri = gun_tipleri
         self.personeller = {p.id: p for p in personeller}
         self.personel_listesi = personeller
@@ -116,6 +119,31 @@ class HedefHesaplayici:
     def _rol_adi(gorev: SolverGorev) -> str:
         """Slot'un rol adı = base_name (yoksa ad). Final solver ile aynı tanım."""
         return gorev.base_name if gorev.base_name else gorev.ad
+
+    def _mesai_min_nobet(self, p) -> int:
+        """112 profili: aylık mesai saatinden türetilen min nöbet (soft alt sınır).
+
+        İş günü = hafta içi (hici/prs/cum); hafta sonu (cmt/pzr) ve resmi tatil
+        günleri sayılmaz. Kişinin izin/eğitim/rapor günlerinden İŞ GÜNÜNE denk
+        gelenler "yapılmış mesai" sayılıp borçtan düşer (nöbet izni ve normal
+        mazeret DÜŞMEZ). min = ceil((net_iş_günü × 8) / 24) = ceil(net_iş_günü/3).
+        Genel profilde 0 döner (mevcut min_nobet mekanizması geçerli kalır).
+        """
+        if self.kurum_profili != "112":
+            return 0
+        is_gunleri = {
+            g for g, tip in self.gun_tipleri.items()
+            if tip in ("hici", "prs", "cum") and g not in self.resmi_tatil_gunleri
+        }
+        toplam = len(is_gunleri)
+        izin_turleri = getattr(p, "izin_turleri", None) or {}
+        izinli_is = sum(
+            1 for g, tur in izin_turleri.items()
+            if tur in ("izin", "egitim", "rapor") and g in is_gunleri
+        )
+        net = max(0, toplam - izinli_is)
+        saat = net * 8
+        return -(-saat // 24)  # ceil(saat / 24)
 
     def _havuz_coz(self) -> Dict[str, set]:
         """``gorev_havuzlari``yı gerçek (normalize) personel id kümelerine çözer.
@@ -578,25 +606,39 @@ class HedefHesaplayici:
                 max_kapasite = min(max_kapasite, kisitli_kapasite[matched_kisitli])
 
             manuel_total = sum(manuel_sayac[pid].values())
-            min_nobet = max(0, self._guvenli_int(getattr(p, 'min_nobet', 0), 0))
             max_nobet_raw = getattr(p, 'max_nobet', None)
             max_nobet = None if max_nobet_raw is None else max(0, self._guvenli_int(max_nobet_raw, 0))
 
-            if max_nobet is not None and max_nobet < min_nobet:
-                return HedefSonuc(
-                    False, [], [], {},
-                    {'adalet': {'uyarilar': adalet_uyarilari}},
-                    f"Min/max nöbet sınırı geçersiz: {p.ad} / min={min_nobet} max={max_nobet}"
-                )
+            if self.kurum_profili == "112":
+                # 112: min nöbet mesai saatinden türetilir (soft alt sınır).
+                min_nobet = self._mesai_min_nobet(p)
+            else:
+                # Genel: frontend'den gelen sabit min (hard alt sınır — mevcut davranış).
+                min_nobet = max(0, self._guvenli_int(getattr(p, 'min_nobet', 0), 0))
+                if max_nobet is not None and max_nobet < min_nobet:
+                    return HedefSonuc(
+                        False, [], [], {},
+                        {'adalet': {'uyarilar': adalet_uyarilari}},
+                        f"Min/max nöbet sınırı geçersiz: {p.ad} / min={min_nobet} max={max_nobet}"
+                    )
 
-            alt_sinir = max(manuel_total, min_nobet)
             ust_sinir = max_kapasite
             if max_nobet is not None:
                 ust_sinir = min(ust_sinir, max_nobet)
 
+            # 112'de min SOFT: kapasiteyi aşamaz. Aşan kısım 'açık' olarak
+            # raporlanır (çizelge kırılmaz; kullanıcıya nasıl tamamlanır sunulur).
+            min_nobet_acigi = 0
+            if self.kurum_profili == "112" and min_nobet > ust_sinir:
+                min_nobet_acigi = min_nobet - ust_sinir
+                min_nobet = ust_sinir
+
+            alt_sinir = max(manuel_total, min_nobet)
+
             personel_sinirlar[pid] = {
                 'manuel_alt_sinir': manuel_total,
                 'min_nobet': min_nobet,
+                'min_nobet_acigi': min_nobet_acigi,
                 'max_nobet': max_nobet,
                 'kapasite': max_kapasite,
                 'ara_gun_kapasitesi': ara_gun_kapasitesi,

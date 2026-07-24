@@ -241,6 +241,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             kaynak="nobet_dagit_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
             kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+            resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
         )
         hedefler = planlama.get("hedefler_map", {})
         plan_kontrati = planlama.get("plan_kontrati")
@@ -440,6 +441,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": str(ve), "error_type": "GirdiCokBuyuk"}, status=400)
 
         saat_degerleri = data.get("saatDegerleri", None)
+        resmi_tatiller = data.get("resmiTatiller", [])
 
         personeller = parse_solver_personeller_hedef(data)
 
@@ -476,6 +478,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             kaynak="nobet_hedef_hesapla_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
             kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+            resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
         )
         sonuc = planlama.get("hedef_sonuc")
         plan_kontrati = planlama.get("plan_kontrati")
@@ -620,6 +623,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 gorev_kota_overrides=gorev_kota_overrides,
                 gorev_havuzlari=gorev_havuzlari,
                 kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+                resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
             )
         except Exception as hedef_err:
             logger.exception("Ortak planlama basarisiz: %s", hedef_err)
@@ -676,6 +680,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 kaynak=(plan_kontrati.kaynak if plan_kontrati else None),
                 gorev_havuzlari=gorev_havuzlari,
                 kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+                resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
             )
 
         sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(
