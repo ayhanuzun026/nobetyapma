@@ -10,24 +10,7 @@ Firebase proje ID: `nobetyap-29acf`
 
 ## Derleme ve Dağıtım
 
-```bash
-# Tümünü dağıt (functions + hosting)
-firebase deploy
-
-# Sadece backend
-firebase deploy --only functions
-
-# Sadece frontend
-firebase deploy --only hosting
-
-# Yerel geliştirme için emülatör
-firebase emulators:start
-
-# Python bağımlılıkları
-cd functions && pip install -r requirements.txt
-```
-
-Frontend için derleme adımı yoktur — `public/index.html` doğrudan sunulur. Test framework'ü yapılandırılmamıştır.
+Standart Firebase CLI ile dağıtılır (`firebase deploy`, `--only functions|hosting`, `firebase emulators:start`). Frontend için derleme adımı yoktur — `public/index.html` doğrudan sunulur. Test framework'ü yapılandırılmamıştır.
 
 ## Mimari
 
@@ -42,33 +25,9 @@ Arada `gun_iskelet_planlayici.py` (sezgisel, OR-Tools kullanmaz) hedefleri günl
 
 `nobet_coz` INFEASIBLE dönerse, `solve_strategy.py` **tanılama tabanlı gevşetme döngüsü** çalıştırır: kök nedeni teşhis et → kısıtları otomatik gevşet (ör. `ara_gun` azalt; exclusive/ayrı/birlikte kurallarını kaldır) → tekrar dene. **Greedy geri dönüş YOKTUR**; son çare tüm yumuşak kısıtların kaldırılmasıdır (`tum_soft_kaldir`).
 
-### 5 Cloud Function Endpoint'i (main.py)
+### Cloud Function Endpoint'leri (main.py)
 
-| Endpoint | Amaç | Bellek | Zaman Aşımı |
-|---|---|---|---|
-| `nobet_dagit` | OR-Tools hızlı önizleme (Excel + imzalı URL üretir) | 1 GB | 540s |
-| `nobet_kapasite` | Kapasite analizi | 512 MB | 60s |
-| `nobet_hedef_hesapla` | Hedef hesaplama (OR-Tools) | 1 GB | 300s |
-| `nobet_coz` | Optimal çözüm (OR-Tools + gevşetme döngüsü) | 2 GB | 540s |
-| `debug_event_log` | Frontend debug event → Firestore | 256 MB | 10s |
-
-Not: Frontend şu an yalnızca `nobet_coz` ve `nobet_hedef_hesapla`'yı çağırır; `nobet_dagit` ve `nobet_kapasite` deploy edilir ama frontend'den kullanılmaz. Girdi boyut üst sınırları (`main.py`): `MAX_SLOT_SAYISI=50`, `MAX_PERSONEL=1000`, `MAX_GOREV=300` (OOM/DoS koruması).
-
-### Backend Modül Haritası (functions/)
-
-- **`main.py`** — Giriş noktası, 5 HTTP endpoint, Firebase başlatma, girdi boyut doğrulama
-- **`ortools_solver.py`** — `NobetSolver`: Üçlü denge (sayı/saat/hafta sonu) ve ağırlıklı ceza yöntemiyle CP-SAT çizelge modeli
-- **`hedef_hesaplayici.py`** — `HedefHesaplayici`: Ayrı bir CP-SAT modeliyle kişi başı adil nöbet hedefi hesaplar
-- **`gun_iskelet_planlayici.py`** — `GunIskeletPlanlayici`: Hedefleri günlere/rollere dağıtan sezgisel iskelet planlayıcı (Faz 3); OR-Tools kullanmaz
-- **`planlayici.py`** — `ortak_plan_uret()`: Hedef + iskeleti `PlanKontrati`'ye paketleyen orkestratör (3 endpoint aynı planı kullansın diye)
-- **`solve_strategy.py`** — Tanılama döngüsü: çöz → çözümsüzlüğü teşhis et → gevşet → tekrar dene (greedy geri dönüş YOK)
-- **`parsers.py`** — Frontend JSON'unu backend veri modellerine dönüştürür; ID normalizasyonu yapar
-- **`utils.py`** — Ortak yardımcılar: `normalize_id()` (SHA1 tabanlı), takvim fonksiyonları, gün tipi sabitleri
-- **`solver_models.py`** — OR-Tools veri sınıfları: `SolverPersonel`, `SolverGorev`, `SolverKural`, `SolverAtama`, `PlanKontrati`; ceza ağırlık sabitleri
-- **`excel_export.py`** — OpenPyXL tabanlı Excel rapor üretimi
-- **`kapasite.py`** — Personel müsaitliği ve slot kapasitesi analizi
-- **`http_helpers.py`** — CORS preflight, JSON/hata yanıt yardımcıları
-- **`firestore_logger.py`** — Her backend çağrısını `debug_sessions`'a kaydeder (PII maskeli, 30 gün TTL)
+5 endpoint vardır: `nobet_dagit`, `nobet_kapasite`, `nobet_hedef_hesapla`, `nobet_coz`, `debug_event_log` (bellek/zaman aşımı ayarları `main.py` dekoratörlerinde). Not: Frontend şu an yalnızca `nobet_coz` ve `nobet_hedef_hesapla`'yı çağırır; `nobet_dagit` ve `nobet_kapasite` deploy edilir ama frontend'den kullanılmaz. Girdi boyut üst sınırları (`main.py`): `MAX_SLOT_SAYISI=50`, `MAX_PERSONEL=1000`, `MAX_GOREV=300` (OOM/DoS koruması).
 
 ### Frontend (public/index.html)
 
@@ -88,6 +47,23 @@ Tüm CSS, JS ve HTML'i içeren ~9.900 satırlık tek monolitik dosya. Firebase S
 - **Saat değerleri** = gün tipine göre saat: `{hici: 8, prs: 8, cum: 16, cmt: 24, pzr: 16}`
 - **Hedef** = kişi başı dengeli nöbet sayısı hedefi
 - **Ayrı bina** = görevlerdeki ayrı bina kısıt bayrağı
+- **Kurum profili** = `kurumProfili` bayrağı (`genel` | `112`); 112'ye özel kurallar yalnız `112` seçilince aktif
+- **İzin türü** = `izin_turleri` (gün→tür): `izin` (yıllık), `egitim`, `rapor`, `nobet_izni`, `mazeret`. `mazeret_gunleri` bunların birleşimidir
+- **İş günü** = hafta içi (`hici`/`prs`/`cum`); hafta sonu (`cmt`/`pzr`) ve resmi tatil hariç
+- **Max ara gün** = 112'de iki nöbet arası izin verilen üst sınır (soft; `min ara_gun`'ün ikizi değil, ceza)
+
+## 112 Kurum Profili (Faz 2)
+
+112/Ambulans birimlerine özel domain kuralları `kurumProfili="112"` bayrağı arkasında toplanır. **Genel hastane profili hiç etkilenmez — tüm kurallar `kurum_profili=="112"` ile kapılıdır, geriye tam uyumludur.** Bayrak `parse_kurum_profili()` (`parsers.py`) ile normalize edilir; frontend'de sihirbaz adım 1'inde seçilir (localStorage'da kalıcı) ve `nobet_coz`/`nobet_hedef_hesapla` payload'ında akar.
+
+**Kritik ilke:** Ara gün / yerleşim ile ilgili yeni kurallar **asla kör-HARD kısıt değildir** — ya soft ceza ya kullanıcı onaylı öneridir. Aksi halde `solve_strategy.py`'deki gevşetme döngüsü (yalnız `ara_gun_azalt` kolunu bilir) göremediği bir kısıt yüzünden yanlış yeri gevşetir.
+
+Uygulanan kurallar:
+- **Mesai-bazlı min nöbet** (`hedef_hesaplayici._mesai_min_nobet`): `min = ceil(net_iş_günü / 3)` (8/24 saat). İzin/eğitim/rapor iş gününe denk gelince borçtan düşer. **Soft alt sınır** — kapasite yetmezse INFEASIBLE olmaz; açık (`min_nobet_acigi`) hesaplanıp kullanıcıya "kim/ne kadar eksik + nasıl tamamlanır" olarak raporlanır.
+- **Max ara gün** (`ortools_solver` S5b, `WEIGHT_MAX_ARA`): her `max_ara_gun` (default 5) günlük pencerede ≥1 nöbet tercih edilir (soft). `maxAraGun` payload'ından ayarlanır.
+- **12/12 son çare doldurma** (`_bos_slot_takas_onerileri` → `yari_vardiya`): boş kalan slot için gündüz+gece 12'şer saat bölme önerisi (kullanıcı onaylı). Gece adayı önceki gün nöbette olamaz (sabah çıkan o akşam yazılamaz). Normal nöbet 24s kalır.
+- **Yıllık izin öncesi/sonrası yerleşim** (`ortools_solver` S5c, `WEIGHT_IZIN_YERLESIM`): yalnız yıllık izin için — öncesi 2 gün boşluk tercihi, sonrası ilk iş gününe nöbet tercihi (ikisi de soft).
+- **112 yetkinlik rolleri** (şoför/ATT/paramedik + çoklu yetkinlik): ayrı kod yok; mevcut `gorevHavuzlari` + `yetkiliGorevler` altyapısıyla yapılandırılır (bir kişiyi birden çok havuza ekle).
 
 ## Kritik Kalıplar
 
