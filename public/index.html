@@ -1514,6 +1514,7 @@
     let gunTipiDegisimKayitlari = [];
     let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
     let hedeflerBayat = true;
+    let hazirlikKapasiteSonucu = null;
     let aktifPlanKontrati = null;
     let aktifPlanHash = null;
 
@@ -1539,6 +1540,7 @@
       if (kayitli === '112' || kayitli === 'genel') sec.value = kayitli;
       sec.addEventListener('change', () => {
         localStorage.setItem(KURUM_PROFILI_KEY, getKurumProfili());
+        hedefleriBayatIsaretle('Kurum profili değişti.');
       });
     }
 
@@ -1573,8 +1575,14 @@
 
     function hedefleriBayatIsaretle(neden = '') {
       hedeflerBayat = true;
+      hazirlikKapasiteSonucu = null;
       aktifPlanKontrati = null;
       aktifPlanHash = null;
+      const hazirlikPaneli = document.getElementById('hazirlik-analizi');
+      if (hazirlikPaneli) {
+        hazirlikPaneli.innerHTML = '';
+        hazirlikPaneli.style.display = 'none';
+      }
       if (neden) console.log(`[HEDEF] Hedefler bayat: ${neden}`);
     }
 
@@ -1903,6 +1911,7 @@
 
       if (!resmiTatiller.find(t => t.gun === gun)) {
         resmiTatiller.push({ gun, tip });
+        hedefleriBayatIsaretle('Resmi tatil eklendi.');
         tatilListesiGuncelle();
         kaydetDebounced();
       }
@@ -1911,6 +1920,7 @@
 
     function tatilSil(gun) {
       resmiTatiller = resmiTatiller.filter(t => t.gun !== gun);
+      hedefleriBayatIsaretle('Resmi tatil silindi.');
       tatilListesiGuncelle();
       kaydetDebounced();
     }
@@ -2496,6 +2506,7 @@
 
       if (personel.yillikGecmis && personel.yillikGecmis[yil]) {
         delete personel.yillikGecmis[yil];
+        hedefleriBayatIsaretle('Personel geçmiş verisi silindi.');
       }
 
       gecmisTabloGuncelle();
@@ -2518,6 +2529,7 @@
       if (secim.trim() === '2') {
         if (!confirm('TÜM personelin TÜM yıllara ait geçmiş verileri silinecek!\n\nBu işlem geri alınamaz. Emin misiniz?')) return;
         personelListesi.forEach(p => { p.yillikGecmis = {}; });
+        hedefleriBayatIsaretle('Tüm geçmiş veriler silindi.');
         ozetTablosuGuncelle();
         kaydetDebounced();
         alert('Tüm geçmiş verileri silindi.');
@@ -2535,6 +2547,7 @@
             silinenSayisi++;
           }
         });
+        hedefleriBayatIsaretle('Yıllık geçmiş veriler silindi.');
         ozetTablosuGuncelle();
         kaydetDebounced();
         alert(`${silinenSayisi} personelin ${yil} yılı geçmiş verisi silindi.`);
@@ -2785,6 +2798,7 @@
         alert(mesaj);
 
         // UI güncelle
+        hedefleriBayatIsaretle('Geçmiş Excel verisi yüklendi.');
         ozetTablosuGuncelle();
         kaydetDebounced();
       } catch (e) {
@@ -2999,6 +3013,7 @@
         alert(mesaj);
 
         // UI güncelle
+        hedefleriBayatIsaretle('Görev çeteleme geçmişi yüklendi.');
         ozetTablosuGuncelle();
         kaydetDebounced();
       } catch (e) {
@@ -3096,6 +3111,7 @@
       if (!personel.yillikGecmis[yil][ay]) personel.yillikGecmis[yil][ay] = {};
 
       personel.yillikGecmis[yil][ay][tip] = parseInt(deger) || 0;
+      hedefleriBayatIsaretle('Geçmiş gün tipi verisi değişti.');
       ozetTablosuGuncelle();
       kaydetDebounced();
     }
@@ -3110,6 +3126,7 @@
       if (!personel.yillikGecmis[yil][ay].gorevler) personel.yillikGecmis[yil][ay].gorevler = {};
 
       personel.yillikGecmis[yil][ay].gorevler[gorevAdi] = parseInt(deger) || 0;
+      hedefleriBayatIsaretle('Geçmiş görev verisi değişti.');
       ozetTablosuGuncelle();
       kaydetDebounced();
     }
@@ -3297,6 +3314,7 @@
         gorevHavuzlari[gorevAdi] = seciliIdler;
       }
 
+      hedefleriBayatIsaretle('Görev havuzu değişti.');
       gorevKisitlamaListesiGuncelle();
       havuzMevcutListeGuncelle();
       kaydetDebounced();
@@ -3338,6 +3356,7 @@
 
     function gorevHavuzuSil(gorevAdi) {
       delete gorevHavuzlari[gorevAdi];
+      hedefleriBayatIsaretle('Görev havuzu silindi.');
       havuzGorevSecildi();
       havuzMevcutListeGuncelle();
       gorevKisitlamaListesiGuncelle();
@@ -3358,12 +3377,14 @@
         if (secilen.length < 2) return alert('En az 2 kişi seçiniz');
         kurallar.push({ tur: 'birlikte', kisiler: [...new Set(secilen)] });
       }
+      hedefleriBayatIsaretle('Personel kuralı eklendi.');
       kuralListesiGuncelle();
       kaydetDebounced();
     }
 
     function kuralSil(idx) {
       kurallar.splice(idx, 1);
+      hedefleriBayatIsaretle('Personel kuralı silindi.');
       kuralListesiGuncelle();
       kaydetDebounced();
     }
@@ -3763,6 +3784,7 @@
         gunTipiDagilimi,
         tasmaGorevi
       }];
+      hedefleriBayatIsaretle('Görev kısıtlaması eklendi.');
 
       // Gün tipi inputlarını temizle
       GUN_TIPLERI.forEach(t => {
@@ -3779,6 +3801,7 @@
     function gorevKisitlamaSil(idx) {
       const silinen = gorevKisitlamalari[idx];
       gorevKisitlamalari = gorevKisitlamalari.filter((_, i) => i !== idx);
+      hedefleriBayatIsaretle('Görev kısıtlaması silindi.');
 
       // İlgili istisnaları da temizle
       if (silinen) {
@@ -3795,6 +3818,7 @@
 
     function kisitlamaExclusiveDegisti() {
       kisitlamaExclusive = document.getElementById('kisitlama-exclusive').checked;
+      hedefleriBayatIsaretle('Görev kısıtlama modu değişti.');
       gorevKisitlamaListesiGuncelle();
       kaydetDebounced();
     }
@@ -3805,6 +3829,7 @@
         gorevKisitlamalari = gorevKisitlamalari.map((k, i) =>
           i === idx ? { ...k, exclusive: checked, _legacyExclusiveMissing: false } : k
         );
+        hedefleriBayatIsaretle('Görev kısıtlama modu değişti.');
         kaydetDebounced();
       }
     }
@@ -4128,6 +4153,7 @@
           input.value = '';
           mazeretGridOlustur();
           mazeretDegisti = true;
+          hedefleriBayatIsaretle('Excel üzerinden mazeret değişti.');
           kaydetDebounced();
 
           // Nöbet atamaları için modal göster
@@ -4404,6 +4430,7 @@
       selectedCells = [];
       mazeretGridOlustur();
       mazeretDegisti = true;
+      hedefleriBayatIsaretle('Mazeret veya izin değişti.');
       kaydetDebounced();
       _logFrontendEvent('mazeret_degisim', { tur, sayac: selectedCells.length });
     }
@@ -4419,6 +4446,7 @@
       });
       mazeretGridOlustur();
       mazeretDegisti = true;
+      hedefleriBayatIsaretle('Tüm mazeret ve izinler temizlendi.');
       kaydetDebounced();
     }
 
@@ -4693,6 +4721,7 @@
           hedefTablosuGuncelle();
           ozelGorevSectionGuncelle();
           hedeflerBayat = false;
+          mazeretDegisti = false;
           kaydetDebounced();
 
           console.log(`[HEDEF] OR-Tools hedef hesaplama başarılı: ${personelListesi.length} kişi eşleştirildi`);
@@ -4706,7 +4735,7 @@
       } catch (error) {
         console.error('OR-Tools hedef hesaplama hatası:', error);
         hedeflerBayat = true;
-        return false;
+        throw error;
       }
     }
 
@@ -4743,7 +4772,6 @@
         alert('Hedef hesaplama sırasında hata oluştu: ' + error.message);
       } finally {
         hedefHesaplamaAktif = false;
-        mazeretDegisti = false;
       }
     }
 
@@ -6609,6 +6637,11 @@
     function hazirlikAnaliziGoster(kapasite, atananToplam, gunSayisi) {
       const container = document.getElementById('hazirlik-analizi');
       if (!container) return;
+      const kesinDurum = String(hazirlikKapasiteSonucu?.durum || '').toUpperCase();
+      if (kesinDurum && kesinDurum !== 'FEASIBLE') {
+        hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
+        return;
+      }
 
       const { yil, ay } = getYilAy();
       const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
@@ -6814,6 +6847,7 @@
         <div style="display:flex; align-items:center; gap:10px;">
           <span style="font-size:22px; font-weight:800; color:#f8fafc;">&#128269; Hazirlik Analizi</span>
           <span style="font-size:11px; color:#94a3b8;">(${personelListesi.length} personel, ${slotSayisi} slot/gun, ${gunSayisi} gun, ara gun: ${araGun})</span>
+          ${kesinDurum === 'FEASIBLE' ? '<span class="badge badge-ok">FEASIBLE</span>' : ''}
         </div>
         <div style="display:flex; align-items:center; gap:8px; background:${skorRenk}22; border:1px solid ${skorRenk}44; border-radius:8px; padding:6px 14px;">
           <span style="font-size:28px; font-weight:900; color:${skorRenk};">${skor}</span>
@@ -7447,6 +7481,7 @@
           }
           // Kullanıcı onayladı - görev kısıtlamasını tamamen kaldır
           gorevKisitlamalari.splice(kisitlamaIdx, 1);
+          hedefleriBayatIsaretle('Görev kısıtlaması kota değişikliğiyle kaldırıldı.');
           console.log(`${p.ad} için görev kısıtlaması tamamen kaldırıldı`);
           gorevKisitlamaListesiGuncelle();
         }
@@ -8269,6 +8304,90 @@
       `;
     }
 
+    function hazirlikKapasiteSonucuGoster(result) {
+      const container = document.getElementById('hazirlik-analizi');
+      if (!container) return;
+
+      const fizibilite = result?.fizibilite || result || {};
+      const durum = String(fizibilite.durum || 'UNKNOWN').toUpperCase();
+      const uygun = durum === 'FEASIBLE';
+      const neden = fizibilite.neden || {};
+      const detay = neden.detay || {};
+      const renk = uygun ? '#16a34a' : durum === 'INFEASIBLE' ? '#dc2626' : '#d97706';
+      const arkaPlan = uygun ? '#f0fdf4' : durum === 'INFEASIBLE' ? '#fef2f2' : '#fffbeb';
+      const baslik = uygun
+        ? 'Hazırlık kapasitesi doğrulandı'
+        : durum === 'INFEASIBLE'
+          ? 'INFEASIBLE: Hazırlık kapasitesi yetersiz'
+          : 'Hazırlık kapasitesi doğrulanamadı';
+      const varsayilanMesaj = uygun
+        ? 'Gün bazlı sert kısıtlarla tüm görev slotları doldurulabiliyor.'
+        : durum === 'INFEASIBLE'
+          ? 'Gün bazlı sert kısıtlarla tüm görev slotlarını doldurmak imkânsız.'
+          : 'Kapasite kontrolü kesin bir sonuç üretemedi.';
+      const pencere = detay.ara_gun_pencere_aciklari?.[0] || detay;
+      const pencereBaslangic = pencere.baslangic_gunu ?? pencere.baslangic;
+      const pencereBitis = pencere.bitis_gunu ?? pencere.bitis;
+      const pencereMetni = pencereBaslangic && pencereBitis
+        ? `${pencereBaslangic}-${pencereBitis}. gün: talep ${pencere.talep ?? '-'}, üst kapasite ${pencere.ust_kapasite ?? '-'}, eksik ${pencere.eksik ?? '-'}`
+        : '';
+
+      container.style.display = 'block';
+      container.innerHTML = `
+        <div style="background:${arkaPlan}; border:2px solid ${renk}; border-radius:8px; padding:16px; margin-top:16px; color:#172033;">
+          <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+            <div>
+              <div style="font-size:16px; font-weight:800; color:${renk};">${escapeHtml(baslik)}</div>
+              <div style="font-size:12px; margin-top:5px;">${escapeHtml(neden.mesaj || varsayilanMesaj)}</div>
+            </div>
+            <span class="badge ${uygun ? 'badge-ok' : 'badge-bad'}" style="font-size:13px; padding:6px 10px;">${escapeHtml(durum)}</span>
+          </div>
+          ${pencereMetni ? `<div style="margin-top:10px; font-weight:700; color:#991b1b;">${escapeHtml(pencereMetni)}</div>` : ''}
+          ${fizibilite.oneri ? `<div style="margin-top:10px;"><strong>Öneri:</strong> ${escapeHtml(fizibilite.oneri)}</div>` : ''}
+          ${!uygun ? '<div style="margin-top:10px; font-weight:800; color:#991b1b;">Hedef ve çizelge hesaplaması engellendi.</div>' : ''}
+          ${Object.keys(detay).length ? `
+            <details style="margin-top:10px;">
+              <summary style="cursor:pointer; font-weight:700;">Teknik ayrıntı</summary>
+              <pre style="margin:8px 0 0; white-space:pre-wrap; overflow:auto; font-size:11px;">${escapeHtml(JSON.stringify(detay, null, 2))}</pre>
+            </details>` : ''}
+        </div>
+      `;
+    }
+
+    async function hazirlikKapasiteKontrolEt(requestData) {
+      console.log('[HEDEF] Gün bazlı hazırlık kapasitesi kontrol ediliyor...');
+      const response = await authFetch(BACKEND_URL_KAPASITE, {
+        method: 'POST',
+        body: JSON.stringify(requestData),
+        timeoutMs: 60000
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result?.error || `Kapasite kontrolü HTTP ${response.status}`);
+      }
+
+      const fizibilite = result?.fizibilite;
+      if (!fizibilite?.durum) {
+        throw new Error('Kapasite kontrolü geçerli bir fizibilite sonucu döndürmedi.');
+      }
+
+      hazirlikKapasiteSonucu = fizibilite;
+      hazirlikKapasiteSonucuGoster(result);
+      const durum = String(fizibilite.durum).toUpperCase();
+      console.log(`[HEDEF] Hazırlık kapasite sonucu: ${durum}`);
+
+      if (durum !== 'FEASIBLE') {
+        hedeflerBayat = true;
+        aktifPlanKontrati = null;
+        aktifPlanHash = null;
+        cozumuGecersizKil(`Hazırlık kapasite durumu ${durum}`);
+        const mesaj = fizibilite.neden?.mesaj || 'Gün bazlı kapasite kontrolü başarısız.';
+        throw new Error(`${durum}: ${mesaj}`);
+      }
+
+      return result;
+    }
+
     // OR-Tools ile hedef hesapla
     async function hedefHesaplaOrtools() {
       const { yil, ay } = getYilAy();
@@ -8308,6 +8427,10 @@
           id: p.id,
           ad: p.ad,
           mazeretler: mazeretler,
+          yillikIzinler: p.yillikIzinler || [],
+          nobetIzinleri: p.nobetIzinleri || [],
+          egitimler: p.egitimler || [],
+          raporlar: p.raporlar || [],
           kisitliGorev: kisitlama?.gorevAdi || null,
           isYukuKatsayisi: p.isYukuKatsayisi ?? 1,
           minNobet: p.minNobet ?? 0,
@@ -8373,7 +8496,10 @@
       const requestData = {
         sozlesmeSurumu: 2,
         gecmisDonemPolitikasi: GECMIS_DONEM_POLITIKASI,
+        yil,
+        ay,
         gunSayisi,
+        slotSayisi: gunluk,
         gunTipleri,
         araGun,
         saatDegerleri,
@@ -8383,12 +8509,34 @@
         gorevKisitlamalari: gorevKisitData,
         gorevHavuzlari: gorevHavuzlari,
         manuelAtamalar: manuelData,
+        kisitlamaIstisnalari: (kisitlamaIstisnalari || []).map(ist => ({
+          personelId: ist.personelId,
+          kisitliGorev: ist.kisitliGorev,
+          istisnaGorev: ist.istisnaGorev,
+          gun: ist.gun,
+          onayTarihi: ist.onayTarihi
+        })),
+        birlikteIstisnalari: (birlikteIstisnalari || []).map(ist => ({
+          personelId: ist.personelId,
+          gun: ist.gun,
+          slotIdx: ist.slotIdx,
+          gorevAdi: ist.gorevAdi,
+          onayTarihi: ist.onayTarihi
+        })),
+        araGunIstisnalari: (araGunIstisnalari || []).map(ist => ({
+          personelId: ist.personelId,
+          gun1: ist.gun1,
+          gun2: ist.gun2,
+          onayTarihi: ist.onayTarihi
+        })),
         kilitliHedefler: kilitliHedefler,
         kurumProfili: getKurumProfili(),
         resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };
 
       console.log(`[HEDEF] OR-Tools hedef isteği: ${personelData.length} personel, ${gunSayisi} gün, ${gorevData.length} görev, ${kuralData.length} kural`);
+
+      await hazirlikKapasiteKontrolEt(requestData);
 
       const response = await authFetch(BACKEND_URL_HEDEF, {
         method: 'POST',
@@ -8404,6 +8552,20 @@
       console.log(`[HEDEF] OR-Tools hedef sonucu: basari=${result.basari}, ${result.hedefler?.length || 0} hedef, mesaj=${result.mesaj || 'yok'}`);
 
       if (!result.basari) {
+        const durum = String(result?.istatistikler?.status || 'INFEASIBLE').toUpperCase();
+        hazirlikKapasiteSonucu = {
+          durum,
+          neden: {
+            kod: 'HEDEF_CP_SAT',
+            mesaj: result.mesaj || 'Hedef modeli çözümsüz.'
+          },
+          oneri: 'Mazeretleri, ara gün değerini, manuel atamaları ve hard birlikte kurallarını gözden geçirin.',
+          solver: result.istatistikler || {}
+        };
+        hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
+        aktifPlanKontrati = null;
+        aktifPlanHash = null;
+        cozumuGecersizKil(`Hazırlık kapasite durumu ${durum}`);
         throw new Error(result.mesaj || 'Hedef hesaplama başarısız');
       }
 
@@ -8427,6 +8589,15 @@
       btnListeOlustur.disabled = true;
 
       try {
+        if (!hazirlikKapasiteSonucu) {
+          hedeflerBayat = true;
+        } else if (String(hazirlikKapasiteSonucu.durum).toUpperCase() !== 'FEASIBLE') {
+          const durum = String(hazirlikKapasiteSonucu.durum || 'UNKNOWN').toUpperCase();
+          goStep(5);
+          hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
+          throw new Error(`${durum}: Hazırlık kapasitesi uygun olmadığı için çizelge oluşturulamaz.`);
+        }
+
         // Hedefler hesaplanmış mı kontrol et
         const hedefBosKisi = personelListesi.filter(p => {
           const toplam = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
@@ -10254,6 +10425,7 @@
     }
 
     async function yukle(secenekler = {}) {
+      hedefleriBayatIsaretle('Dönem verileri yükleniyor.');
       const uid = auth?.currentUser?.uid || 'LOCAL';
       const acikDonem = Number.isFinite(Number(secenekler.yil)) && Number.isFinite(Number(secenekler.ay));
 
@@ -10616,6 +10788,11 @@
       kurumProfiliniGeriYukle();
       document.getElementById('inp-yil')?.addEventListener('change', donemDegisti);
       document.getElementById('inp-ay')?.addEventListener('change', donemDegisti);
+      document.getElementById('inp-gunluk')?.addEventListener('change', () => hedefleriBayatIsaretle('Günlük görev sayısı değişti.'));
+      document.getElementById('inp-aragun')?.addEventListener('change', () => hedefleriBayatIsaretle('Ara gün değeri değişti.'));
+      GUN_TIPLERI.forEach(tip => {
+        document.getElementById(`saat-${tip}`)?.addEventListener('change', () => hedefleriBayatIsaretle('Saat değeri değişti.'));
+      });
     });
   </script>
 </body>

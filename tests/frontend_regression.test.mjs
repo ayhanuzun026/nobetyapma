@@ -80,6 +80,41 @@ test('backend requests have abortable timeouts', () => {
   assert.match(html, /timeoutMs: 310000/);
 });
 
+test('preparation capacity is an exact gate before target and schedule calculation', () => {
+  assert.match(html, /async function hazirlikKapasiteKontrolEt\(requestData\)/);
+  assert.match(html, /authFetch\(BACKEND_URL_KAPASITE/);
+  const targetStart = html.indexOf('async function hedefHesaplaOrtools()');
+  const targetEnd = html.indexOf('async function listeOlustur()', targetStart);
+  const targetBody = html.slice(targetStart, targetEnd);
+  const capacityCheck = targetBody.indexOf('await hazirlikKapasiteKontrolEt(requestData)');
+  const targetRequest = targetBody.indexOf('authFetch(BACKEND_URL_HEDEF');
+  assert.ok(capacityCheck >= 0 && targetRequest > capacityCheck);
+  assert.match(html, /durum !== 'FEASIBLE'/);
+  assert.match(html, /Hedef ve çizelge hesaplaması engellendi\./);
+  assert.match(html, /Hazırlık kapasite durumu \$\{durum\}/);
+});
+
+test('capacity-affecting edits invalidate the previous preparation result', () => {
+  const reasons = [
+    'Resmi tatil eklendi.',
+    'Görev havuzu değişti.',
+    'Personel kuralı eklendi.',
+    'Görev kısıtlaması eklendi.',
+    'Mazeret veya izin değişti.',
+    'Tüm mazeret ve izinler temizlendi.',
+    'Ara gün değeri değişti.',
+    'Kurum profili değişti.',
+    'Geçmiş Excel verisi yüklendi.',
+    'Geçmiş gün tipi verisi değişti.',
+    'Saat değeri değişti.'
+  ];
+  for (const reason of reasons) {
+    assert.ok(html.includes(`hedefleriBayatIsaretle('${reason}')`), `missing invalidation: ${reason}`);
+  }
+  assert.match(html, /hazirlikPaneli\.innerHTML = ''/);
+  assert.match(html, /INFEASIBLE: Hazırlık kapasitesi yetersiz/);
+});
+
 test('strict contract sends authority fields without global manual bypass', () => {
   assert.match(html, /function normalizeYetkiliGorevler\(value\)/);
   assert.match(html, /yetkiliGorevler:\s*normalizeYetkiliGorevler\(p\.yetkiliGorevler\)/);

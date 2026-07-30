@@ -2719,6 +2719,39 @@ class NobetSolver:
                           sure_ms=sure_ms,
                           mesaj=f"Cozum bulunamadi: {normalized_status} (ara_gun={self.ara_gun})")
 
+    def tam_doluluk_fizibilitesi(self, max_sure_saniye: int = 10) -> SolverSonuc:
+        """Tüm slotların hard kısıtlarla doldurulabildiğini kesin olarak denetler."""
+        baslangic = time.time()
+        manual_conflicts = self._manual_hard_conflict_diagnostics()
+        if manual_conflicts:
+            return self._manual_conflict_result(baslangic, manual_conflicts)
+
+        cp = _get_cp_model()
+        context = self._build_model(cp)
+        for bos_mu in context.bos_slotlar:
+            context.model.Add(bos_mu == 0)
+        if self.kurum_profili != "112":
+            for personel in self.personel_listesi:
+                min_nobet = max(0, int(getattr(personel, "min_nobet", 0) or 0))
+                if min_nobet > 0:
+                    context.model.Add(
+                        sum(
+                            context.kisi_gun_atama[personel.id, gun]
+                            for gun in range(1, self.gun_sayisi + 1)
+                        ) >= min_nobet
+                    )
+        context.model.ClearObjective()
+
+        solver = cp.CpSolver()
+        solver.parameters.max_time_in_seconds = max(1, int(max_sure_saniye or 1))
+        solver.parameters.num_search_workers = 4
+        status = solver.Solve(context.model)
+        sure_ms = int((time.time() - baslangic) * 1000)
+
+        if status in [cp.OPTIMAL, cp.FEASIBLE]:
+            return self._extract_solution(context, solver, status, sure_ms)
+        return self._build_failure_result(context, solver, status, sure_ms)
+
     def coz(self) -> SolverSonuc:
         baslangic = time.time()
         manual_conflicts = self._manual_hard_conflict_diagnostics()

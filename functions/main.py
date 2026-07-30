@@ -30,7 +30,6 @@ from planlayici import (
 )
 from parsers import (
     build_gun_tipleri,
-    parse_kapasite_personeller,
     parse_solver_gorevler, parse_solver_gorevler_nobet_coz,
     parse_solver_personeller_hedef, parse_solver_personeller_coz,
     parse_kurallar,
@@ -349,7 +348,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
 # ENDPOINT: nobet_kapasite
 # ============================================
 
-@https_fn.on_request(min_instances=0, max_instances=10, timeout_sec=60, memory=512)
+@https_fn.on_request(min_instances=0, max_instances=10, timeout_sec=120, memory=1024)
 def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
     if req.method == 'OPTIONS':
         return _cors_preflight()
@@ -368,11 +367,16 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
             yil = _safe_int(data.get("yil", 2025), 2025)
             ay = _safe_int(data.get("ay", 1), 1)
             slot_sayisi = _safe_int(data.get("slotSayisi", 5), 5)
+            ara_gun = _safe_int(data.get("araGun", 2), 2)
         except (ValueError, TypeError) as ve:
             return _json_response({"error": f"Geçersiz parametre değeri: {ve}", "error_type": "ValueError"}, status=400)
 
         if not (1 <= ay <= 12):
             return _json_response({"error": f"Geçersiz ay değeri: {ay}"}, status=400)
+        if slot_sayisi < 1:
+            return _json_response({"error": f"Geçersiz slot sayısı: {slot_sayisi}"}, status=400)
+        if ara_gun < 0:
+            return _json_response({"error": f"Geçersiz ara gün değeri: {ara_gun}"}, status=400)
         try:
             _validate_input_sizes(data, slot_sayisi)
         except ValueError as ve:
@@ -382,15 +386,35 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
 
         gun_sayisi = get_days_in_month(yil, ay)
         gun_tipleri = build_gun_tipleri(yil, ay, gun_sayisi, resmi_tatiller)
-        personeller = parse_kapasite_personeller(data)
+        gorevler = parse_solver_gorevler_nobet_coz(data, slot_sayisi)
+        slot_sayisi = len(gorevler)
+        personeller = parse_solver_personeller_coz(data, gorevler)
 
         duplicate_ids = _find_duplicate_personel_ids(personeller)
         if duplicate_ids:
             return _json_response({"error": "Duplicate personel ID", "duplicateIds": duplicate_ids}, status=400)
 
+        manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
+        kurallar = parse_kurallar(data, personeller)
+        try:
+            gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
+        except ValueError as ve:
+            return _json_response({"error": str(ve), "error_type": "ValueError"}, status=400)
+        kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
+        birlikte_istisnalari = parse_birlikte_istisnalari(data, personeller)
+        aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
+
         sonuc = kapasite_hesapla(
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
-            personeller=personeller, slot_sayisi=slot_sayisi
+            personeller=personeller, slot_sayisi=slot_sayisi,
+            ara_gun=ara_gun, manuel_atamalar=manuel_atamalar,
+            birlikte_istisnalari=birlikte_istisnalari,
+            aragun_istisnalari=aragun_istisnalari,
+            gorevler=gorevler, kurallar=kurallar,
+            gorev_havuzlari=gorev_havuzlari,
+            kisitlama_istisnalari=kisitlama_istisnalari,
+            kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+            max_sure_saniye=min(20, _solver_suresi(data, 10, upper_bound=20)),
         )
 
         cikti = {"basari": True, **sonuc}

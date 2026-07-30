@@ -8,12 +8,14 @@ from unittest.mock import patch
 from firestore_logger import _chunk_json, _redact
 from gun_iskelet_planlayici import GunIskeletPlanlayici
 from hedef_hesaplayici import HedefHesaplayici
+from kapasite import kapasite_hesapla
 from ortools_solver import NobetSolver
 from parsers import (
     parse_gorev_havuzlari,
     parse_kurum_profili,
     parse_manuel_atamalar,
     parse_solver_gorevler,
+    parse_solver_gorevler_nobet_coz,
     parse_solver_personeller_hedef,
 )
 from planlayici import frontend_kilitli_hedefleri_topla, plan_kontrati_hash_yenile
@@ -95,6 +97,18 @@ def test_contract_v2_fields_and_explicit_target_locks():
     assert gorev.bina_id == "AYRI_BINA:AMATEM"
     assert gorev.kritik is True and gorev.exclusive is True
     assert gorev.istisna_politikasi == "asla"
+
+    coz_gorev = parse_solver_gorevler_nobet_coz({
+        "gorevler": [{
+            "id": "amatem-1",
+            "ad": "AMATEM",
+            "baseName": "AMATEM",
+            "ayriBina": True,
+            "binaId": "BINA-B",
+        }]
+    }, 1)[0]
+    assert coz_gorev.ayri_bina is True
+    assert coz_gorev.bina_id == "BINA-B"
 
     personel.hedef_tipler = {"hici": 4}
     assert frontend_kilitli_hedefleri_topla([personel]) == {}
@@ -929,6 +943,212 @@ def test_preflight_skoru_kapasiteyi_maskelemez():
     assert sonuc["skor"] < 80, sonuc
     assert sonuc["ozet"]["rol_kapasite_eksik_rol_sayisi"] == 1
     assert sonuc["metrikler"]["kapasite"]["roller"][0]["eksik"] == 20
+
+
+def test_kapasite_gun_bazli_ara_gun_fizibilitesini_kesinlestirir():
+    sonuc = kapasite_hesapla(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[
+            SolverPersonel(id=1, ad="A"),
+            SolverPersonel(id=2, ad="B"),
+        ],
+        slot_sayisi=2,
+        ara_gun=1,
+    )
+
+    assert sonuc["toplam_slot"] == 4
+    assert sonuc["fizibilite"]["durum"] == "INFEASIBLE"
+    assert sonuc["fizibilite"]["neden"]["kod"] == "ARA_GUN_PENCERE_KAPASITE_ACIGI"
+    assert sonuc["fizibilite"]["oneri"]
+
+
+def test_kapasite_hard_birlikte_manuel_mazeret_cakismasini_aciklar():
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[
+            SolverPersonel(id=1, ad="A"),
+            SolverPersonel(id=2, ad="B", mazeret_gunleri={1}),
+            SolverPersonel(id=3, ad="C"),
+        ],
+        slot_sayisi=2,
+        ara_gun=0,
+        manuel_atamalar=[SolverAtama(personel_id=1, gun=1, slot_idx=0)],
+        birlikte_kurallar=[
+            SolverKural(tur="birlikte", kisiler=[1, 2], politika="hard")
+        ],
+    )
+
+    fizibilite = sonuc["fizibilite"]
+    assert fizibilite["durum"] == "INFEASIBLE"
+    assert fizibilite["neden"]["kod"] == "BIRLIKTE_MANUEL_MAZERET_CAKISMASI"
+    assert fizibilite["neden"]["detay"]["gun"] == 1
+
+
+def test_kapasite_gun_bazli_fizibilite_gecerli_senaryoyu_kabul_eder():
+    sonuc = kapasite_hesapla(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[SolverPersonel(id=pid, ad=str(pid)) for pid in range(1, 5)],
+        slot_sayisi=2,
+        ara_gun=1,
+    )
+
+    assert sonuc["fizibilite"]["durum"] == "FEASIBLE"
+    assert sonuc["fizibilite"]["neden"] is None
+    assert sonuc["durum"] == "FEASIBLE"
+    assert sonuc["uygulanabilir"] is True
+
+
+def test_kapasite_ara_gun_pencere_acigini_tarih_araligiyla_raporlar():
+    pencere = set(range(15, 22))
+    uygun_gruplar = [
+        {15, 16, 17},
+        {18, 19, 20},
+        {21},
+        set(),
+    ]
+    personeller = []
+    for grup_idx, uygun in enumerate(uygun_gruplar):
+        for kisi_idx in range(3):
+            pid = grup_idx * 3 + kisi_idx + 1
+            personeller.append(SolverPersonel(
+                id=pid,
+                ad=f"P{pid}",
+                mazeret_gunleri=pencere - uygun,
+            ))
+
+    sonuc = kapasite_hesapla(
+        gun_sayisi=31,
+        gun_tipleri={gun: "hici" for gun in range(1, 32)},
+        personeller=personeller,
+        slot_sayisi=3,
+        ara_gun=2,
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert sonuc["uygulanabilir"] is False
+    assert sonuc["mesaj"].startswith("INFEASIBLE:")
+    aciklar = sonuc["neden"]["detay"]["ara_gun_pencere_aciklari"]
+    hedef = next(a for a in aciklar if a["baslangic"] == 15 and a["bitis"] == 21)
+    assert hedef == {
+        "baslangic": 15,
+        "bitis": 21,
+        "gun_sayisi": 7,
+        "talep": 21,
+        "ust_kapasite": 9,
+        "eksik": 12,
+    }
+
+
+def test_kapasite_aragun_ve_birlikte_istisnalarini_uygular():
+    ara_sonuc = kapasite_hesapla(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A"), SolverPersonel(id=2, ad="B")],
+        slot_sayisi=2,
+        ara_gun=1,
+        aragun_istisnalari=[
+            {"personel_id": 1, "gun1": 1, "gun2": 2},
+            {"personel_id": 2, "gun1": 1, "gun2": 2},
+        ],
+    )
+    assert ara_sonuc["durum"] == "FEASIBLE"
+
+    birlikte_sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[
+            SolverPersonel(id=1, ad="A"),
+            SolverPersonel(id=2, ad="B", mazeret_gunleri={1}),
+            SolverPersonel(id=3, ad="C"),
+        ],
+        slot_sayisi=2,
+        ara_gun=0,
+        manuel_atamalar=[SolverAtama(personel_id=1, gun=1, slot_idx=0)],
+        birlikte_kurallar=[
+            SolverKural(tur="birlikte", kisiler=[1, 2], politika="kullanici_onayli")
+        ],
+        birlikte_istisnalari=[{"personel_id": 2, "gun": 1}],
+    )
+    assert birlikte_sonuc["durum"] == "FEASIBLE"
+
+
+def test_kapasite_tam_modelde_birlikte_gorev_ailesini_dogrular():
+    gorevler = [
+        SolverGorev(id=1, ad="A", slot_idx=0, base_name="A"),
+        SolverGorev(id=2, ad="B", slot_idx=1, base_name="B"),
+    ]
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A"), SolverPersonel(id=2, ad="B")],
+        slot_sayisi=2,
+        ara_gun=0,
+        gorevler=gorevler,
+        kurallar=[SolverKural(tur="birlikte", kisiler=[1, 2], politika="hard")],
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert sonuc["neden"]["kod"] == "TAM_CIZELGE_KISIT_CAKISMASI"
+
+
+def test_kapasite_gorev_listesini_slot_sayisina_otorite_kabul_eder():
+    gorevler = [
+        SolverGorev(id=1, ad="A #1", slot_idx=0, base_name="A"),
+        SolverGorev(id=2, ad="A #2", slot_idx=1, base_name="A"),
+    ]
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A"), SolverPersonel(id=2, ad="B")],
+        slot_sayisi=1,
+        ara_gun=0,
+        gorevler=gorevler,
+    )
+
+    assert sonuc["durum"] == "FEASIBLE"
+    assert sonuc["toplam_slot"] == 2
+
+
+def test_kapasite_soft_asla_gevsetme_birlikte_kuralini_hard_uygular():
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[
+            SolverPersonel(id=1, ad="A"),
+            SolverPersonel(id=2, ad="B", mazeret_gunleri={1}),
+            SolverPersonel(id=3, ad="C"),
+        ],
+        slot_sayisi=2,
+        ara_gun=0,
+        manuel_atamalar=[SolverAtama(personel_id=1, gun=1, slot_idx=0)],
+        birlikte_kurallar=[
+            SolverKural(
+                tur="birlikte", kisiler=[1, 2], politika="soft", asla_gevsetme=True
+            )
+        ],
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert sonuc["neden"]["kod"] == "BIRLIKTE_MANUEL_MAZERET_CAKISMASI"
+
+
+def test_kapasite_gecersiz_slot_ve_ara_gun_degerlerini_reddeder():
+    for slot_sayisi, ara_gun in [(0, 0), (1, -1)]:
+        try:
+            kapasite_hesapla(
+                gun_sayisi=1,
+                gun_tipleri={1: "hici"},
+                personeller=[SolverPersonel(id=1, ad="A")],
+                slot_sayisi=slot_sayisi,
+                ara_gun=ara_gun,
+            )
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Geçersiz kapasite parametresi kabul edildi")
 
 
 def test_log_redaction_and_utf8_chunks():
