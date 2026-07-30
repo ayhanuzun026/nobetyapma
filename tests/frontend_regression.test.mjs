@@ -22,6 +22,26 @@ test('external scripts are version pinned and protected with SRI', () => {
   }
 });
 
+test('ExcelJS avoids its CSP-blocked dynamic evaluation fallback', () => {
+  const runtimeBinding = html.indexOf('<script>var regeneratorRuntime;</script>');
+  const excelJs = html.indexOf('exceljs/4.3.0/exceljs.min.js');
+  assert.ok(runtimeBinding >= 0, 'regeneratorRuntime binding missing');
+  assert.ok(excelJs > runtimeBinding, 'regeneratorRuntime must be declared before ExcelJS');
+});
+
+test('task count invalidation stays inside the scope that computes it', () => {
+  const updateStart = html.indexOf('function gorevleriGuncelle()');
+  const changeStart = html.indexOf('function gorevDegisti()', updateStart);
+  const nextStart = html.indexOf('function getOzelGorevler()', changeStart);
+  assert.ok(updateStart >= 0 && changeStart > updateStart && nextStart > changeStart);
+
+  const updateBody = html.slice(updateStart, changeStart);
+  const changeBody = html.slice(changeStart, nextStart);
+  assert.match(updateBody, /const gorevSayisiDegisti\s*=/);
+  assert.match(updateBody, /if \(gorevSayisiDegisti\) hedefleriBayatIsaretle/);
+  assert.doesNotMatch(changeBody, /gorevSayisiDegisti/);
+});
+
 test('period changes load the selected period instead of copying global state', () => {
   assert.match(html, /function donemDegisti\(\)/);
   assert.match(html, /addEventListener\('change', donemDegisti\)/);

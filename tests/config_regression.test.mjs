@@ -32,8 +32,11 @@ test('hosting emits baseline browser security headers', () => {
   for (const name of ['Content-Security-Policy', 'X-Content-Type-Options', 'Referrer-Policy', 'Permissions-Policy']) {
     assert.ok(headers[name], `${name} missing`);
   }
-  assert.match(headers['Content-Security-Policy'], /object-src 'none'/);
-  assert.match(headers['Content-Security-Policy'], /frame-ancestors 'none'/);
+  const csp = headers['Content-Security-Policy'];
+  assert.match(csp, /object-src 'none'/);
+  assert.match(csp, /frame-ancestors 'none'/);
+  assert.match(csp, /script-src[^;]*https:\/\/apis\.google\.com/);
+  assert.doesNotMatch(csp, /'unsafe-eval'/);
 });
 
 test('runtime dependencies are exact-version pinned', () => {

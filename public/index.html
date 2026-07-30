@@ -8,6 +8,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
   <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet"
     integrity="sha384-iw3OoTErCYJJB9mCa8LNS2hbsQ7M3C0EpIsO/H5+EGAkPGc6rk+V8i04oW/K5xq0" crossorigin="anonymous">
+  <!-- ExcelJS 4.x bu global bağlayıcı yoksa CSP'nin engellediği Function fallback'ini kullanır. -->
+  <script>var regeneratorRuntime;</script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.3.0/exceljs.min.js"
     integrity="sha384-P7KKlGD3Ng66Ds7oTliLzTnol6DbK+k7PafNYXIBDQ4b5eFWtmqctplDVOxslglR" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/read-excel-file@5.8.8/bundle/read-excel-file.min.js"
@@ -2027,6 +2029,7 @@
         });
       }
 
+      if (gorevSayisiDegisti) hedefleriBayatIsaretle('Günlük görev sayısı değişti.');
       kaydetDebounced();
     }
 
@@ -2081,7 +2084,6 @@
         }
       });
       hedefleriBayatIsaretle('Görev tanımı değişti.');
-      if (gorevSayisiDegisti) hedefleriBayatIsaretle('Günlük görev sayısı değişti.');
       kaydetDebounced();
     }
 
