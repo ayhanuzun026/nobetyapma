@@ -49,6 +49,47 @@ test('period changes load the selected period instead of copying global state', 
   assert.match(html, /await kaydetDonem\(oncekiDonem\.yil, oncekiDonem\.ay, true\)/);
 });
 
+test('sign-in failures surface the auth code and fall back to redirect', () => {
+  // Jenerik "tekrar deneyin" yerine kod + aciklama.
+  assert.match(html, /function girisHatasiMetni\(kod\)/);
+  assert.match(html, /'auth\/unauthorized-domain':/);
+  assert.match(html, /Hata kodu: \$\{kod \|\| 'bilinmiyor'\}/);
+  // Popup engellenirse yonlendirmeli girise dusulur.
+  assert.match(html, /kod === 'auth\/popup-blocked'/);
+  assert.match(html, /await auth\.signInWithRedirect\(saglayici\)/);
+  assert.match(html, /auth\.getRedirectResult\(\)\.catch/);
+  // Kullanici kendi kapattiysa sessiz kalinir.
+  assert.match(html, /kod === 'auth\/popup-closed-by-user'/);
+});
+
+test('guest mode warns that data never reaches the cloud', () => {
+  // Bulut senkronu !isAnonymous sartina bagli — misafir verisi yalniz yerelde.
+  assert.match(html, /auth\.currentUser && !auth\.currentUser\.isAnonymous/);
+  // Giris oncesi acik onay.
+  assert.match(html, /Misafir olarak devam edilsin mi\?/);
+  assert.match(html, /if \(!onay\) return;/);
+  // Oturum boyunca kalici bant.
+  assert.match(html, /function misafirUyarisiGuncelle\(misafirMi\)/);
+  assert.match(html, /misafirUyarisiGuncelle\(user\.isAnonymous\)/);
+  assert.match(html, /bant\.textContent = 'Misafir modundasınız/);
+});
+
+test('unmet 112 duty minimums require explicit user confirmation before solving', () => {
+  assert.match(html, /function minNobetAcigiOnayiAl\(\)/);
+  // Acik yoksa hic sorulmaz (genel profil etkilenmez).
+  assert.match(html, /if \(!Array\.isArray\(aciklar\) \|\| aciklar\.length === 0\) return true/);
+  assert.match(html, /if \(toplamAcik <= 0\) return true/);
+  // Kim/ne kadar eksik gosterilir ve onay alinir.
+  assert.match(html, /nöbet gerekiyordu, /);
+  assert.match(html, /Yine de listeyi oluşturayım mı\?/);
+  assert.match(html, /return confirm\(satirlar\.join\('\\n'\)\)/);
+  // Onaylanmazsa cozum baslatilmaz.
+  assert.match(html, /if \(!minNobetAcigiOnayiAl\(\)\) \{/);
+  const cagri = html.indexOf('if (!minNobetAcigiOnayiAl())');
+  const onKontrol = html.indexOf('const onKontrol = ortoolsOnKontrolYap', cagri);
+  assert.ok(cagri > 0 && onKontrol > cagri, 'onay cozum baslamadan once sorulmali');
+});
+
 test('target-calculation failures show a human diagnosis, not raw solver debug', () => {
   // Backend insan dili tani uretir; frontend onu jenerik metinle degistirmemeli.
   assert.match(html, /function hedefHatasiniGoster\(error\)/);

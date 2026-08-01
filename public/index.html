@@ -1659,11 +1659,20 @@
     // AUTH
     // ============================================
     if (auth) {
+      // Yönlendirmeli giriş dönüşü: başarılıysa onAuthStateChanged tetiklenir,
+      // başarısızsa sebep sessizce kaybolmasın.
+      auth.getRedirectResult().catch(e => {
+        if (e?.code) {
+          console.error('Yönlendirmeli giriş hatası:', e.code, e);
+          alert(girisHatasiMetni(e.code));
+        }
+      });
       auth.onAuthStateChanged(user => {
         if (user) {
           document.getElementById('login-screen').style.display = 'none';
           document.getElementById('main-app').style.display = 'block';
           document.getElementById('user-name').textContent = user.isAnonymous ? 'Misafir' : (user.displayName || 'Kullanıcı');
+          misafirUyarisiGuncelle(user.isAnonymous);
           yukle();
         } else {
           document.getElementById('login-screen').style.display = 'flex';
@@ -1676,26 +1685,93 @@
       yukle();
     }
 
+    // Firebase auth hata kodunu kullanıcı diline çevirir. Kod HER ZAMAN
+    // gösterilir: teşhis edilemeyen "lütfen tekrar deneyin" mesajı, giriş
+    // yapamayan kullanıcıya da desteğe de hiçbir şey anlatmıyordu.
+    function girisHatasiMetni(kod) {
+      const metinler = {
+        'auth/unauthorized-domain':
+          'Bu internet adresi Firebase\'de yetkili değil. Siteyi resmi adresinden açın.',
+        'auth/popup-blocked':
+          'Tarayıcı açılır pencereyi engelledi. Engeli kaldırıp tekrar deneyin.',
+        'auth/network-request-failed':
+          'İnternet bağlantısı kurulamadı. Bağlantınızı kontrol edip tekrar deneyin.',
+        'auth/too-many-requests':
+          'Çok fazla deneme yapıldı. Bir süre bekleyip tekrar deneyin.',
+        'auth/internal-error':
+          'Firebase tarafında geçici bir hata oluştu. Tekrar deneyin.',
+        'auth/operation-not-allowed':
+          'Google ile giriş bu proje için kapalı görünüyor.',
+      };
+      const aciklama = metinler[kod] || 'Google ile giriş yapılamadı.';
+      return `${aciklama}\n\nHata kodu: ${kod || 'bilinmiyor'}`;
+    }
+
     async function girisYap() {
       if (!auth) return alert('Firebase yüklenemedi');
+      const saglayici = new firebase.auth.GoogleAuthProvider();
       try {
-        await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider());
+        await auth.signInWithPopup(saglayici);
       } catch (e) {
-        if (e?.code !== 'auth/popup-closed-by-user' && e?.code !== 'auth/cancelled-popup-request') {
-          console.error('Google giriş hatası:', e);
-          alert('Google ile giriş yapılamadı. Lütfen tekrar deneyin.');
+        const kod = e?.code || '';
+        // Kullanıcı kendisi kapattıysa sessiz geç.
+        if (kod === 'auth/popup-closed-by-user' || kod === 'auth/cancelled-popup-request') {
+          return;
         }
+        console.error('Google giriş hatası:', kod, e);
+        // Popup engelli / desteklenmiyorsa yönlendirmeli girişe düş: üçüncü
+        // taraf çerez kısıtı veya popup blocker varsa çalışan tek yol budur.
+        if (kod === 'auth/popup-blocked'
+            || kod === 'auth/operation-not-supported-in-this-environment') {
+          try {
+            await auth.signInWithRedirect(saglayici);
+            return;
+          } catch (e2) {
+            console.error('Yönlendirmeli giriş de başarısız:', e2?.code, e2);
+          }
+        }
+        alert(girisHatasiMetni(kod));
       }
     }
 
     async function misafirGiris() {
       if (!auth) return alert('Firebase yüklenemedi');
+      // Misafir verisi buluta GİTMEZ (bulut senkronu !isAnonymous şartına
+      // bağlı). Kullanıcı bunu bilerek seçmeli; aksi halde girdiği aylık
+      // veri cihaz değişince yok olmuş gibi görünüyor.
+      const onay = confirm(
+        'Misafir girişinde verileriniz yalnız bu tarayıcıda saklanır:\n\n'
+        + '  • Başka bir cihazdan erişemezsiniz\n'
+        + '  • Tarayıcı verilerini temizlerseniz kaybolur\n'
+        + '  • Buluta yedeklenmez\n\n'
+        + 'Misafir olarak devam edilsin mi?'
+      );
+      if (!onay) return;
       try {
         await auth.signInAnonymously();
       } catch (e) {
-        console.error('Misafir giriş hatası:', e);
-        alert('Misafir girişi başlatılamadı. Lütfen tekrar deneyin.');
+        console.error('Misafir giriş hatası:', e?.code, e);
+        alert('Misafir girişi başlatılamadı.\n\nHata kodu: ' + (e?.code || 'bilinmiyor'));
       }
+    }
+
+    // Misafir modda verinin buluta gitmediğini kalıcı olarak hatırlatır.
+    function misafirUyarisiGuncelle(misafirMi) {
+      const mevcut = document.getElementById('misafir-uyari-bandi');
+      if (!misafirMi) {
+        if (mevcut) mevcut.remove();
+        return;
+      }
+      if (mevcut) return;
+      const bant = document.createElement('div');
+      bant.id = 'misafir-uyari-bandi';
+      bant.style.cssText = 'background:#fef3c7;color:#92400e;padding:8px 14px;'
+        + 'font-size:13px;text-align:center;border-bottom:1px solid #fcd34d;';
+      bant.textContent = 'Misafir modundasınız — verileriniz yalnız bu tarayıcıda '
+        + 'saklanıyor, buluta yedeklenmiyor. Google ile giriş yaparsanız tüm '
+        + 'cihazlarınızdan erişebilirsiniz.';
+      const app = document.getElementById('main-app');
+      if (app) app.insertBefore(bant, app.firstChild);
     }
 
     function cikisYap() {
@@ -8606,6 +8682,34 @@
       return result;
     }
 
+    // 112: mesai borcu tamamlanamayan personel varsa kim/ne kadar eksik
+    // olduğunu gösterip onay ister. true = devam, false = kullanıcı vazgeçti.
+    // Açık yoksa hiç sormaz (genel profilde liste her zaman boştur).
+    function minNobetAcigiOnayiAl() {
+      const aciklar = window.ortoolsIstatistikler?.min_nobet_aciklari;
+      if (!Array.isArray(aciklar) || aciklar.length === 0) return true;
+      const toplamAcik = aciklar.reduce((s, a) => s + (Number(a.acik) || 0), 0);
+      if (toplamAcik <= 0) return true;
+
+      const satirlar = ['Bazı personel mesai borcunu tamamlayamıyor:', ''];
+      aciklar.slice(0, 12).forEach(a => {
+        satirlar.push(
+          `  • ${a.personel_ad}: ${a.hedef_min_nobet} nöbet gerekiyordu, `
+          + `${a.ulasilabilen} yazılabildi (${a.acik} eksik)`
+        );
+      });
+      if (aciklar.length > 12) {
+        satirlar.push(`  … ve ${aciklar.length - 12} kişi daha`);
+      }
+      if (aciklar[0]?.oneri) satirlar.push('', aciklar[0].oneri);
+      satirlar.push(
+        '',
+        `Toplam ${toplamAcik} nöbetlik açık var.`,
+        'Yine de listeyi oluşturayım mı?'
+      );
+      return confirm(satirlar.join('\n'));
+    }
+
     async function listeOlustur() {
       const { yil, ay } = getYilAy();
       const gunSayisi = getGunSayisi(yil, ay);
@@ -8672,6 +8776,14 @@
               throw new Error('Yerel hedef hesaplama kapalı. OR-Tools aktif olmalı.');
             }
           }
+        }
+
+        // 112: mesai borcunu tamamlayamayan personel varsa kullanıcı onayı al.
+        // Min nöbet soft olduğu için çizelge yine üretilir, ama eksik bilerek
+        // kabul edilmeli — sessizce eksik liste vermek yanlış olur.
+        if (!minNobetAcigiOnayiAl()) {
+          console.log('[SOLVER] Eksik nöbetli liste onaylanmadı; oluşturma iptal edildi.');
+          return;
         }
 
         // OR-Tools ön kontrol: manuel/hard çakışmaları hızlı yakala
