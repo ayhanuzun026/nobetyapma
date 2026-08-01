@@ -93,8 +93,11 @@ test('unmet 112 duty minimums require explicit user confirmation before solving'
 test('target-calculation failures show a human diagnosis, not raw solver debug', () => {
   // Backend insan dili tani uretir; frontend onu jenerik metinle degistirmemeli.
   assert.match(html, /function hedefHatasiniGoster\(error\)/);
-  assert.match(html, /hata\.hedefTanisi\s*=\s*result\.hedefTanisi/);
+  assert.match(html, /const tani = result\.hedefTanisi \|\| result\.istatistikler\?\.hedef_tanisi/);
+  assert.match(html, /hata\.hedefTanisi = tani;/);
   assert.match(html, /let sonHedefHatasi = null/);
+  // Hazirlik kapasite paneli de jenerik metin yerine taninin onerilerini gosterir.
+  assert.match(html, /\? tani\.oneriler\.join\(' '\)/);
   // Gercek hata jenerik mesajla ezilmiyor.
   assert.match(html, /throw sonHedefHatasi\s*\n?\s*\|\|/);
   // Oneriler listelenir, ham debug yalniz konsola gider.
