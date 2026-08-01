@@ -25,6 +25,8 @@ Arada `gun_iskelet_planlayici.py` (sezgisel, OR-Tools kullanmaz) hedefleri günl
 
 `nobet_coz` INFEASIBLE dönerse, `solve_strategy.py` **tanılama tabanlı gevşetme döngüsü** çalıştırır: kök nedeni teşhis et → kısıtları otomatik gevşet (ör. `ara_gun` azalt; exclusive/ayrı/birlikte kurallarını kaldır) → tekrar dene. **Greedy geri dönüş YOKTUR**; son çare tüm yumuşak kısıtların kaldırılmasıdır (`tum_soft_kaldir`).
 
+⚠️ Bu döngü **yalnız çizelge modeli** içindir. **Hedef modeli** (`HedefHesaplayici`) çözümsüz kalırsa gevşetme yoktur — plan üretilmez, `nobet_coz` çözüme hiç başlamaz. Bu yüzden hedef modeline eklenen her kısıt ya güvenli bir üst sınır kesidi olmalı ya da soft/cezalı olmalıdır. Çözümsüzlükte `hedef_teshis.hedef_infeasible_insan_dili()` kök nedeni (`kapasite_yetersiz` / `gun_tipi_yetersiz` / `kurallar_celisiyor`) insan diline çevirip somut aksiyon önerir (ör. yeterli `ara_gun` değerini hesaplayıp söyler); ham CP-SAT debug'ı yalnız `hedef_tanisi.debug` içinde kalır, kullanıcıya gösterilmez.
+
 ### Cloud Function Endpoint'leri (main.py)
 
 5 endpoint vardır: `nobet_dagit`, `nobet_kapasite`, `nobet_hedef_hesapla`, `nobet_coz`, `debug_event_log` (bellek/zaman aşımı ayarları `main.py` dekoratörlerinde). Not: Frontend şu an yalnızca `nobet_coz` ve `nobet_hedef_hesapla`'yı çağırır; `nobet_dagit` ve `nobet_kapasite` deploy edilir ama frontend'den kullanılmaz. Girdi boyut üst sınırları (`main.py`): `MAX_SLOT_SAYISI=50`, `MAX_PERSONEL=1000`, `MAX_GOREV=300` (OOM/DoS koruması).
@@ -59,7 +61,9 @@ Tüm CSS, JS ve HTML'i içeren ~9.900 satırlık tek monolitik dosya. Firebase S
 **Kritik ilke:** Ara gün / yerleşim ile ilgili yeni kurallar **asla kör-HARD kısıt değildir** — ya soft ceza ya kullanıcı onaylı öneridir. Aksi halde `solve_strategy.py`'deki gevşetme döngüsü (yalnız `ara_gun_azalt` kolunu bilir) göremediği bir kısıt yüzünden yanlış yeri gevşetir.
 
 Uygulanan kurallar:
-- **Mesai-bazlı min nöbet** (`hedef_hesaplayici._mesai_min_nobet`): `min = ceil(net_iş_günü / 3)` (8/24 saat). İzin/eğitim/rapor iş gününe denk gelince borçtan düşer. **Soft alt sınır** — kapasite yetmezse INFEASIBLE olmaz; açık (`min_nobet_acigi`) hesaplanıp kullanıcıya "kim/ne kadar eksik + nasıl tamamlanır" olarak raporlanır.
+- **Mesai-bazlı min nöbet** (`hedef_hesaplayici._mesai_min_nobet`): `min = ceil(net_iş_günü / 3)` (8/24 saat). İzin/eğitim/rapor iş gününe denk gelince borçtan düşer (normal mazeret ve nöbet izni **düşürmez**). **Gerçek soft:** `t[pid]` alt sınırına HİÇ girmez; 4b bloğunda ceza değişkenine bağlanır (`WEIGHT_MESAI_MIN`) ve aynı ceza projeksiyon modeline de eklenir (yoksa `oncelikli_objective <= projection_objective_degeri` bağı tutarsız kalır). Açık, çözümden sonra **gerçekleşen** `t` değerinden ölçülür.
+  - ⚠️ Alt sınır olarak dayatmak yasak: mesai borçlarının toplamı slot arzını aşabilir (`personel > toplam_slot / min` olan her gerçek 112 kadrosunda aşar) ve `sum(t) == toplam_slot` hard eşitliğiyle çakışıp modeli kırar. Kişi bazında kırpmak yetmez — bu tam olarak `acb6350` öncesi canlı hatanın kök nedeniydi.
+  - Açık `min_nobet_aciklari` ile "kim/ne kadar eksik + neden + nasıl tamamlanır" olarak raporlanır; frontend `minNobetAcigiOnayiAl()` ile çözümden önce kullanıcı onayı ister.
 - **Max ara gün** (`ortools_solver` S5b, `WEIGHT_MAX_ARA`): her `max_ara_gun` (default 5) günlük pencerede ≥1 nöbet tercih edilir (soft). `maxAraGun` payload'ından ayarlanır.
 - **12/12 son çare doldurma** (`_bos_slot_takas_onerileri` → `yari_vardiya`): boş kalan slot için gündüz+gece 12'şer saat bölme önerisi (kullanıcı onaylı). Gece adayı önceki gün nöbette olamaz (sabah çıkan o akşam yazılamaz). Normal nöbet 24s kalır.
 - **Yıllık izin öncesi/sonrası yerleşim** (`ortools_solver` S5c, `WEIGHT_IZIN_YERLESIM`): yalnız yıllık izin için — öncesi 2 gün boşluk tercihi, sonrası ilk iş gününe nöbet tercihi (ikisi de soft).
