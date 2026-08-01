@@ -14,7 +14,7 @@ from utils import (
 )
 from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
-    HedefSonuc,
+    HedefSonuc, WEIGHT_MESAI_MIN,
 )
 from hedef_teshis import build_hedef_infeasible_debug
 
@@ -155,6 +155,14 @@ class HedefHesaplayici:
         kapasite = s.get('kapasite', s.get('uygulanan_ust_sinir', 0))
         max_nobet = s.get('max_nobet')
         ara_kap = s.get('ara_gun_kapasitesi')
+        ust_sinir = s.get('uygulanan_ust_sinir', kapasite)
+        mesai_min = s.get('mesai_min', 0)
+        # Kişinin kendi kapasitesi hedefi karşılıyorsa darboğaz kişide değil
+        # arzda: aylık nöbet yeri toplamı herkesin mesai borcunu kapatmıyor.
+        if mesai_min and ust_sinir >= mesai_min:
+            return ('toplam_arz',
+                    "Aylık nöbet yeri sayısı tüm personelin mesai borcunu karşılamıyor; "
+                    "ekip/slot sayısını artırın ya da bu açığı kabul edin.")
         if max_nobet is not None and max_nobet < kapasite:
             return ('max_nobet',
                     f"Maksimum nöbet sınırı ({max_nobet}) mesai hedefinin altında; sınırı yükseltin.")
@@ -584,6 +592,9 @@ class HedefHesaplayici:
         oncelikli_penalties = []
         birlikte_debug = []
         personel_sinirlar = {}
+        # 112 mesai borcu hedefleri: {pid: min_nobet}. Alt sınır olarak
+        # dayatılmaz; 4b bloğunda ceza değişkenine bağlanır (soft).
+        mesai_min_hedefleri = {}
 
         for p in self.personel_listesi:
             pid = p.id
@@ -646,19 +657,23 @@ class HedefHesaplayici:
             if max_nobet is not None:
                 ust_sinir = min(ust_sinir, max_nobet)
 
-            # 112'de min SOFT: kapasiteyi aşamaz. Aşan kısım 'açık' olarak
-            # raporlanır (çizelge kırılmaz; kullanıcıya nasıl tamamlanır sunulur).
-            min_nobet_acigi = 0
-            if self.kurum_profili == "112" and min_nobet > ust_sinir:
-                min_nobet_acigi = min_nobet - ust_sinir
-                min_nobet = ust_sinir
-
-            alt_sinir = max(manuel_total, min_nobet)
+            # 112'de min GERÇEKTEN soft: alt sınıra hiç girmez. Kişi bazında
+            # kırpmak yetmiyordu — mesai taleplerinin TOPLAMI slot arzını
+            # aştığında (personel > slot/min olan her 112 kadrosunda aşar)
+            # alt sınırlar sum(t)==toplam_slot ile çakışıp modeli kırıyordu.
+            # Bunun yerine 4b bloğunda ceza değişkenine bağlanır; açık çözüm
+            # sonrası gerçekleşen değerden hesaplanır.
+            if self.kurum_profili == "112":
+                mesai_min_hedefleri[pid] = min_nobet
+                alt_sinir = manuel_total
+            else:
+                alt_sinir = max(manuel_total, min_nobet)
 
             personel_sinirlar[pid] = {
                 'manuel_alt_sinir': manuel_total,
                 'min_nobet': min_nobet,
-                'min_nobet_acigi': min_nobet_acigi,
+                'mesai_min': min_nobet if self.kurum_profili == "112" else 0,
+                'min_nobet_acigi': 0,   # çözümden sonra doldurulur
                 'max_nobet': max_nobet,
                 'kapasite': max_kapasite,
                 'ara_gun_kapasitesi': ara_gun_kapasitesi,
@@ -787,6 +802,17 @@ class HedefHesaplayici:
         # rollere dağıtılabilirliğini count seviyesinde garanti eder (confined
         # sınırın kaçırdığı kısmi-rol Hall ihlallerini yakalar).
         self._rol_transport_kisitlari_ekle(model, h)
+
+        # --- 4b. 112 MESAİ MİN NÖBETİ (SOFT) ---
+        # Alt sınır olarak dayatılmaz: mesai borçlarının toplamı slot arzını
+        # aşabilir ve aştığında model kırılırdı. Eksik kalan her nöbet
+        # cezalandırılır — çizelge üretilir, açık kullanıcıya raporlanır.
+        for pid, mesai_min in mesai_min_hedefleri.items():
+            if mesai_min <= 0 or pid not in t:
+                continue
+            eksik = model.NewIntVar(0, mesai_min, f'mesai_min_eksik_{pid}')
+            model.Add(eksik >= mesai_min - t[pid])
+            oncelikli_penalties.append(eksik * WEIGHT_MESAI_MIN)
 
         # --- 5. AYLIK KATSAYI VE TARİHSEL BORÇ ADALETİ ---
         current_dimensions = {
@@ -1110,6 +1136,19 @@ class HedefHesaplayici:
             projection_model.Add(fark >= -expression)
             projection_penalties.append(fark * multiplier)
 
+        # 112 mesai min cezası projeksiyona da girer: ana modelde bu ceza
+        # oncelikli_objective'in parçası ve aşağıda `oncelikli_objective <=
+        # projection_objective_degeri` ile sınırlanıyor. Projeksiyonda karşılığı
+        # olmazsa o sınır gerçekte ulaşılamaz bir değere iner.
+        for pid, mesai_min in mesai_min_hedefleri.items():
+            if mesai_min <= 0 or pid not in projection_t:
+                continue
+            p_eksik = projection_model.NewIntVar(
+                0, mesai_min, f'projection_mesai_min_eksik_{pid}'
+            )
+            projection_model.Add(p_eksik >= mesai_min - projection_t[pid])
+            projection_penalties.append(p_eksik * WEIGHT_MESAI_MIN)
+
         if aylik_esnek_ids and aylik_esnek_agirlik > 0:
             projection_kalan_toplam = sum(
                 projection_t[pid] - person_dimension_lower[pid]['toplam']
@@ -1324,6 +1363,14 @@ class HedefHesaplayici:
             return HedefSonuc(False, [], [], {}, {}, f"Hedef CP-SAT cozumsuz: {debug_msg}")
 
         # --- 7. SONUÇLARI PERSONELLERE YAZ ---
+        # 112 mesai açığı: hedef soft olduğu için gerçekleşen değerden ölçülür
+        # (ön-hesaplanan kapasite farkından değil).
+        for pid, mesai_min in mesai_min_hedefleri.items():
+            if pid not in personel_sinirlar or pid not in t:
+                continue
+            gerceklesen = int(solver.Value(t[pid]))
+            personel_sinirlar[pid]['min_nobet_acigi'] = max(0, mesai_min - gerceklesen)
+
         for p in self.personel_listesi:
             pid = p.id
             for tip in GUN_TIPLERI:
@@ -1577,12 +1624,13 @@ class HedefHesaplayici:
                 acik = s.get('min_nobet_acigi', 0)
                 if acik > 0:
                     p = self.personeller.get(pid)
-                    ulasilan = s.get('uygulanan_ust_sinir', 0)
+                    hedef_min = s.get('mesai_min', 0)
+                    ulasilan = hedef_min - acik
                     neden, oneri = self._min_acik_neden_oneri(s)
                     min_nobet_aciklari.append({
                         'personel_id': pid,
                         'personel_ad': p.ad if p else str(pid),
-                        'hedef_min_nobet': ulasilan + acik,
+                        'hedef_min_nobet': hedef_min,
                         'ulasilabilen': ulasilan,
                         'acik': acik,
                         'neden': neden,

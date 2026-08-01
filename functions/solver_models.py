@@ -16,6 +16,7 @@ WEIGHT_GUN_TIPI = 500
 WEIGHT_YILLIK = 400    # Yıllık dengeleme (geçmiş ay eksiklerini eşitle)
 WEIGHT_HOMOJEN = 300   # Nöbetleri ay geneline yayma
 WEIGHT_MAX_ARA = 1200  # 112: iki nöbet arası sabit üst sınır (soft, kör-hard değil)
+WEIGHT_MESAI_MIN = 50_000  # 112: mesai borcu min nöbeti (soft — arz yetmezse açık raporlanır)
 WEIGHT_IZIN_YERLESIM = 400  # 112: yıllık izin öncesi boşluk / sonrası ilk iş günü tercihi
 WEIGHT_PANIK = 250     # Sıkışık kişilere öncelik
 WEIGHT_TOPLAM = 100

@@ -1792,6 +1792,46 @@ def test_mesai_bazli_min_nobet_112_soft():
     assert genel_sonuc.istatistikler.get("min_nobet_aciklari", []) == []
 
 
+def test_mesai_min_global_tasma_cizelgeyi_kirmaz():
+    """112: mesai min nöbet talebi TOPLAM slot arzını aşınca çizelge kırılmaz.
+
+    Madde 2a min nöbeti "soft" ilan etmişti ama kırpma yalnız KİŞİ bazındaydı
+    (``min_nobet > ust_sinir``). Alt sınırlar ``t[pid]`` domainine girip
+    ``sum(t) == toplam_slot`` hard eşitliğiyle çakışınca model INFEASIBLE
+    oluyordu — gerçek 112 kadrolarının çoğunda (personel > slot/min) tetikleniyor.
+
+    Beklenen: liste üretilir, slot toplamı korunur, açık kim/ne kadar diye
+    raporlanır. Genel profil etkilenmez.
+    """
+    def _kisiler():
+        return [SolverPersonel(id=i, ad=f"P{i}") for i in range(1, 5)]
+
+    gorev = [SolverGorev(id=1, ad="Ekip", slot_idx=0, base_name="Ekip")]
+    gun_tipleri = {g: "hici" for g in range(1, 10)}   # 9 iş günü × 1 slot = 9 slot
+
+    # kişi başı min = ceil(9/3) = 3 → 4 kişi × 3 = 12 talep > 9 arz.
+    sonuc = HedefHesaplayici(gun_sayisi=9, gun_tipleri=gun_tipleri,
+                             personeller=_kisiler(), gorevler=gorev,
+                             ara_gun=0, kurum_profili="112").hesapla()
+    assert sonuc.basarili is True, sonuc.mesaj
+    assert sum(h["hedef_toplam"] for h in sonuc.hedefler) == 9   # arz korunur
+
+    # Açık raporlanır: 12 talep − 9 arz = 3 nöbetlik toplam açık.
+    aciklar = sonuc.istatistikler.get("min_nobet_aciklari", [])
+    assert sum(a["acik"] for a in aciklar) == 3, aciklar
+    for a in aciklar:
+        assert a["hedef_min_nobet"] == 3
+        assert a["ulasilabilen"] == a["hedef_min_nobet"] - a["acik"]
+        assert a["oneri"]        # kullanıcıya somut aksiyon metni
+
+    # Genel profil bu senaryoda zaten çalışıyordu — regresyon olmamalı.
+    genel = HedefHesaplayici(gun_sayisi=9, gun_tipleri=gun_tipleri,
+                             personeller=_kisiler(), gorevler=gorev,
+                             ara_gun=0).hesapla()
+    assert genel.basarili is True, genel.mesaj
+    assert genel.istatistikler.get("min_nobet_aciklari", []) == []
+
+
 def test_max_ara_gun_112_soft():
     """Madde 3: 112 profilinde max ara gün SOFT ceza (kör-hard DEĞİL).
 
