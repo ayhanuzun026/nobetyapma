@@ -1792,6 +1792,41 @@ def test_mesai_bazli_min_nobet_112_soft():
     assert genel_sonuc.istatistikler.get("min_nobet_aciklari", []) == []
 
 
+def test_hedef_cozumsuzlugunde_insan_dili_tani():
+    """Hedef modeli çözülemezse kullanıcıya ham CP-SAT debug'ı gösterilmez.
+
+    Eskiden mesaj "Hedef CP-SAT cozumsuz: STATUS=3 | ... IZOLASYON: TEST1..."
+    diye frontend'e kadar gidiyordu (index.html throw new Error(result.mesaj)).
+    Artık: anlaşılır cümle + yapılandırılmış tanı + somut öneri; ham debug
+    yalnız istatistiklerde (konsol/admin) kalır.
+
+    Senaryo: 3 ekip × 31 gün = 93 slot, 8 personel, ara_gun=2 → kişi başı
+    tavan ceil(31/3)=11, toplam 88 < 93 → gerçek kapasite yetersizliği.
+    """
+    gorevler = [SolverGorev(id=i + 1, ad=f"E{i+1}", slot_idx=i, base_name=f"E{i+1}")
+                for i in range(3)]
+    gun_tipleri = {g: "hici" for g in range(1, 32)}
+    kisiler = [SolverPersonel(id=i, ad=f"P{i}") for i in range(1, 9)]
+
+    sonuc = HedefHesaplayici(gun_sayisi=31, gun_tipleri=gun_tipleri,
+                             personeller=kisiler, gorevler=gorevler,
+                             ara_gun=2).hesapla()
+    assert sonuc.basarili is False
+
+    # Ham çözücü içi kullanıcıya sızmamalı.
+    for sizinti in ("STATUS=", "IZOLASYON", "CP-SAT", "TEST1", "KISI_DETAY"):
+        assert sizinti not in sonuc.mesaj, f"ham debug sizdi: {sonuc.mesaj[:120]}"
+    assert "nöbet" in sonuc.mesaj.lower() or "personel" in sonuc.mesaj.lower()
+
+    tani = sonuc.istatistikler.get("hedef_tanisi", {})
+    assert tani.get("neden") == "kapasite_yetersiz", tani
+    assert tani.get("oneriler"), tani
+    # Ara gün somut önerisi: 2 → 1 kapasiteyi 93'ün üstüne çıkarır.
+    assert any("ara g" in o.lower() for o in tani["oneriler"]), tani["oneriler"]
+    # Debug detayı kaybolmadı (admin paneli / konsol için).
+    assert "STATUS=" in tani.get("debug", "")
+
+
 def test_mesai_min_global_tasma_cizelgeyi_kirmaz():
     """112: mesai min nöbet talebi TOPLAM slot arzını aşınca çizelge kırılmaz.
 

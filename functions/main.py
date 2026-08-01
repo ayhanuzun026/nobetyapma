@@ -512,6 +512,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             "birlikteAtamalar": sonuc.birlikte_atamalar,
             "gorevKotalari": sonuc.gorev_kotalari,
             "istatistikler": sonuc.istatistikler, "mesaj": sonuc.mesaj,
+            "hedefTanisi": (sonuc.istatistikler or {}).get("hedef_tanisi", {}),
             "planKontrati": plan_kontrati.to_dict() if plan_kontrati else None,
             "planHash": plan_kontrati.plan_hash if plan_kontrati else None,
         }
@@ -663,9 +664,21 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         plan_kontrati = planlama.get("plan_kontrati")
         hedefler = planlama.get("hedefler_map", {})
         if not hesap_sonuc or not hedefler:
-            logger.error("Ortak planlama sonucu bos dondu")
+            # Hedef modeli cozulemedi. Insan dili tani (hedef_teshis) uretilmisse
+            # onu don — "Planlama sonucu bos" jenerik metni kullaniciya hicbir
+            # sey anlatmiyordu.
+            tani = {}
+            if hesap_sonuc is not None:
+                tani = (hesap_sonuc.istatistikler or {}).get("hedef_tanisi", {}) or {}
+            mesaj = (
+                getattr(hesap_sonuc, "mesaj", "")
+                or planlama.get("mesaj")
+                or "Planlama sonucu bos. Personel ve gorev verilerini kontrol edin."
+            )
+            logger.error("Ortak planlama sonucu bos dondu: %s", tani.get("neden", "bilinmiyor"))
             return _json_response({
-                "error": "Planlama sonucu bos. Personel ve gorev verilerini kontrol edin.",
+                "error": mesaj,
+                "hedefTanisi": tani,
                 "error_type": "PlanBos"
             }, status=400)
 

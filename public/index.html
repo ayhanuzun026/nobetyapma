@@ -4734,12 +4734,35 @@
         return false;
       } catch (error) {
         console.error('OR-Tools hedef hesaplama hatası:', error);
+        sonHedefHatasi = error;
         hedeflerBayat = true;
         throw error;
       }
     }
 
+    // Son hedef hesaplama hatası: bu fonksiyon false döndüğünde çağıran katman
+    // gerçek nedeni kaybetmesin diye saklanır (eskiden jenerik metne dönüşüyordu).
+    let sonHedefHatasi = null;
     let hedefHesaplamaAktif = false; // Çoklu istek önleme
+
+    // Hedef hesaplama hatasını kullanıcıya anlaşılır biçimde gösterir.
+    // Backend tanı üretmişse başlık + detay + somut öneriler listelenir;
+    // ham çözücü çıktısı (STATUS=3 | IZOLASYON...) yalnız konsola yazılır.
+    function hedefHatasiniGoster(error) {
+      const tani = error?.hedefTanisi;
+      if (!tani || !tani.baslik) {
+        alert('Hedef hesaplama sırasında hata oluştu: ' + (error?.message || 'bilinmeyen hata'));
+        return;
+      }
+      const satirlar = [tani.baslik];
+      if (tani.detay) satirlar.push('', tani.detay);
+      if (Array.isArray(tani.oneriler) && tani.oneriler.length) {
+        satirlar.push('', 'Ne yapabilirsiniz:');
+        tani.oneriler.forEach(o => satirlar.push('  • ' + o));
+      }
+      alert(satirlar.join('\n'));
+      if (tani.debug) console.warn('[HEDEF][debug]', tani.debug);
+    }
 
     async function hedefleriHesapla() {
       // Çoklu istek önleme
@@ -4760,16 +4783,18 @@
         // OR-Tools aktifse OR-Tools ile hesapla
         if (ortoolsAktif) {
           console.log('OR-Tools ile hedef hesaplanıyor...');
+          sonHedefHatasi = null;
           const basarili = await hedefleriHesaplaOrtoolsAsync();
           if (!basarili) {
-            throw new Error('OR-Tools hedef hesaplama başarısız. Yerel fallback kapalı.');
+            throw sonHedefHatasi
+              || new Error('OR-Tools hedef hesaplama başarısız. Yerel fallback kapalı.');
           }
         } else {
           throw new Error('Yerel hedef hesaplama kapalı. OR-Tools aktif olmalı.');
         }
       } catch (error) {
         console.error('Hedef hesaplama hatası:', error);
-        alert('Hedef hesaplama sırasında hata oluştu: ' + error.message);
+        hedefHatasiniGoster(error);
       } finally {
         hedefHesaplamaAktif = false;
       }
@@ -8553,20 +8578,29 @@
 
       if (!result.basari) {
         const durum = String(result?.istatistikler?.status || 'INFEASIBLE').toUpperCase();
+        // Backend insan dili tanı üretir (başlık/detay/öneriler); varsa
+        // hazırlık panelindeki jenerik öneri yerine onu kullan.
+        const tani = result.hedefTanisi || result.istatistikler?.hedef_tanisi || null;
         hazirlikKapasiteSonucu = {
           durum,
           neden: {
             kod: 'HEDEF_CP_SAT',
-            mesaj: result.mesaj || 'Hedef modeli çözümsüz.'
+            mesaj: (tani && tani.baslik) ? tani.baslik : (result.mesaj || 'Hedef modeli çözümsüz.')
           },
-          oneri: 'Mazeretleri, ara gün değerini, manuel atamaları ve hard birlikte kurallarını gözden geçirin.',
+          oneri: (tani && Array.isArray(tani.oneriler) && tani.oneriler.length)
+            ? tani.oneriler.join(' ')
+            : 'Mazeretleri, ara gün değerini, manuel atamaları ve hard birlikte kurallarını gözden geçirin.',
           solver: result.istatistikler || {}
         };
         hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
         aktifPlanKontrati = null;
         aktifPlanHash = null;
         cozumuGecersizKil(`Hazırlık kapasite durumu ${durum}`);
-        throw new Error(result.mesaj || 'Hedef hesaplama başarısız');
+        // Ham CP-SAT debug'ı yalnız konsola gider; tanı hatayla taşınır ki
+        // çağıran katman jenerik metinle değiştirmesin.
+        const hata = new Error(result.mesaj || 'Hedef hesaplama başarısız');
+        hata.hedefTanisi = tani;
+        throw hata;
       }
 
       return result;

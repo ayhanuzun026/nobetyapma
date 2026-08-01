@@ -16,7 +16,7 @@ from solver_models import (
     SolverPersonel, SolverGorev, SolverKural, SolverAtama,
     HedefSonuc, WEIGHT_MESAI_MIN,
 )
-from hedef_teshis import build_hedef_infeasible_debug
+from hedef_teshis import build_hedef_infeasible_debug, hedef_infeasible_insan_dili
 
 # Lazy import for ortools (Firebase deploy timeout fix) — thread-safe
 import threading
@@ -1360,7 +1360,23 @@ class HedefHesaplayici:
                 total_we_slots=total_we_slots,
                 we_tipleri=we_tipleri,
             )
-            return HedefSonuc(False, [], [], {}, {}, f"Hedef CP-SAT cozumsuz: {debug_msg}")
+            # Ham çözücü çıktısı kullanıcıya gitmez: kök nedeni insan diline
+            # çevir, somut aksiyon öner. Debug detayı istatistiklerde kalır.
+            tani = hedef_infeasible_insan_dili(
+                hesaplayici=self,
+                personel_sinirlar=personel_sinirlar,
+                kilitli_ids=kilitli_ids,
+                debug_msg=debug_msg,
+            )
+            mesaj = tani['baslik'] + ". " + tani['detay']
+            if tani['oneriler']:
+                mesaj += " Öneriler: " + " ".join(tani['oneriler'])
+            return HedefSonuc(
+                False, [], [], {},
+                {'hedef_tanisi': tani,
+                 'adalet': {'sinirlar': personel_sinirlar, 'uyarilar': adalet_uyarilari}},
+                mesaj,
+            )
 
         # --- 7. SONUÇLARI PERSONELLERE YAZ ---
         # 112 mesai açığı: hedef soft olduğu için gerçekleşen değerden ölçülür

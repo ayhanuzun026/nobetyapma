@@ -49,6 +49,18 @@ test('period changes load the selected period instead of copying global state', 
   assert.match(html, /await kaydetDonem\(oncekiDonem\.yil, oncekiDonem\.ay, true\)/);
 });
 
+test('target-calculation failures show a human diagnosis, not raw solver debug', () => {
+  // Backend insan dili tani uretir; frontend onu jenerik metinle degistirmemeli.
+  assert.match(html, /function hedefHatasiniGoster\(error\)/);
+  assert.match(html, /hata\.hedefTanisi\s*=\s*result\.hedefTanisi/);
+  assert.match(html, /let sonHedefHatasi = null/);
+  // Gercek hata jenerik mesajla ezilmiyor.
+  assert.match(html, /throw sonHedefHatasi\s*\n?\s*\|\|/);
+  // Oneriler listelenir, ham debug yalniz konsola gider.
+  assert.match(html, /satirlar\.push\('', 'Ne yapabilirsiniz:'\)/);
+  assert.match(html, /console\.warn\('\[HEDEF\]\[debug\]', tani\.debug\)/);
+});
+
 test('stale solver results cannot be previewed or downloaded', () => {
   assert.match(html, /function cozumGirdiImzasiOlustur\(\)/);
   assert.match(html, /function cozumGecerliMi\(\)/);
