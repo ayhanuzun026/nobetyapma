@@ -5,8 +5,9 @@
   "scripts": {
     "test:frontend": "node --test tests/frontend_regression.test.mjs",
     "test:config": "node --test tests/config_regression.test.mjs",
+    "test:sync": "node --test tests/cloud_sync.test.mjs tests/result_persistence.test.mjs",
     "test:rules": "node --test tests/firebase_rules.test.mjs",
-    "test": "npm run test:frontend && npm run test:config"
+    "test": "npm run test:frontend && npm run test:config && npm run test:sync"
   },
   "devDependencies": {
     "@firebase/rules-unit-testing": "5.0.1",

@@ -839,9 +839,16 @@
         <span id="user-name" style="font-size:13px;"></span>
         <span id="sync-status" style="font-size:13px; display:none;" title="Bulut senkronizasyonu">
           <i class="fas fa-cloud" style="color:#64748b;"></i>
+          <span id="sync-status-text" role="status" aria-live="polite"></span>
         </span>
         <button class="btn btn-sm btn-danger" onclick="cikisYap()">Çıkış</button>
       </div>
+    </div>
+
+    <div id="sync-warning" role="status" style="display:none; padding:12px; background:#fff7ed; color:#9a3412;">
+      <span id="sync-warning-text"></span>
+      <button class="btn btn-sm btn-secondary" onclick="yerelYedegiIndir()">Yerel yedeği indir</button>
+      <button class="btn btn-sm btn-secondary" onclick="buluttanYenidenYukle()">Buluttan yeniden yükle</button>
     </div>
 
     <div class="steps">
@@ -1440,7 +1447,7 @@
         <i class="fa-solid fa-arrow-left"></i> Geri
       </button>
       <button class="btn btn-sm" style="background:#059669; color:#fff;"
-        onclick="kaydet(); alert('Veriler kaydedildi!')">
+        onclick="kaydetVeBildir()">
         <i class="fa-solid fa-floppy-disk"></i> Kaydet
       </button>
       <button class="btn btn-primary" id="btn-ileri" onclick="stepDegistir(1)">
@@ -1511,6 +1518,7 @@
     let personelIdCounter = 0;
     let aktifDonem = null;
     let donemDegistiriliyor = false;
+    let _yuklemeSayaci = 0;
     let aktifCozumIstekImzasi = null;
     let gunTipiDegisimKayitlari = [];
     let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
@@ -1663,26 +1671,55 @@
       return db.collection('users').doc(uid).collection('months').doc(`${yil}_${ay}`);
     }
 
-    function updateSyncStatus(status) {
+    function getFirestoreWorkspaceRef(uid) {
+      return db.collection('users').doc(uid).collection('settings').doc('workspace');
+    }
+
+    function gecerliDonem(donem) {
+      const yil = Number(donem?.yil), ay = Number(donem?.ay);
+      return Number.isInteger(yil) && yil >= 2000 && yil <= 2200 && Number.isInteger(ay) && ay >= 1 && ay <= 12;
+    }
+
+    async function bulutSonDonemOku(uid) {
+      const workspace = await getFirestoreWorkspaceRef(uid).get({ source: 'server' });
+      const donem = workspace.exists ? workspace.data().lastPeriod : null;
+      if (gecerliDonem(donem)) return { yil: Number(donem.yil), ay: Number(donem.ay) };
+      // Eski hesaplar için son kaydedilmiş ayı bul; yeni cihazın yerel seçimini kullanma.
+      const months = await db.collection('users').doc(uid).collection('months')
+        .orderBy('_meta.updatedAt', 'desc').limit(1).get({ source: 'server' });
+      const eskiDonem = months.docs[0]?.data()?.ayarlar;
+      return gecerliDonem(eskiDonem) ? { yil: Number(eskiDonem.yil), ay: Number(eskiDonem.ay) } : null;
+    }
+
+    function updateSyncStatus(status, detay = '') {
       const el = document.getElementById('sync-status');
       if (!el) return;
       if (!isCloudSyncEligible()) { el.style.display = 'none'; return; }
       el.style.display = 'inline';
       const icon = el.querySelector('i');
       if (!icon) return;
-      if (status === 'syncing') {
+      if (status === 'syncing' || status === 'pending') {
         icon.className = 'fas fa-cloud-upload-alt';
         icon.style.color = '#f59e0b';
-        el.title = 'Senkronize ediliyor...';
+        el.title = status === 'pending' ? 'Değişiklikler buluta kaydedilmeyi bekliyor' : 'Bulutla eşitleniyor...';
       } else if (status === 'synced') {
         icon.className = 'fas fa-cloud';
         icon.style.color = '#16a34a';
-        el.title = 'Buluta senkronize edildi';
-      } else if (status === 'error') {
+        el.title = 'Bulut kaydı güncel';
+      } else if (status === 'error' || status === 'conflict') {
         icon.className = 'fas fa-exclamation-triangle';
         icon.style.color = '#ef4444';
-        el.title = 'Senkronizasyon hatası';
+        el.title = status === 'conflict' ? 'Başka cihazda daha yeni bir kayıt var' : 'Bulut kaydı doğrulanamadı';
       }
+      const metin = document.getElementById('sync-status-text');
+      if (metin) metin.textContent = el.title;
+      const bant = document.getElementById('sync-warning');
+      const hata = status === 'error' || status === 'conflict';
+      if (bant) bant.style.display = hata ? 'block' : 'none';
+      const uyari = document.getElementById('sync-warning-text');
+      if (uyari) uyari.textContent = detay || (status === 'conflict'
+        ? 'Başka cihazda değişiklik yapılmış. Bu cihazdaki çalışma korunuyor; güncel bulut kaydının üzerine yazılmadı. Yerel yedeği indirip buluttan yeniden yükleyin. '
+        : 'Verileriniz bu tarayıcıda tutuluyor; diğer cihazlara aktarılamadı. Bağlantıyı kontrol edip Kaydet ile tekrar deneyin. ');
     }
 
     // ============================================
@@ -1701,7 +1738,7 @@
         if (user) {
           document.getElementById('login-screen').style.display = 'none';
           document.getElementById('main-app').style.display = 'block';
-          document.getElementById('user-name').textContent = user.isAnonymous ? 'Misafir' : (user.displayName || 'Kullanıcı');
+          document.getElementById('user-name').textContent = user.isAnonymous ? 'Misafir' : (user.email || user.displayName || 'Kullanıcı');
           misafirUyarisiGuncelle(user.isAnonymous);
           yukle();
         } else {
@@ -1712,7 +1749,7 @@
     } else {
       document.getElementById('login-screen').style.display = 'none';
       document.getElementById('main-app').style.display = 'block';
-      yukle();
+      Promise.resolve().then(() => yukle());
     }
 
     // Firebase auth hata kodunu kullanıcı diline çevirir. Kod HER ZAMAN
@@ -1804,8 +1841,15 @@
       if (app) app.insertBefore(bant, app.firstChild);
     }
 
-    function cikisYap() {
-      if (auth) auth.signOut();
+    async function cikisYap() {
+      if (veriYuklendi && aktifDonem) {
+        const kaydedildi = await kaydetDonem(aktifDonem.yil, aktifDonem.ay, true);
+        if (!kaydedildi) {
+          alert('Bulut kaydı tamamlanamadığı için çıkış yapılmadı. Yerel yedeğinizi indirip kayıt uyarısını kontrol edin.');
+          return;
+        }
+      }
+      if (auth) await auth.signOut();
       location.reload();
     }
 
@@ -1962,7 +2006,8 @@
       solverTeshisGuncelle();
     }
 
-    const kaydetDebounced = debounce(() => kaydet(), 500);
+    // Yerel taslağı hemen koru; yalnız ağ yazımı geciktirilir.
+    const kaydetDebounced = () => kaydet();
 
     // ============================================
     // VERİLERİ SIFIRLA - Cache ve hesaplamaları temizle
@@ -10854,6 +10899,25 @@
         return;
       }
 
+      // Başka cihazdan geri yüklenen kısmi sonuç da açıkça etiketlensin.
+      let kismiUyari = document.getElementById('kismi-cozum-onizleme-uyari');
+      if (hesaplananListe._kismiCozum) {
+        if (!kismiUyari) {
+          kismiUyari = document.createElement('div');
+          kismiUyari.id = 'kismi-cozum-onizleme-uyari';
+          kismiUyari.className = 'rule-box mt-3';
+          kismiUyari.style.cssText = 'background:#fff7ed;border-left:4px solid #ea580c;';
+          const tablo = document.getElementById('preview-table')?.closest('.table-responsive');
+          if (tablo?.parentNode) tablo.parentNode.insertBefore(kismiUyari, tablo);
+        }
+        const kanit = hesaplananListe._optimumKanitlandi
+          ? 'Kanıtlanmış maksimum doluluk'
+          : 'Bulunan geçerli kısmi çözüm; maksimum olduğu kanıtlanmadı';
+        kismiUyari.textContent = `Bilinçli kısmi çizelge — ${kanit}. Bu gerçek görev-slotu çözümü salt okunur önizlemedir. Kalite/adalet optimizasyonu çalıştırılmadı; boş görevler aşağıda gösterilir.`;
+      } else if (kismiUyari) {
+        kismiUyari.remove();
+      }
+
       const { yil, ay } = getYilAy();
       const gunSayisi = getGunSayisi(yil, ay);
       const { atanan, kisiAtama, siraliGorevler } = hesaplananListe;
@@ -11242,31 +11306,243 @@
     // FIRESTORE CLOUD SYNC
     // ============================================
     let _firestoreDebounceTimer = null;
+    let _bekleyenBulutKaydi = null;
+    let _bulutYazmaKuyrugu = Promise.resolve();
+    const _donemBulutRevizyonlari = new Map();
+    const _donemKayitHatalari = new Map();
+    let _bulutYazmaSayisi = 0;
+
+    function yerelSenkronBilgisi(key) {
+      try { return JSON.parse(localStorage.getItem(`${key}_sync`) || 'null') || {}; }
+      catch (_) { return {}; }
+    }
 
     async function firestoreKaydet(data, uid, yil, ay) {
-      if (!isCloudSyncEligible()) return;
-      try {
-        updateSyncStatus('syncing');
-        const docRef = getFirestoreDocRef(uid, yil, ay);
-        await docRef.set({
-          ...data,
-          _meta: {
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
-            version: 1
-          }
-        });
-        updateSyncStatus('synced');
-      } catch (e) {
-        console.warn('Firestore kaydet hatası:', e);
-        updateSyncStatus('error');
-      }
+      if (!isCloudSyncEligible() || auth.currentUser.uid !== uid) return false;
+      const paket = JSON.parse(JSON.stringify(data));
+      const key = getStorageKey(uid, yil, ay);
+      _bulutYazmaSayisi++;
+      const islem = _bulutYazmaKuyrugu.then(async () => {
+        if (!isCloudSyncEligible() || auth.currentUser.uid !== uid) return false;
+        if (!_donemBulutRevizyonlari.has(key) || _donemKayitHatalari.get(key) === 'conflict') {
+          updateSyncStatus(_donemKayitHatalari.get(key) || 'error');
+          return false;
+        }
+        try {
+          updateSyncStatus('syncing');
+          const docRef = getFirestoreDocRef(uid, yil, ay);
+          const beklenen = _donemBulutRevizyonlari.get(key);
+          await db.runTransaction(async transaction => {
+            const doc = await transaction.get(docRef);
+            const mevcut = Number(doc.data()?._meta?.revision || 0);
+            if (mevcut !== beklenen) {
+              const hata = new Error('Başka cihazda daha yeni bir kayıt var.');
+              hata.code = 'sync/conflict';
+              throw hata;
+            }
+            if (auth?.currentUser?.uid !== uid) throw new Error('Oturum değişti.');
+            transaction.set(docRef, {
+              ...paket,
+              _meta: { updatedAt: firebase.firestore.FieldValue.serverTimestamp(), version: 2, revision: beklenen + 1 }
+            });
+            transaction.set(getFirestoreWorkspaceRef(uid), {
+              lastPeriod: { yil, ay }, updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+          });
+          _donemBulutRevizyonlari.set(key, beklenen + 1);
+          _donemKayitHatalari.delete(key);
+          const ayniPaket = localStorage.getItem(key) === JSON.stringify(paket);
+          localStorage.setItem(`${key}_sync`, JSON.stringify({ pending: !ayniPaket, revision: beklenen + 1 }));
+          updateSyncStatus(_bekleyenBulutKaydi || _bulutYazmaSayisi > 1 ? 'pending' : 'synced');
+          return true;
+        } catch (e) {
+          console.warn('Firestore kaydet hatası:', e);
+          const durum = e.code === 'sync/conflict' ? 'conflict' : 'error';
+          _donemKayitHatalari.set(key, durum);
+          updateSyncStatus(durum);
+          return false;
+        }
+      });
+      _bulutYazmaKuyrugu = islem.catch(() => false);
+      try { return await islem; } finally { _bulutYazmaSayisi--; }
+    }
+
+    function bekleyenBulutKaydiniGonder() {
+      if (_firestoreDebounceTimer) clearTimeout(_firestoreDebounceTimer);
+      _firestoreDebounceTimer = null;
+      const kayit = _bekleyenBulutKaydi;
+      _bekleyenBulutKaydi = null;
+      return kayit ? firestoreKaydet(kayit.data, kayit.uid, kayit.yil, kayit.ay) : _bulutYazmaKuyrugu;
     }
 
     function firestoreKaydetDebounced(data, uid, yil, ay) {
+      if (!isCloudSyncEligible()) return;
+      if (_bekleyenBulutKaydi && (_bekleyenBulutKaydi.uid !== uid || _bekleyenBulutKaydi.yil !== yil || _bekleyenBulutKaydi.ay !== ay)) {
+        void bekleyenBulutKaydiniGonder();
+      }
       if (_firestoreDebounceTimer) clearTimeout(_firestoreDebounceTimer);
-      _firestoreDebounceTimer = setTimeout(() => {
-        firestoreKaydet(data, uid, yil, ay);
-      }, 2000);
+      _bekleyenBulutKaydi = { data: JSON.parse(JSON.stringify(data)), uid, yil, ay };
+      updateSyncStatus(_donemKayitHatalari.get(getStorageKey(uid, yil, ay)) || 'pending');
+      _firestoreDebounceTimer = setTimeout(() => { void bekleyenBulutKaydiniGonder(); }, 700);
+    }
+
+    function aktifDonemiBuluttaIsaretle(uid, yil, ay) {
+      if (!isCloudSyncEligible() || auth.currentUser.uid !== uid) return Promise.resolve(false);
+      return getFirestoreWorkspaceRef(uid).set({
+        lastPeriod: { yil, ay },
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }).then(() => true).catch(e => {
+        console.warn('Bulut aktif dönem işareti yazılamadı:', e);
+        updateSyncStatus('error', 'Aktif dönem diğer cihazlara bildirilemedi.');
+        return false;
+      });
+    }
+
+    // Çizelge snapshot'ı yalnızca geçerli girdilere bağlı, küçük ve yeniden
+    // doğrulanabilir sonucu taşır. Hazırlık kapasite raporu, solver logları ve
+    // diğer geçici analizler dönem verisine yazılmaz.
+    function cizelgeSonucSnapshotOlustur() {
+      if (!hesaplananListe || !cozumGecerliMi()) return null;
+      const atanan = {};
+      const { yil, ay } = getYilAy();
+      const gunSayisi = getGunSayisi(yil, ay);
+      for (let gun = 1; gun <= gunSayisi; gun++) {
+        const kaynak = hesaplananListe.atanan?.[gun] || hesaplananListe.atanan?.[String(gun)] || {};
+        const hedef = {};
+        Object.entries(kaynak).forEach(([slot, personelId]) => {
+          const slotIdx = Number.parseInt(slot, 10);
+          if (Number.isInteger(slotIdx) && slotIdx >= 0 && personelId !== undefined && personelId !== null) {
+            hedef[String(slotIdx)] = String(personelId);
+          }
+        });
+        atanan[String(gun)] = hedef;
+      }
+
+      const siraliGorevler = Array.isArray(hesaplananListe.siraliGorevler)
+        ? hesaplananListe.siraliGorevler.map(g => ({
+          id: g?.id == null ? null : String(g.id),
+          ad: String(g?.ad || ''),
+          baseName: g?.baseName == null ? null : String(g.baseName)
+        }))
+        : [];
+      return {
+        surum: 1,
+        girdiImzasi: hesaplananListe._girdiImzasi || cozumGirdiImzasiOlustur(),
+        atanan,
+        siraliGorevler,
+        kismiCozum: Boolean(hesaplananListe._kismiCozum),
+        optimumKanitlandi: Boolean(hesaplananListe._optimumKanitlandi),
+        kapasiteAnalizId: hesaplananListe._kapasiteAnalizId || null
+      };
+    }
+
+    // Firestore map alanları cihazlar arasında farklı anahtar sırasıyla
+    // dönebilir. İmza JSON olduğu için yalnızca metin karşılaştırması eşdeğer
+    // girdileri yanlışlıkla bayat sayardı; nesne anahtarlarını sıralayarak
+    // karşılaştır, dizilerin sırasını ise koru.
+    function cozumImzasiEsdegerMi(kaydedilen, guncel) {
+      if (kaydedilen === guncel) return true;
+      try {
+        const kararlilastir = deger => {
+          if (Array.isArray(deger)) return deger.map(kararlilastir);
+          if (deger && typeof deger === 'object') {
+            return Object.fromEntries(Object.keys(deger).sort()
+              .map(anahtar => [anahtar, kararlilastir(deger[anahtar])]));
+          }
+          return deger;
+        };
+        return JSON.stringify(kararlilastir(JSON.parse(kaydedilen)))
+          === JSON.stringify(kararlilastir(JSON.parse(guncel)));
+      } catch (_) {
+        // Eski/bozuk imzalar güvenle reddedilir; yalnız geçerli JSON imzaları
+        // anahtar sırasından bağımsız eşdeğer kabul edilir.
+        return false;
+      }
+    }
+
+    function cizelgeSonucSnapshotGeriYukle(snapshot, yil, ay) {
+      if (!snapshot || snapshot.surum !== 1) return false;
+      const guncelImza = cozumGirdiImzasiOlustur();
+      if (!snapshot.girdiImzasi || !cozumImzasiEsdegerMi(snapshot.girdiImzasi, guncelImza)) return false;
+      const gunSayisi = getGunSayisi(yil, ay);
+      if (!snapshot.atanan || typeof snapshot.atanan !== 'object' || Array.isArray(snapshot.atanan)
+          || !Array.isArray(snapshot.siraliGorevler)) return false;
+      if (snapshot.siraliGorevler.length !== gorevler.length) return false;
+      if (Object.keys(snapshot.atanan).some(key => {
+        const gun = Number(key);
+        return !Number.isInteger(gun) || String(gun) !== key || gun < 1 || gun > gunSayisi;
+      })) return false;
+
+      // Görev sırası ve kimlikleri mevcut dönem girdisiyle birebir eşleşmeli.
+      const siraliGorevler = [];
+      const kullanilanGorevler = new Set();
+      for (const tanim of snapshot.siraliGorevler) {
+        if (!tanim || typeof tanim !== 'object') return false;
+        const adaylar = gorevler.filter(g => {
+          const idEslesiyor = tanim.id != null && String(g.id) === String(tanim.id);
+          const adEslesiyor = tanim.ad && String(g.ad) === String(tanim.ad);
+          return idEslesiyor && adEslesiyor;
+        });
+        if (adaylar.length !== 1 || kullanilanGorevler.has(adaylar[0])) return false;
+        kullanilanGorevler.add(adaylar[0]);
+        siraliGorevler.push(adaylar[0]);
+      }
+
+      const atanan = {};
+      for (let gun = 1; gun <= gunSayisi; gun++) {
+        if (!Object.hasOwn(snapshot.atanan, String(gun))) return false;
+        const kaynak = snapshot.atanan[String(gun)] || snapshot.atanan[gun] || {};
+        if (!kaynak || typeof kaynak !== 'object' || Array.isArray(kaynak)) return false;
+        const hedef = {};
+        const gunKisileri = new Set();
+        for (const [slot, rawPersonelId] of Object.entries(kaynak)) {
+          const slotIdx = Number(slot);
+          const personelId = String(rawPersonelId);
+          const kisiler = personelListesi.filter(p => String(p.id) === personelId);
+          if (!Number.isInteger(slotIdx) || String(slotIdx) !== slot || slotIdx < 0 || slotIdx >= siraliGorevler.length) return false;
+          if (kisiler.length !== 1 || gunKisileri.has(personelId)) return false;
+          gunKisileri.add(personelId);
+          hedef[String(slotIdx)] = kisiler[0].id;
+        }
+        atanan[gun] = hedef;
+      }
+
+      // Türetilmiş kişi özetlerini kaydetmek yerine doğrulanmış atamalardan
+      // yeniden oluştur; tablo ve istatistikler aynı veriyi göstersin.
+      const kisiAtama = {};
+      const ozelGorevler = getOzelGorevler();
+      for (const personel of personelListesi) {
+        kisiAtama[personel.id] = {
+          gunler: [],
+          tipSayilari: Object.fromEntries(GUN_TIPLERI.map(tip => [tip, 0])),
+          hedefKalan: Object.fromEntries(GUN_TIPLERI.map(tip => [tip, Number(personel.hedef?.[tip]) || 0])),
+          gorevSayilari: Object.fromEntries(ozelGorevler.map(gorev => [gorev, 0]))
+        };
+      }
+      for (let gun = 1; gun <= gunSayisi; gun++) {
+        const tip = getGunTipi(yil, ay, gun);
+        for (const [slot, personelId] of Object.entries(atanan[gun])) {
+          const ozet = kisiAtama[personelId];
+          ozet.gunler.push(gun);
+          ozet.tipSayilari[tip]++;
+          ozet.hedefKalan[tip] = Math.max(0, ozet.hedefKalan[tip] - 1);
+          const gorevAdi = siraliGorevler[Number(slot)].ad;
+          if (Object.hasOwn(ozet.gorevSayilari, gorevAdi)) ozet.gorevSayilari[gorevAdi]++;
+        }
+      }
+
+      hesaplananListe = {
+        atanan,
+        kisiAtama,
+        siraliGorevler,
+        _girdiImzasi: guncelImza,
+        _kismiCozum: Boolean(snapshot.kismiCozum),
+        _optimumKanitlandi: Boolean(snapshot.optimumKanitlandi),
+        _kapasiteAnalizId: snapshot.kapasiteAnalizId || null
+      };
+      aktifCozumIstekImzasi = guncelImza;
+      atananlar = atanan;
+      return true;
     }
 
     function veriPaketiOlustur(yil, ay) {
@@ -11285,11 +11561,14 @@
         kisitlamaExclusive,
         gorevKapasiteAyar,
         devirListesi,
+        sonucSnapshot: cizelgeSonucSnapshotOlustur(),
         ayarlar: {
           yil: String(yil),
           ay: String(ay),
           gunluk: document.getElementById('inp-gunluk').value,
           aragun: document.getElementById('inp-aragun').value,
+          kurumProfili: getKurumProfili(),
+          maxAraGun: document.getElementById('inp-max-aragun')?.value || 5,
           detayli: true, // Her zaman detaylı mod
           saatler: {
             hici: document.getElementById('saat-hici').value,
@@ -11304,22 +11583,76 @@
     }
 
     async function kaydetDonem(yil, ay, anindaBuluta = false) {
-      if (!veriYuklendi) return;
+      if (!veriYuklendi) return false;
       const uid = auth?.currentUser?.uid || 'LOCAL';
       const data = veriPaketiOlustur(yil, ay);
-      localStorage.setItem(getStorageKey(uid, yil, ay), JSON.stringify(data));
-      localStorage.setItem(`nobet_v2_${uid}`, JSON.stringify(data));
-      sonDonemAnahtariniGuncelle(uid, yil, ay);
+      const key = getStorageKey(uid, yil, ay);
+      try {
+        localStorage.setItem(key, JSON.stringify(data));
+        localStorage.setItem(`nobet_v2_${uid}`, JSON.stringify(data));
+        sonDonemAnahtariniGuncelle(uid, yil, ay);
+        if (isCloudSyncEligible()) {
+          const oncekiSenkron = yerelSenkronBilgisi(key);
+          const revizyon = oncekiSenkron.pending ? oncekiSenkron.revision : (_donemBulutRevizyonlari.get(key) ?? null);
+          localStorage.setItem(`${key}_sync`, JSON.stringify({ pending: true, revision: revizyon ?? null }));
+        }
+      } catch (e) {
+        console.warn('Yerel kayıt yapılamadı:', e);
+        updateSyncStatus('error', 'Tarayıcı depolama alanına kayıt yapılamadı. Çalışmanızı yedek olarak indirin.');
+        return false;
+      }
 
       if (anindaBuluta) {
         if (_firestoreDebounceTimer) {
           clearTimeout(_firestoreDebounceTimer);
           _firestoreDebounceTimer = null;
         }
-        await firestoreKaydet(data, uid, yil, ay);
+        _bekleyenBulutKaydi = null;
+        if (!isCloudSyncEligible()) return true;
+        return await firestoreKaydet(data, uid, yil, ay);
       } else {
         firestoreKaydetDebounced(data, uid, yil, ay);
+        return true;
       }
+    }
+
+    async function kaydetVeBildir() {
+      if (!veriYuklendi) return;
+      const donem = aktifDonem || getYilAy();
+      const tamam = await kaydetDonem(donem.yil, donem.ay, true);
+      if (tamam) {
+        alert(isCloudSyncEligible()
+          ? 'Veriler buluta kaydedildi. Aynı hesapla diğer bilgisayardan devam edebilirsiniz.'
+          : 'Veriler bu tarayıcıya kaydedildi.');
+      } else {
+        alert('Bulut kaydı tamamlanamadı. Üstteki kayıt uyarısını kontrol edin.');
+      }
+    }
+
+    function yerelYedegiIndir() {
+      const uid = auth?.currentUser?.uid || 'LOCAL';
+      const { yil, ay } = aktifDonem || getYilAy();
+      const key = getStorageKey(uid, yil, ay);
+      const data = { mevcut: veriPaketiOlustur(yil, ay), oncekiYerelKayit: localStorage.getItem(`${key}_recovery`) };
+      const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `Nobet_yedek_${yil}_${ay}.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function buluttanYenidenYukle() {
+      if (!confirm('Bu cihazdaki çalışma yerel yedekte korunarak buluttaki kayıt açılacak. Devam edilsin mi?')) return;
+      if (aktifDonem) {
+        const uid = auth?.currentUser?.uid || 'LOCAL';
+        localStorage.setItem(`${getStorageKey(uid, aktifDonem.yil, aktifDonem.ay)}_recovery`, JSON.stringify(veriPaketiOlustur(aktifDonem.yil, aktifDonem.ay)));
+      }
+      if (_firestoreDebounceTimer) clearTimeout(_firestoreDebounceTimer);
+      _firestoreDebounceTimer = null;
+      _bekleyenBulutKaydi = null;
+      await _bulutYazmaKuyrugu;
+      await yukle({ ...(aktifDonem || {}), bulutuTercihEt: true });
     }
 
     function kaydet() {
@@ -11355,6 +11688,8 @@
       document.getElementById('inp-ay').value = String(ay);
       document.getElementById('inp-gunluk').value = 5;
       document.getElementById('inp-aragun').value = 2;
+      document.getElementById('inp-kurum-profili').value = 'genel';
+      document.getElementById('inp-max-aragun').value = 5;
       GUN_TIPLERI.forEach(tip => {
         document.getElementById(`saat-${tip}`).value = SAAT_DEGER[tip];
       });
@@ -11369,6 +11704,8 @@
     }
 
     async function yukle(secenekler = {}) {
+      const yuklemeId = ++_yuklemeSayaci;
+      veriYuklendi = false;
       hedefleriBayatIsaretle('Dönem verileri yükleniyor.');
       const uid = auth?.currentUser?.uid || 'LOCAL';
       const acikDonem = Number.isFinite(Number(secenekler.yil)) && Number.isFinite(Number(secenekler.ay));
@@ -11377,10 +11714,36 @@
         document.getElementById('inp-yil').value = String(parseInt(secenekler.yil, 10));
         document.getElementById('inp-ay').value = String(parseInt(secenekler.ay, 10));
       } else {
+        let ortakDonemBulundu = false;
+        // Aktif dönem cihazın localStorage'ına bağlı kalmasın; hesabın ortak
+        // çalışma alanından oku. Eski hesaplarda ay belgelerinden geriye dönük
+        // keşif yapılır.
+        if (isCloudSyncEligible()) {
+          try {
+            const bulutDonem = await bulutSonDonemOku(uid);
+            if (yuklemeId !== _yuklemeSayaci) return;
+            if (bulutDonem) {
+              document.getElementById('inp-yil').value = String(bulutDonem.yil);
+              document.getElementById('inp-ay').value = String(bulutDonem.ay);
+              ortakDonemBulundu = true;
+            }
+          } catch (e) {
+            if (yuklemeId !== _yuklemeSayaci || (auth?.currentUser?.uid || 'LOCAL') !== uid) return;
+            console.warn('Bulut aktif dönem okunamadı; cihazdaki dönem korunuyor:', e);
+            updateSyncStatus('error', 'Hesabın ortak çalışma alanı okunamadı. Yerel kayıt bulutun üzerine yazılmayacak.');
+          }
+        }
         const lastYil = localStorage.getItem(`nobet_last_yil_${uid}`);
         const lastAy = localStorage.getItem(`nobet_last_ay_${uid}`);
-        if (lastYil) document.getElementById('inp-yil').value = lastYil;
-        if (lastAy) document.getElementById('inp-ay').value = lastAy;
+        // Buluttan dönem geldiyse localStorage ile üzerine yazma.
+        if (!isCloudSyncEligible() || !ortakDonemBulundu) {
+          if (lastYil) document.getElementById('inp-yil').value = lastYil;
+          if (lastAy) document.getElementById('inp-ay').value = lastAy;
+          if (!lastYil && !lastAy) {
+            document.getElementById('inp-yil').value = String(new Date().getFullYear());
+            document.getElementById('inp-ay').value = String(new Date().getMonth() + 1);
+          }
+        }
       }
 
       const yil = parseInt(document.getElementById('inp-yil').value, 10);
@@ -11392,28 +11755,72 @@
 
       let saved = null;
       let kaynakFirestore = false;
+      let bulutOkundu = !isCloudSyncEligible();
+      const bulutKey = getStorageKey(uid, yil, ay);
+      _donemBulutRevizyonlari.delete(bulutKey);
 
       // Google kullanıcıları için önce Firestore'dan oku
       if (isCloudSyncEligible()) {
         try {
           updateSyncStatus('syncing');
           const docRef = getFirestoreDocRef(uid, yil, ay);
-          const doc = await docRef.get();
+          const doc = await docRef.get({ source: 'server' });
+          if (yuklemeId !== _yuklemeSayaci || (auth?.currentUser?.uid || 'LOCAL') !== uid) return;
+          bulutOkundu = true;
           if (doc.exists) {
             const firestoreData = doc.data();
             if (donemVerisiEslesiyor(firestoreData, yil, ay)) {
+              _donemBulutRevizyonlari.set(bulutKey, Number(firestoreData._meta?.revision || 0));
+              _donemKayitHatalari.delete(bulutKey);
               delete firestoreData._meta;
               saved = JSON.stringify(firestoreData);
               kaynakFirestore = true;
             } else {
-              console.warn('Firestore dönem kaydı hedef dönemle eşleşmedi; kayıt yok sayıldı.');
+              throw new Error('Firestore dönem kaydı hedef dönemle eşleşmedi.');
+            }
+          } else {
+            const yerelSenkron = yerelSenkronBilgisi(bulutKey);
+            _donemBulutRevizyonlari.set(bulutKey, 0);
+            if (yerelSenkron.pending && Number(yerelSenkron.revision || 0) > 0) {
+              _donemKayitHatalari.set(bulutKey, 'conflict');
+              updateSyncStatus('conflict', 'Bulut kaydı silinmiş veya sıfırlanmış görünüyor; yerel taslak korunuyor.');
+            } else {
+              _donemKayitHatalari.delete(bulutKey);
             }
           }
           updateSyncStatus('synced');
         } catch (e) {
+          if (yuklemeId !== _yuklemeSayaci || (auth?.currentUser?.uid || 'LOCAL') !== uid) return;
           console.warn('Firestore okuma hatası, localStorage\'a düşülüyor:', e);
+          bulutOkundu = false;
+          _donemBulutRevizyonlari.delete(bulutKey);
+          _donemKayitHatalari.set(bulutKey, 'error');
           updateSyncStatus('error');
         }
+      }
+
+      // Gönderilememiş yerel çalışmayı sayfa yenilenince kaybetme. İki cihaz
+      // aynı tabandan ilerlemişse kullanıcı karar vermeden birini diğerine yazma.
+      const yerel = localStorage.getItem(bulutKey);
+      const senkron = yerelSenkronBilgisi(bulutKey);
+      if (yerel && kaynakFirestore) {
+        if (senkron.pending && !secenekler.bulutuTercihEt) {
+          saved = yerel;
+          if (senkron.revision !== _donemBulutRevizyonlari.get(bulutKey)) {
+            _donemKayitHatalari.set(bulutKey, 'conflict');
+            updateSyncStatus('conflict');
+          } else {
+            updateSyncStatus('pending');
+          }
+        } else {
+          // Eski sürümün yerel kaydını da geri dönüş için sakla.
+          if (yerel !== saved) localStorage.setItem(`${bulutKey}_recovery`, yerel);
+          localStorage.setItem(bulutKey, saved);
+          localStorage.setItem(`${bulutKey}_sync`, JSON.stringify({ pending: false, revision: _donemBulutRevizyonlari.get(bulutKey) }));
+        }
+      } else if (kaynakFirestore) {
+        localStorage.setItem(bulutKey, saved);
+        localStorage.setItem(`${bulutKey}_sync`, JSON.stringify({ pending: false, revision: _donemBulutRevizyonlari.get(bulutKey) }));
       }
 
       // Eski genel kayıt yalnız aynı döneme aitse migration kaynağı olabilir.
@@ -11488,6 +11895,8 @@
             document.getElementById('inp-ay').value = String(ay);
             document.getElementById('inp-gunluk').value = data.ayarlar.gunluk || 5;
             document.getElementById('inp-aragun').value = (data.ayarlar.aragun != null) ? data.ayarlar.aragun : 2;
+            document.getElementById('inp-kurum-profili').value = data.ayarlar.kurumProfili === '112' ? '112' : 'genel';
+            document.getElementById('inp-max-aragun').value = data.ayarlar.maxAraGun ?? 5;
             // detayli-mod artık her zaman true, checkbox kaldırıldı
 
             if (data.ayarlar.saatler) {
@@ -11506,27 +11915,39 @@
 
           aktifDonem = { yil, ay };
           sonDonemAnahtariniGuncelle(uid, yil, ay);
-          veriYuklendi = true;
+          // goStep() yalnız arayüzü kurmalı; yükleme sırasında kaydet() ile
+          // buluta geri yazmayı engellemek için bayrağı sonrasında açıyoruz.
+          aktifCozumIstekImzasi = null;
+          // Sonuç snapshot'ı girdilerle tekrar doğrulanır. Geçersiz/eski
+          // snapshot sessizce atlanır; kullanıcı aynı dönemi yeniden çözer.
+          cizelgeSonucSnapshotGeriYukle(data.sonucSnapshot, yil, ay);
           goStep(data.step || 1);
+          veriYuklendi = true;
 
-          // Lazy migration: localStorage'dan yüklendiyse ve Firestore'da yoksa → seed et
-          if (!kaynakFirestore && isCloudSyncEligible()) {
-            firestoreKaydet(data, uid, yil, ay);
+          // Yalnızca sunucu okuması başarıyla tamamlandıysa eski yerel kaydı
+          // buluta taşı. Ağ/izin hatasında eski PC verisi yeni veriyi ezemez.
+          if (!kaynakFirestore && isCloudSyncEligible() && bulutOkundu && _donemBulutRevizyonlari.has(bulutKey)) {
+            void firestoreKaydet(data, uid, yil, ay);
           }
         } catch (e) {
           console.error('Veri yükleme hatası:', e);
+          _donemBulutRevizyonlari.delete(bulutKey);
+          _donemKayitHatalari.set(bulutKey, 'error');
+          updateSyncStatus('error', 'Kayıt okunamadı. Mevcut veri korunuyor; boş veri buluta yazılmadı.');
           bosDonemDurumuUygula(yil, ay);
           aktifDonem = { yil, ay };
           sonDonemAnahtariniGuncelle(uid, yil, ay);
-          veriYuklendi = true;
+          // Okuma/parsing hatasında boş durumu otomatik kaydetme; bu, mevcut
+          // doğru bulut kaydını boş veriyle ezebilir.
+          veriYuklendi = false;
           goStep(1);
         }
       } else {
         bosDonemDurumuUygula(yil, ay);
         aktifDonem = { yil, ay };
         sonDonemAnahtariniGuncelle(uid, yil, ay);
-        veriYuklendi = true;
         goStep(1);
+        veriYuklendi = true;
       }
       localStorage.setItem(`nobet_last_yil_${uid}`, String(yil));
       localStorage.setItem(`nobet_last_ay_${uid}`, String(ay));
@@ -11544,11 +11965,19 @@
       yilInput.disabled = true;
       ayInput.disabled = true;
       try {
+        let oncekiKaydedildi = true;
         if (oncekiDonem) {
-          await kaydetDonem(oncekiDonem.yil, oncekiDonem.ay, true);
+          // Snapshot imzasını da kaydettiğimiz eski dönemin girdileriyle üret.
+          yilInput.value = String(oncekiDonem.yil);
+          ayInput.value = String(oncekiDonem.ay);
+          oncekiKaydedildi = await kaydetDonem(oncekiDonem.yil, oncekiDonem.ay, true);
+          if (!oncekiKaydedildi) throw new Error('Önceki dönem buluta kaydedilemedi.');
         }
         cozumuGecersizKil('Dönem değişti.');
         await yukle(hedefDonem);
+        if (veriYuklendi && isCloudSyncEligible()) {
+          await aktifDonemiBuluttaIsaretle(auth.currentUser.uid, hedefDonem.yil, hedefDonem.ay);
+        }
       } catch (e) {
         console.error('Dönem değiştirme hatası:', e);
         if (oncekiDonem) {
@@ -11602,21 +12031,27 @@
         }
       }
 
-      // localStorage'da bulunamadıysa Firestore'dan çek
-      if (!oncekiData && isCloudSyncEligible()) {
+      // Başka cihazdaki güncel dönemi esas al; yerel kopya yalnız yedektir.
+      if (isCloudSyncEligible()) {
         try {
           updateSyncStatus('syncing');
           const docRef = getFirestoreDocRef(uid, oncekiYil, oncekiAy);
-          const doc = await docRef.get();
+          const doc = await docRef.get({ source: 'server' });
           if (doc.exists) {
             const firestoreData = doc.data();
             delete firestoreData._meta;
             oncekiData = JSON.stringify(firestoreData);
+          } else {
+            // Sunucuda dönem yoksa eski yerel kopyayı tekrar kullanma;
+            // silinmiş/bozulmuş kaydı yeni döneme taşımak veri kaybını gizler.
+            oncekiData = null;
           }
           updateSyncStatus('synced');
         } catch (e) {
           console.warn('Firestore önceki ay okuma hatası:', e);
           updateSyncStatus('error');
+          alert('Önceki ayın güncel bulut kaydı okunamadı. Eski yerel veriyi kopyalamamak için işlem durduruldu.');
+          return;
         }
       }
 
@@ -11727,6 +12162,22 @@
     }
 
     // Sayfa yüklendiğinde
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') void bekleyenBulutKaydiniGonder();
+    });
+    window.addEventListener('pagehide', () => { void bekleyenBulutKaydiniGonder(); });
+    window.addEventListener('beforeunload', event => {
+      if (_bekleyenBulutKaydi || _bulutYazmaSayisi > 0) {
+        void bekleyenBulutKaydiniGonder();
+        event.preventDefault();
+        event.returnValue = '';
+      }
+    });
+    document.addEventListener('change', event => {
+      if (!veriYuklendi || donemDegistiriliyor || !event.target?.matches?.('input, select, textarea')) return;
+      if (event.target.id === 'inp-yil' || event.target.id === 'inp-ay' || event.target.type === 'file') return;
+      kaydet();
+    });
     document.addEventListener('DOMContentLoaded', () => {
       tatilListesiGuncelle();
       kurumProfiliniGeriYukle();
