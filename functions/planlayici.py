@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from copy import deepcopy
+from dataclasses import asdict
 from typing import Dict, List, Optional
 
 from gun_iskelet_planlayici import GunIskeletPlanlayici
@@ -26,6 +27,70 @@ from solver_models import (
     SolverPersonel,
 )
 from utils import GUN_TIPLERI, normalize_id
+
+
+def plan_girdi_hash(data: Dict) -> str:
+    """Önizleme ve çözümün ortak girdilerini özetler; solver çıktısını değil.
+
+    Üretilen hedef/kota, kaynak etiketi ve süreye bağlı solver kararı bayatlık
+    nedeni değildir. Plan içeriği ayrıca PlanKontrati.plan_hash ile izlenir.
+    """
+    from parsers import (
+        build_gun_tipleri, parse_solver_gorevler_nobet_coz,
+        parse_solver_personeller_coz, parse_kurallar, parse_manuel_atamalar,
+        parse_gorev_havuzlari, parse_kisitlama_istisnalari,
+        parse_birlikte_istisnalari, parse_aragun_istisnalari, parse_kurum_profili,
+    )
+    from utils import get_days_in_month
+
+    yil, ay = int(data.get('yil', 2025)), int(data.get('ay', 1))
+    gun_sayisi = int(data.get('gunSayisi') or get_days_in_month(yil, ay))
+    gun_tipleri = data.get('gunTipleri') or build_gun_tipleri(
+        yil, ay, gun_sayisi, data.get('resmiTatiller', []))
+    gorevler = parse_solver_gorevler_nobet_coz(data, int(data.get('slotSayisi', 5)))
+    personeller = parse_solver_personeller_coz(data, gorevler)
+    personel_girdileri = []
+    for p in sorted(personeller, key=lambda p: p.id):
+        kayit = asdict(p)
+        # Hesaplanan görev kotaları da önizleme sonrasında istemciye yazılır.
+        # Kullanıcının kota düzenlemesi frontend'de planı geçersizleştirir.
+        for alan in ('hedef_tipler', 'gorev_kotalari', 'musait_gunler', 'musait_tipler'):
+            kayit.pop(alan, None)
+        personel_girdileri.append(kayit)
+
+    payload = {
+        'yil': yil, 'ay': ay, 'gun_sayisi': gun_sayisi,
+        'gun_tipleri': gun_tipleri, 'gorevler': [asdict(g) for g in gorevler],
+        'personeller': personel_girdileri,
+        'ara_gun': int(data.get('araGun', 2)),
+        'max_ara_gun': int(data.get('maxAraGun') or 0),
+        'kurum_profili': parse_kurum_profili(data.get('kurumProfili')),
+        'saatler': {tip: int((data.get('saatDegerleri') or {}).get(tip, deger))
+                   for tip, deger in {'hici': 8, 'prs': 8, 'cum': 16, 'cmt': 24, 'pzr': 16}.items()},
+        'kurallar': [asdict(k) for k in parse_kurallar(data, personeller)],
+        'manuel': [asdict(m) for m in parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)],
+        'havuzlar': parse_gorev_havuzlari(data, gorevler, personeller),
+        'kisitlama_istisnalari': parse_kisitlama_istisnalari(data, personeller, gorevler),
+        'birlikte_istisnalari': parse_birlikte_istisnalari(data, personeller),
+        'aragun_istisnalari': parse_aragun_istisnalari(data, personeller),
+        'kilitli_hedefler': frontend_kilitli_hedefleri_topla(personeller, data.get('kilitliHedefler')),
+        'tamir_politikasi': data.get('tamirPolitikasi') or {},
+        'resmi_tatiller': data.get('resmiTatiller') or [],
+        'gecmis_politikasi': data.get('gecmisDonemPolitikasi'),
+        'yeniden_cozum_kilitleri': data.get('kilitler') or [],
+    }
+
+    def canonical(value):
+        if isinstance(value, dict):
+            return {str(k): canonical(v) for k, v in value.items()}
+        if isinstance(value, set):
+            return sorted(value)
+        if isinstance(value, (list, tuple)):
+            return [canonical(v) for v in value]
+        return value
+
+    raw = json.dumps(canonical(payload), sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+    return 'girdi-v1:' + hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
 DEFAULT_PLAN_UYGULAMA = {
@@ -432,6 +497,9 @@ def ortak_plan_uret(
     kaynak: Optional[str] = None,
     uygulama_override: Optional[Dict] = None,
     gorev_havuzlari: Optional[Dict[str, set]] = None,
+    kisitlama_istisnalari: Optional[List[Dict]] = None,
+    birlikte_istisnalari: Optional[List[Dict]] = None,
+    aragun_istisnalari: Optional[List[Dict]] = None,
     kurum_profili: str = "genel",
     resmi_tatil_gunleri: Optional[set] = None,
 ) -> Dict:
@@ -461,12 +529,16 @@ def ortak_plan_uret(
         personeller=plan_personeller,
         gorevler=gorevler,
         birlikte_kurallar=birlikte_kurallar or [],
+        kurallar=kurallar,
         gorev_kisitlamalari=gorev_kisitlamalari or {},
         manuel_atamalar=manuel_atamalar or [],
         ara_gun=ara_gun,
         saat_degerleri=saat_degerleri,
         kilitli_hedefler=kilitli_hedefler,
         gorev_havuzlari=gorev_havuzlari or {},
+        kisitlama_istisnalari=kisitlama_istisnalari or [],
+        birlikte_istisnalari=birlikte_istisnalari or [],
+        aragun_istisnalari=aragun_istisnalari or [],
         kurum_profili=kurum_profili,
         resmi_tatil_gunleri=resmi_tatil_gunleri,
     )
@@ -492,6 +564,9 @@ def ortak_plan_uret(
         ara_gun=ara_gun,
         gorev_kisitlamalari=gorev_kisitlamalari or {},
         gorev_havuzlari=gorev_havuzlari or {},
+        kisitlama_istisnalari=kisitlama_istisnalari or [],
+        birlikte_istisnalari=birlikte_istisnalari or [],
+        aragun_istisnalari=aragun_istisnalari or [],
     ).planla()
 
     plan_kontrati = plan_kontrati_olustur(

@@ -2,10 +2,79 @@
 Kapasite hesaplama — Personel müsaitlik ve slot kapasitesi analizi.
 """
 
-from typing import Dict, List, Optional, Set, Tuple
+import time
+from copy import deepcopy
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from utils import GUN_TIPLERI, find_matching_id
 from solver_models import SolverAtama, SolverGorev, SolverKural, SolverPersonel
+
+
+def _kalan_tam_saniye(deadline: Optional[float]) -> int:
+    """Bir sonraki solver geçişine ayrılabilecek tam saniyeyi döndürür."""
+    if deadline is None:
+        return 0
+    return max(0, int(deadline - time.monotonic()))
+
+
+def _pencere_kisi_ust_kapasitesi(
+    pid: int,
+    uygun_gunler: Set[int],
+    baslangic: int,
+    bitis: int,
+    ara_gun: int,
+    aragun_istisnalari: Set[Tuple[int, int]],
+) -> int:
+    """Bir kişinin penceredeki gerçek maksimum nöbet sayısını hesaplar.
+
+    Yakın gün istisnaları birbirinden bağımsız ``+1`` değildir. Örneğin
+    (1,2) ve (2,3) istisna iken (1,3) yasaksa maksimum 3 değil 2'dir.
+    Aşağıdaki durum DP'si, son ``ara_gun`` içindeki seçimleri birlikte
+    taşıyarak bu çakışmayı tam olarak çözer.
+
+    Çok sıra dışı, çok büyük ara-gün/istisna örneklerinde durum sayısı
+    patlarsa ``len(uygun)`` döner. Bu gevşek ama güvenli bir üst sınırdır;
+    hiçbir zaman yanlış bir "kapasite açığı" kanıtı üretmez.
+    """
+    uygun = {
+        int(gun) for gun in uygun_gunler
+        if baslangic <= int(gun) <= bitis
+    }
+    if not uygun:
+        return 0
+    ara_gun = max(0, int(ara_gun or 0))
+    if ara_gun == 0:
+        return len(uygun)
+
+    # state -> şimdiye kadarki en yüksek toplam seçim. State yalnız halen
+    # yeni günle çatışabilecek yakın seçilmiş günleri taşır.
+    durumlar: Dict[Tuple[int, ...], int] = {(): 0}
+    max_durum = 50_000
+    for gun in range(baslangic, bitis + 1):
+        yeni: Dict[Tuple[int, ...], int] = {}
+        for yakin_gunler, toplam in durumlar.items():
+            etkin = tuple(g for g in yakin_gunler if gun - g <= ara_gun)
+            onceki = yeni.get(etkin)
+            if onceki is None or toplam > onceki:
+                yeni[etkin] = toplam
+
+            if gun not in uygun:
+                continue
+            secilebilir = all(
+                (min(onceki_gun, gun), max(onceki_gun, gun)) in aragun_istisnalari
+                for onceki_gun in etkin
+            )
+            if secilebilir:
+                secili = etkin + (gun,)
+                onceki = yeni.get(secili)
+                if onceki is None or toplam + 1 > onceki:
+                    yeni[secili] = toplam + 1
+
+        durumlar = yeni
+        if len(durumlar) > max_durum:
+            return len(uygun)
+
+    return max(durumlar.values(), default=0)
 
 
 def _fizibilite_sonucu(
@@ -30,6 +99,504 @@ def _fizibilite_sonucu(
     }
 
 
+def _kapasite_hedefleri(
+    gun_sayisi: int,
+    personeller: List[SolverPersonel],
+    kilitli_hedefler: Optional[Dict[Any, Dict[str, int]]] = None,
+) -> Dict[Any, Dict]:
+    """Kapasite modelinin üst sınırlarını ve açık hedef kilitlerini üretir.
+
+    Otomatik plan hedefleri bu aşamada henüz üretilmemiştir. Buna karşılık
+    kullanıcının açıkça kilitlediği gün-tipi hedefleri hedef modelinde hard
+    olduğundan, aynı değerler gerçek kişi×gün×görev-slotu modelinde de hard
+    eşitlik olarak işaretlenir. Böylece ön kontrolün kabul ettiği bir kilit daha
+    sonra hedef modelinde sessizce INFEASIBLE üretemez.
+    """
+    kilitli_hedefler = kilitli_hedefler or {}
+    hedefler = {}
+    for personel in personeller:
+        ust_sinir = gun_sayisi
+        if personel.max_nobet is not None:
+            ust_sinir = min(ust_sinir, max(0, int(personel.max_nobet)))
+        hedef = {
+            'hedef_toplam': ust_sinir,
+            'hedef_tipler': {},
+        }
+        matched_kilit = find_matching_id(personel.id, kilitli_hedefler.keys())
+        if matched_kilit is not None:
+            raw_tipler = kilitli_hedefler.get(matched_kilit) or {}
+            tipler = {}
+            for tip in GUN_TIPLERI:
+                try:
+                    tipler[tip] = max(0, int(raw_tipler.get(tip, 0) or 0))
+                except (TypeError, ValueError):
+                    tipler[tip] = 0
+            hedef.update({
+                'hedef_tipler': tipler,
+                'kapasite_kilitli_hedef': True,
+                'kilitli_hedef_toplam': sum(tipler.values()),
+                'kilitli_hedef_tipler': tipler,
+            })
+        hedefler[personel.id] = hedef
+    return hedefler
+
+
+def _kapasite_solver_olustur(
+    *,
+    gun_sayisi: int,
+    gun_tipleri: Dict[int, str],
+    personeller: List[SolverPersonel],
+    gorevler: List[SolverGorev],
+    kurallar: List[SolverKural],
+    ara_gun: int,
+    manuel_atamalar: List[SolverAtama],
+    gorev_havuzlari: Dict[str, Set[int]],
+    kisitlama_istisnalari: List[Dict],
+    birlikte_istisnalari: List[Dict],
+    aragun_istisnalari: List[Dict],
+    kilitli_hedefler: Dict[Any, Dict[str, int]],
+    kurum_profili: str,
+    max_sure_saniye: int,
+):
+    from ortools_solver import NobetSolver
+
+    return NobetSolver(
+        gun_sayisi=gun_sayisi,
+        gun_tipleri=gun_tipleri,
+        personeller=personeller,
+        gorevler=gorevler,
+        kurallar=kurallar,
+        gorev_havuzlari=gorev_havuzlari,
+        kisitlama_istisnalari=kisitlama_istisnalari,
+        birlikte_istisnalari=birlikte_istisnalari,
+        aragun_istisnalari=aragun_istisnalari,
+        manuel_atamalar=manuel_atamalar,
+        hedefler=_kapasite_hedefleri(
+            gun_sayisi,
+            personeller,
+            kilitli_hedefler=kilitli_hedefler,
+        ),
+        ara_gun=ara_gun,
+        max_sure_saniye=max(1, int(max_sure_saniye or 1)),
+        leksikografik=False,
+        kurum_profili=kurum_profili,
+    )
+
+
+def _kismi_cozum_payload(sonuc: Any, toplam_slot: int) -> Dict:
+    """Minimum-boşluk SolverSonuc'unu kararlı API sözleşmesine çevirir."""
+    istatistikler = (getattr(sonuc, 'istatistikler', None) or {}) if sonuc is not None else {}
+    status = str(
+        istatistikler.get('minimum_bosluk_status')
+        or istatistikler.get('status')
+        or 'UNKNOWN'
+    ).upper()
+    atamalar = list(getattr(sonuc, 'atamalar', None) or []) if sonuc is not None else []
+    bulunan = istatistikler.get('bulunan_bosluk')
+    if bulunan is None and getattr(sonuc, 'basarili', False):
+        bulunan = istatistikler.get('bos_slot_sayisi')
+    try:
+        bulunan = int(bulunan) if bulunan is not None else None
+    except (TypeError, ValueError):
+        bulunan = None
+
+    doldurulan = None if bulunan is None else max(0, int(toplam_slot) - bulunan)
+    optimum = (
+        status == 'OPTIMAL'
+        and bool(istatistikler.get('optimum_kanitlandi', False))
+    )
+    return {
+        'solver_status': status,
+        'optimum_kanitlandi': optimum,
+        'kesinlik': (
+            'KANITLANMIS_MINIMUM' if optimum
+            else 'BULUNAN_EN_IYI' if status == 'FEASIBLE'
+            else 'BELIRLENEMEDI'
+        ),
+        'doldurulan_slot': doldurulan,
+        'toplam_slot': int(toplam_slot),
+        'bos_slot': bulunan,
+        'minimum_bosluk_alt_siniri': istatistikler.get('minimum_bosluk_alt_siniri'),
+        'objective_bound': istatistikler.get('objective_bound'),
+        'atamalar': atamalar,
+        'bos_slot_detaylari': list(istatistikler.get('bos_slot_aciklamalari') or []),
+        'takas_onerileri': list(istatistikler.get('takas_onerileri') or []),
+        'sure_ms': int(getattr(sonuc, 'sure_ms', 0) or 0) if sonuc is not None else 0,
+        'mesaj': str(getattr(sonuc, 'mesaj', '') or '') if sonuc is not None else '',
+    }
+
+
+def _what_if_adaylari(
+    *,
+    ara_gun: int,
+    personeller: List[SolverPersonel],
+    gorevler: List[SolverGorev],
+    gorev_havuzlari: Dict[str, Set[int]],
+    bos_slot_detaylari: List[Dict],
+    manuel_atamalar: Optional[List[SolverAtama]] = None,
+    manuel_cakismalar: Optional[List[Dict]] = None,
+    manuel_cakisma: bool = False,
+    limit: int = 2,
+) -> List[Dict]:
+    """Boş slotlara temas eden az sayıda, salt-okunur karşı-olgusal seçer."""
+    adaylar: List[Dict] = []
+    if ara_gun > 0 and not manuel_cakisma:
+        adaylar.append({
+            'id': f'aragun-{ara_gun}-{ara_gun - 1}',
+            'tur': 'ara_gun_azalt',
+            'baslik': f'Ara günü {ara_gun} → {ara_gun - 1} yap',
+            'aciklama': 'Yalnız analiz kopyasında ara gün bir azaltılır.',
+            'degisiklik': {'eski_ara_gun': ara_gun, 'yeni_ara_gun': ara_gun - 1},
+            'degisiklik_sayisi': 1,
+            'puan': 10_000,
+        })
+
+    gorev_map = {}
+    kritik_roller = set()
+    for gorev in gorevler:
+        role = str(gorev.base_name or gorev.ad or '').strip()
+        if role:
+            gorev_map[role] = gorev
+            if gorev.exclusive or bool(getattr(gorev, 'kritik', False)):
+                kritik_roller.add(role)
+
+    puanlar: Dict[Tuple, int] = {}
+    kayitlar: Dict[Tuple, Dict] = {}
+    bos_gunler = {
+        int(detay.get('gun'))
+        for detay in bos_slot_detaylari[:40]
+        if str(detay.get('gun', '')).isdigit()
+    }
+    manuel_cakismalar = list(manuel_cakismalar or [])
+
+    def manuel_kayit_cakisma_sayisi(atama: SolverAtama) -> int:
+        """Kaydın taraf olduğu farklı hard çakışmaların sayısını döndürür."""
+        pid = getattr(atama, 'personel_id', None)
+        gun = int(getattr(atama, 'gun', 0) or 0)
+        slot_idx = int(getattr(atama, 'slot_idx', -1) or 0)
+        eslesen = 0
+        for cakisma in manuel_cakismalar:
+            kod = str(cakisma.get('code') or '').upper()
+            if kod == 'AYNI_SLOT_CIFT_ATAMA':
+                if gun == cakisma.get('gun') and slot_idx == cakisma.get('slot_idx'):
+                    eslesen += 1
+                continue
+            if kod == 'ARA_GUN_IHLALI':
+                if pid == cakisma.get('personel_id') and gun in {
+                    cakisma.get('gun1'), cakisma.get('gun2')
+                }:
+                    eslesen += 1
+                continue
+            if kod == 'AYRI_KURALI_IHLALI':
+                if gun == cakisma.get('gun') and pid in {
+                    cakisma.get('personel1_id'), cakisma.get('personel2_id')
+                }:
+                    eslesen += 1
+                continue
+
+            cakisma_pid = cakisma.get('personel_id')
+            if cakisma_pid is not None and pid != cakisma_pid:
+                continue
+            cakisma_gun = cakisma.get('gun')
+            if cakisma_gun is not None and gun != cakisma_gun:
+                continue
+            cakisma_slot = cakisma.get('slot_idx')
+            if cakisma_slot is not None and slot_idx != cakisma_slot:
+                continue
+            if cakisma_pid is not None or cakisma_gun is not None or cakisma_slot is not None:
+                eslesen += 1
+        return eslesen
+
+    for index, atama in enumerate(manuel_atamalar or []):
+        cakisma_kapsami = manuel_kayit_cakisma_sayisi(atama) if manuel_cakisma else 0
+        if manuel_cakisma and cakisma_kapsami <= 0:
+            continue
+        gun = int(getattr(atama, 'gun', 0) or 0)
+        yakinlik = max(
+            [6 if bos_gun == gun else 3 if abs(bos_gun - gun) <= max(1, ara_gun) else 0
+             for bos_gun in bos_gunler]
+            or [0]
+        )
+        if not manuel_cakisma and yakinlik <= 0:
+            continue
+        pid = getattr(atama, 'personel_id', None)
+        personel = next((p for p in personeller if p.id == pid), None)
+        ad = personel.ad if personel is not None else str(pid)
+        slot_idx = int(getattr(atama, 'slot_idx', -1))
+        key = ('manuel_atama_kaldir', index)
+        # En fazla iki tam-model what-if çözülebildiğinden, birden çok hard
+        # çakışmanın ortak tarafı olan kayıt önce denenmelidir.
+        puanlar[key] = (12 * cakisma_kapsami if manuel_cakisma else 0) + yakinlik
+        kayitlar[key] = {
+            'id': f'manuel-{index}-{pid}-{gun}-{slot_idx}',
+            'tur': 'manuel_atama_kaldir',
+            'baslik': f'{ad}: {gun}. gün manuel kilidini kaldırmayı dene',
+            'aciklama': (
+                'Yalnız analiz kopyasından bu tek manuel kayıt kaldırılır; '
+                'kayıt otomatik taşınmaz veya silinmez.'
+            ),
+            'degisiklik': {
+                'manuel_atama_index': index,
+                'personel_id': pid,
+                'gun': gun,
+                'slot_idx': slot_idx,
+            },
+            'degisiklik_sayisi': 1,
+        }
+
+    for detay in bos_slot_detaylari[:40]:
+        try:
+            gun = int(detay.get('gun'))
+        except (TypeError, ValueError):
+            continue
+        role = str(detay.get('gorev') or '').strip()
+        if not role:
+            continue
+
+        for personel in personeller:
+            pid = personel.id
+            if gun in (personel.mazeret_gunleri or set()):
+                key = ('mazeret_kaldir', pid, gun)
+                puanlar[key] = puanlar.get(key, 0) + 4
+                kayitlar[key] = {
+                    'id': f'mazeret-{pid}-{gun}',
+                    'tur': 'mazeret_kaldir',
+                    'baslik': f'{gun}. günde {personel.ad} mazeretini düzelt',
+                    'aciklama': (
+                        f"{personel.ad} için {gun}. gün mazereti yalnız analiz "
+                        'kopyasında kaldırılır.'
+                    ),
+                    'degisiklik': {'personel_id': pid, 'gun': gun},
+                    'degisiklik_sayisi': 1,
+                }
+
+            yetkiler = set(personel.yetkili_gorevler or set())
+            havuz = gorev_havuzlari.get(role)
+            if havuz is not None and pid not in havuz:
+                yetki_de_gerekli = bool(yetkiler and role not in yetkiler)
+                key = ('havuz_ekle', pid, role, yetki_de_gerekli)
+                puanlar[key] = puanlar.get(key, 0) + 3
+                kayitlar[key] = {
+                    'id': f'havuz-{pid}-{role}',
+                    'tur': 'havuz_ekle',
+                    'baslik': f'{personel.ad} kişisini {role} havuzuna ekle',
+                    'aciklama': (
+                        f"{personel.ad}, yalnız analiz kopyasında {role} havuzuna"
+                        + (' ve yetki listesine eklenir.' if yetki_de_gerekli else ' eklenir.')
+                    ),
+                    'degisiklik': {
+                        'personel_id': pid,
+                        'gorev': role,
+                        'yetki_de_ekle': yetki_de_gerekli,
+                    },
+                    'degisiklik_sayisi': 2 if yetki_de_gerekli else 1,
+                }
+            elif role not in yetkiler and (yetkiler or role in kritik_roller):
+                key = ('yetki_ekle', pid, role)
+                puanlar[key] = puanlar.get(key, 0) + 2
+                kayitlar[key] = {
+                    'id': f'yetki-{pid}-{role}',
+                    'tur': 'yetki_ekle',
+                    'baslik': f'{personel.ad} için {role} yetkisi ekle',
+                    'aciklama': (
+                        f"{role} yetkisi yalnız {personel.ad} analiz kopyasına eklenir."
+                    ),
+                    'degisiklik': {'personel_id': pid, 'gorev': role},
+                    'degisiklik_sayisi': 1,
+                }
+
+    sirali = sorted(
+        kayitlar.items(),
+        key=lambda item: (
+            -puanlar.get(item[0], 0),
+            int(item[1].get('degisiklik_sayisi', 1)),
+            str(item[0]),
+        ),
+    )
+    for key, kayit in sirali:
+        kayit['puan'] = puanlar.get(key, 0)
+        adaylar.append(kayit)
+        if len(adaylar) >= max(1, int(limit or 1)):
+            break
+    return adaylar[:max(1, int(limit or 1))]
+
+
+def _what_if_uygula(
+    aday: Dict,
+    personeller: List[SolverPersonel],
+    gorev_havuzlari: Dict[str, Set[int]],
+    manuel_atamalar: List[SolverAtama],
+    ara_gun: int,
+    kilitli_hedefler: Dict[Any, Dict[str, int]],
+) -> Tuple[
+    List[SolverPersonel], Dict[str, Set[int]], List[SolverAtama], int,
+    Dict[Any, Dict[str, int]],
+]:
+    """Senaryoyu yalnız derin kopyalara uygular; çağıranın verisi değişmez."""
+    yeni_personeller = deepcopy(personeller)
+    yeni_havuzlar = {str(role): set(ids or set()) for role, ids in gorev_havuzlari.items()}
+    yeni_manuel_atamalar = deepcopy(manuel_atamalar)
+    yeni_ara_gun = int(ara_gun)
+    yeni_kilitli_hedefler = deepcopy(kilitli_hedefler or {})
+    degisiklik = aday.get('degisiklik') or {}
+    tur = aday.get('tur')
+
+    if tur == 'ara_gun_azalt':
+        yeni_ara_gun = max(0, int(degisiklik.get('yeni_ara_gun', ara_gun)))
+        return (
+            yeni_personeller, yeni_havuzlar, yeni_manuel_atamalar,
+            yeni_ara_gun, yeni_kilitli_hedefler,
+        )
+
+    if tur == 'manuel_atama_kaldir':
+        try:
+            index = int(degisiklik.get('manuel_atama_index'))
+        except (TypeError, ValueError):
+            index = -1
+        if 0 <= index < len(yeni_manuel_atamalar):
+            yeni_manuel_atamalar.pop(index)
+        return (
+            yeni_personeller, yeni_havuzlar, yeni_manuel_atamalar,
+            yeni_ara_gun, yeni_kilitli_hedefler,
+        )
+
+    pid = degisiklik.get('personel_id')
+    personel = next((p for p in yeni_personeller if p.id == pid), None)
+    if personel is None:
+        return (
+            yeni_personeller, yeni_havuzlar, yeni_manuel_atamalar,
+            yeni_ara_gun, yeni_kilitli_hedefler,
+        )
+
+    if tur == 'mazeret_kaldir':
+        gun = int(degisiklik.get('gun', 0) or 0)
+        personel.mazeret_gunleri.discard(gun)
+        if isinstance(personel.izin_turleri, dict):
+            personel.izin_turleri.pop(gun, None)
+    elif tur == 'havuz_ekle':
+        role = str(degisiklik.get('gorev') or '')
+        yeni_havuzlar.setdefault(role, set()).add(pid)
+        if degisiklik.get('yetki_de_ekle'):
+            personel.yetkili_gorevler.add(role)
+    elif tur == 'yetki_ekle':
+        role = str(degisiklik.get('gorev') or '')
+        personel.yetkili_gorevler.add(role)
+    return (
+        yeni_personeller, yeni_havuzlar, yeni_manuel_atamalar,
+        yeni_ara_gun, yeni_kilitli_hedefler,
+    )
+
+
+def _what_if_senaryolari_coz(
+    *,
+    adaylar: List[Dict],
+    baseline: Dict,
+    deadline: Optional[float],
+    solver_kwargs: Dict,
+) -> List[Dict]:
+    """En fazla iki senaryoyu kısa tam-model geçişleriyle doğrular."""
+    sonuclar = []
+    for aday in adaylar[:2]:
+        kalan = _kalan_tam_saniye(deadline)
+        if deadline is not None and kalan < 1:
+            break
+        # What-if sayısı kadar süreyi büyütmeyelim: her senaryo tek saniyelik
+        # bağımsız, tam-model doğrulama geçişidir.
+        senaryo_suresi = 1
+        (
+            yeni_personeller,
+            yeni_havuzlar,
+            yeni_manuel_atamalar,
+            yeni_ara_gun,
+            yeni_kilitli_hedefler,
+        ) = _what_if_uygula(
+            aday,
+            solver_kwargs['personeller'],
+            solver_kwargs['gorev_havuzlari'],
+            solver_kwargs['manuel_atamalar'],
+            solver_kwargs['ara_gun'],
+            solver_kwargs['kilitli_hedefler'],
+        )
+        yeni_kwargs = dict(solver_kwargs)
+        yeni_kwargs.update({
+            'personeller': yeni_personeller,
+            'gorev_havuzlari': yeni_havuzlar,
+            'manuel_atamalar': yeni_manuel_atamalar,
+            'ara_gun': yeni_ara_gun,
+            'kilitli_hedefler': yeni_kilitli_hedefler,
+            'max_sure_saniye': senaryo_suresi,
+        })
+        solver = _kapasite_solver_olustur(**yeni_kwargs)
+        minimum_fn = getattr(solver, 'minimum_bosluk_coz', None)
+        if not callable(minimum_fn):
+            break
+        sonuc = minimum_fn(max_sure_saniye=senaryo_suresi)
+        payload = _kismi_cozum_payload(
+            sonuc,
+            solver_kwargs['gun_sayisi'] * len(solver_kwargs['gorevler']),
+        )
+        onceki_bos = baseline.get('bos_slot')
+        yeni_bos = payload.get('bos_slot')
+        durum = str(payload.get('solver_status') or 'UNKNOWN').upper()
+        gecerli_cozum = bool(
+            getattr(sonuc, 'basarili', False)
+            and durum in {'OPTIMAL', 'FEASIBLE'}
+            and yeni_bos is not None
+        )
+        if not gecerli_cozum:
+            continue
+        delta = (
+            int(onceki_bos) - int(yeni_bos)
+            if onceki_bos is not None and yeni_bos is not None else None
+        )
+        # Bilinen bir incumbent varken yalnız gerçekten daha çok slot dolduran
+        # senaryo çözüm önerisidir. Eşit/kötü ve UNKNOWN senaryolar raporlanmaz.
+        if onceki_bos is not None and (delta is None or delta <= 0):
+            continue
+        # Baseline ölçülemiyorsa sıradan bir pozitif-boşluk incumbent'ını
+        # "iyileştirme" diye sunamayız. Manuel hard çakışmayı kaldırarak ilk
+        # geçerli çizelgeyi üretmek veya tam dolu bir tanık bulmak yine somut
+        # ve doğrulanabilir bir karşı-olgusaldır.
+        if (
+            onceki_bos is None
+            and aday.get('tur') != 'manuel_atama_kaldir'
+            and int(yeni_bos) != 0
+        ):
+            continue
+        delta_kanitlandi = bool(
+            delta is not None
+            and delta > 0
+            and baseline.get('optimum_kanitlandi')
+            and payload.get('optimum_kanitlandi')
+        )
+        kayit = {k: v for k, v in aday.items() if k != 'puan'}
+        kayit.update({
+            'solver_status': payload['solver_status'],
+            'optimum_kanitlandi': payload['optimum_kanitlandi'],
+            'kesinlik': payload['kesinlik'],
+            'onceki_bos_slot': onceki_bos,
+            'bos_slot': yeni_bos,
+            'doldurulan_slot': payload['doldurulan_slot'],
+            'toplam_slot': payload['toplam_slot'],
+            'objective_bound': payload['objective_bound'],
+            'minimum_bosluk_alt_siniri': payload['minimum_bosluk_alt_siniri'],
+            'delta_bos_slot': delta,
+            'delta_kanitlandi': delta_kanitlandi,
+            'tam_doluluk_saglandi': yeni_bos == 0,
+            # Tek değişiklikli bir senaryonun işe yaraması, bunun en küçük
+            # düzeltme kümesi olduğunu kanıtlamaz.
+            'minimum_duzeltme_kanitlandi': False,
+            'otomatik_uygulandi': False,
+            'kapsam': {
+                'hedef_toplam': 'DEGISTIRILMEDI',
+                'kilitli_hedefler': 'DAHIL',
+                'otomatik_plan_hedefleri': 'HENUZ_URETILMEDI',
+            },
+        })
+        sonuclar.append(kayit)
+    return sonuclar
+
+
 def _tam_doluluk_fizibilite_kontrolu(
     gun_sayisi: int,
     gun_tipleri: Dict[int, str],
@@ -42,22 +609,17 @@ def _tam_doluluk_fizibilite_kontrolu(
     kisitlama_istisnalari: List[Dict],
     birlikte_istisnalari: List[Dict],
     aragun_istisnalari: List[Dict],
+    kilitli_hedefler: Dict[Any, Dict[str, int]],
     kurum_profili: str,
     max_sure_saniye: int,
+    gun_bazli_on_analiz: Optional[Dict] = None,
+    deadline: Optional[float] = None,
 ) -> Dict:
-    from ortools_solver import NobetSolver
-
-    hedefler = {}
-    for personel in personeller:
-        ust_sinir = gun_sayisi
-        if personel.max_nobet is not None:
-            ust_sinir = min(ust_sinir, max(0, int(personel.max_nobet)))
-        hedefler[personel.id] = {
-            'hedef_toplam': ust_sinir,
-            'hedef_tipler': {},
-        }
-
-    solver = NobetSolver(
+    toplam_slot = gun_sayisi * len(gorevler)
+    kalan = _kalan_tam_saniye(deadline)
+    mevcut_butce = max(1, kalan) if deadline is not None else max_sure_saniye
+    tam_sure = max(1, min(3, max(1, int(max_sure_saniye or 1) // 4), mevcut_butce))
+    solver_kwargs = dict(
         gun_sayisi=gun_sayisi,
         gun_tipleri=gun_tipleri,
         personeller=personeller,
@@ -67,43 +629,84 @@ def _tam_doluluk_fizibilite_kontrolu(
         kisitlama_istisnalari=kisitlama_istisnalari,
         birlikte_istisnalari=birlikte_istisnalari,
         aragun_istisnalari=aragun_istisnalari,
+        kilitli_hedefler=kilitli_hedefler,
         manuel_atamalar=manuel_atamalar,
-        hedefler=hedefler,
         ara_gun=ara_gun,
-        max_sure_saniye=max_sure_saniye,
-        leksikografik=False,
+        max_sure_saniye=tam_sure,
         kurum_profili=kurum_profili,
     )
-    sonuc = solver.tam_doluluk_fizibilitesi(max_sure_saniye=max_sure_saniye)
+    solver = _kapasite_solver_olustur(**solver_kwargs)
+    sonuc = solver.tam_doluluk_fizibilitesi(max_sure_saniye=tam_sure)
     istatistikler = sonuc.istatistikler or {}
     solver_durum = str(istatistikler.get('status') or '').upper()
     solver_bilgi = {
         'status': solver_durum or ('FEASIBLE' if sonuc.basarili else 'UNKNOWN'),
         'sure_ms': sonuc.sure_ms,
-        'toplam_slot': gun_sayisi * len(gorevler),
+        'toplam_slot': toplam_slot,
         'feasibility_debug': istatistikler.get('feasibility_debug') or {},
         'manual_conflicts': istatistikler.get('manual_conflicts') or [],
     }
 
     if sonuc.basarili and int(istatistikler.get('bos_slot_sayisi', 0) or 0) == 0:
-        return _fizibilite_sonucu('FEASIBLE', solver=solver_bilgi)
+        fizibilite = _fizibilite_sonucu('FEASIBLE', solver=solver_bilgi)
+        fizibilite.update({
+            'tam_doluluk_mumkun': True,
+            'kismi_cozum': None,
+            'teshis': {
+                'pencereler': [],
+                'rol_sorunlari': [],
+                'feasibility_debug': {},
+                'unsat_core': [],
+                'unsat_core_bilgisi': {},
+                'karsi_olgusal_oneriler': [],
+                'gun_bazli_on_analiz': gun_bazli_on_analiz or {},
+            },
+        })
+        return fizibilite
 
-    if solver_durum in {'UNKNOWN', 'MODEL_INVALID'}:
-        return _fizibilite_sonucu(
+    if solver_durum == 'MODEL_INVALID':
+        fizibilite = _fizibilite_sonucu(
             'UNKNOWN',
-            kod='MODEL_GECERSIZ' if solver_durum == 'MODEL_INVALID' else 'FIZIBILITE_BELIRLENEMEDI',
-            mesaj=(
-                'Tam çizelge modeli geçersiz oluşturuldu.'
-                if solver_durum == 'MODEL_INVALID'
-                else 'Tam çizelge modeli süre sınırı içinde kesin karar veremedi.'
-            ),
+            kod='MODEL_GECERSIZ',
+            mesaj='Tam çizelge modeli geçersiz oluşturuldu.',
             oneri='Kontrolü yeniden çalıştırın veya sert kısıtları sadeleştirin.',
             solver=solver_bilgi,
         )
+        fizibilite.update({
+            'tam_doluluk_mumkun': None,
+            'kismi_cozum': None,
+            'teshis': {
+                'pencereler': [],
+                'rol_sorunlari': [],
+                'feasibility_debug': solver_bilgi['feasibility_debug'],
+                'unsat_core': [],
+                'unsat_core_bilgisi': {},
+                'karsi_olgusal_oneriler': [],
+                'gun_bazli_on_analiz': gun_bazli_on_analiz or {},
+            },
+        })
+        return fizibilite
 
     if solver_durum == 'MANUAL_CONFLICT':
         ilk_cakisma = (solver_bilgi['manual_conflicts'] or [{}])[0]
-        return _fizibilite_sonucu(
+        manuel_adaylari = _what_if_adaylari(
+            ara_gun=ara_gun,
+            personeller=personeller,
+            gorevler=gorevler,
+            gorev_havuzlari=gorev_havuzlari,
+            bos_slot_detaylari=[],
+            manuel_atamalar=manuel_atamalar,
+            manuel_cakismalar=solver_bilgi['manual_conflicts'],
+            manuel_cakisma=True,
+            limit=2,
+        )
+        manuel_senaryolari = _what_if_senaryolari_coz(
+            adaylar=manuel_adaylari,
+            baseline={'bos_slot': None, 'optimum_kanitlandi': False},
+            deadline=deadline,
+            solver_kwargs=solver_kwargs,
+        )
+        fizibilite = _fizibilite_sonucu(
             'INFEASIBLE',
             kod='MANUEL_ATAMA_CAKISMASI',
             mesaj=ilk_cakisma.get('mesaj') or sonuc.mesaj,
@@ -111,15 +714,228 @@ def _tam_doluluk_fizibilite_kontrolu(
             detay={'manual_conflicts': solver_bilgi['manual_conflicts'][:20]},
             solver=solver_bilgi,
         )
+        fizibilite.update({
+            'tam_doluluk_mumkun': False,
+            # Çelişkili hard manuel atamalar varken geçerli bir kısmi çizelge
+            # yoktur. Hiçbir manuel kural sessizce atlanmaz.
+            'kismi_cozum': None,
+            'teshis': {
+                'pencereler': [],
+                'rol_sorunlari': [],
+                'feasibility_debug': solver_bilgi['feasibility_debug'],
+                'unsat_core': [],
+                'unsat_core_bilgisi': {},
+                'karsi_olgusal_oneriler': manuel_senaryolari,
+                'gun_bazli_on_analiz': gun_bazli_on_analiz or {},
+                'kismi_cozum_engeli': 'MANUEL_ATAMA_CAKISMASI',
+            },
+        })
+        return fizibilite
 
-    return _fizibilite_sonucu(
+    # Tam-doluluk geçişi INFEASIBLE ise minimum boşluğu buluruz. İlk geçiş
+    # UNKNOWN olsa da kalan bütçede aynı tam modelin min-boşluk geçişi ikinci
+    # bir karar yolu sağlar: sıfır boşluk tanığı fizibiliteyi, OPTIMAL pozitif
+    # boşluk ise imkânsızlığı kanıtlar.
+    kalan = _kalan_tam_saniye(deadline)
+    if deadline is not None and kalan < 1:
+        minimum_sonuc = None
+    else:
+        # Core + en çok iki what-if için üç saniye rezerve edilir.
+        min_tavan = max(1, int(max_sure_saniye or 1) // 3)
+        minimum_sure = max(
+            1,
+            min(
+                min_tavan,
+                max(1, kalan - 3) if deadline is not None else min_tavan,
+            ),
+        )
+        minimum_fn = getattr(solver, 'minimum_bosluk_coz', None)
+        minimum_sonuc = (
+            minimum_fn(max_sure_saniye=minimum_sure)
+            if callable(minimum_fn) else None
+        )
+    kismi_cozum = _kismi_cozum_payload(minimum_sonuc, toplam_slot)
+    minimum_istatistik = (
+        getattr(minimum_sonuc, 'istatistikler', None) or {}
+        if minimum_sonuc is not None else {}
+    )
+    feasibility_debug = (
+        minimum_istatistik.get('feasibility_debug')
+        or solver_bilgi['feasibility_debug']
+        or {}
+    )
+
+    min_status = str(kismi_cozum.get('solver_status') or 'UNKNOWN').upper()
+    min_bos = kismi_cozum.get('bos_slot')
+    min_cozum_var = bool(
+        minimum_sonuc is not None
+        and getattr(minimum_sonuc, 'basarili', False)
+        and min_bos is not None
+    )
+    tam_imkansiz_kanitlandi = solver_durum == 'INFEASIBLE'
+
+    if solver_durum == 'UNKNOWN' and min_cozum_var and int(min_bos) == 0:
+        solver_bilgi.update({
+            'karar_kaynagi': 'MINIMUM_BOSLUK_SIFIR_TANIK',
+            'minimum_bosluk_status': min_status,
+        })
+        fizibilite = _fizibilite_sonucu(
+            'FEASIBLE',
+            mesaj='Tam-doluluk geçişi süreye takıldı; minimum-boşluk modeli tam dolu geçerli çizelge buldu.',
+            solver=solver_bilgi,
+        )
+        fizibilite.update({
+            'tam_doluluk_mumkun': True,
+            'kismi_cozum': kismi_cozum,
+            'teshis': {
+                'pencereler': [],
+                'rol_sorunlari': [],
+                'feasibility_debug': feasibility_debug,
+                'unsat_core': [],
+                'unsat_core_bilgisi': {},
+                'karsi_olgusal_oneriler': [],
+                'gun_bazli_on_analiz': gun_bazli_on_analiz or {},
+            },
+        })
+        return fizibilite
+
+    if solver_durum == 'UNKNOWN':
+        if min_status == 'OPTIMAL' and min_bos is not None and int(min_bos) > 0:
+            tam_imkansiz_kanitlandi = True
+            solver_bilgi.update({
+                'karar_kaynagi': 'MINIMUM_BOSLUK_OPTIMUM',
+                'minimum_bosluk_status': min_status,
+            })
+        elif min_status in {'INFEASIBLE', 'MANUAL_CONFLICT'}:
+            tam_imkansiz_kanitlandi = True
+            solver_bilgi.update({
+                'karar_kaynagi': 'MINIMUM_BOSLUK_TABAN_MODEL',
+                'minimum_bosluk_status': min_status,
+            })
+        else:
+            # FEASIBLE pozitif boşluk yalnız bir incumbent'tır. Tam çözümün
+            # bulunamadığını gösterir, imkânsız olduğunu kanıtlamaz.
+            fizibilite = _fizibilite_sonucu(
+                'UNKNOWN',
+                kod='FIZIBILITE_BELIRLENEMEDI',
+                mesaj=(
+                    'Tam doluluğun mümkün olup olmadığı süre sınırı içinde kanıtlanamadı.'
+                    + (
+                        f" Geçerli bir kısmi çizelgede {min_bos} boş slot bulundu."
+                        if min_cozum_var else ''
+                    )
+                ),
+                oneri='Süre sınırını artırıp analizi yeniden çalıştırın.',
+                solver=solver_bilgi,
+            )
+            fizibilite.update({
+                'tam_doluluk_mumkun': None,
+                'kismi_cozum': kismi_cozum if min_cozum_var else None,
+                'teshis': {
+                    'pencereler': [],
+                    'rol_sorunlari': list(feasibility_debug.get('role_ara_gun_capacity_issues') or []),
+                    'feasibility_debug': feasibility_debug,
+                    'unsat_core': [],
+                    'unsat_core_bilgisi': {},
+                    'karsi_olgusal_oneriler': [],
+                    'gun_bazli_on_analiz': gun_bazli_on_analiz or {},
+                },
+            })
+            return fizibilite
+
+    if not tam_imkansiz_kanitlandi:
+        # Tanınmayan solver statüsü asla kesin imkânsızlık olarak sunulmaz.
+        fizibilite = _fizibilite_sonucu(
+            'UNKNOWN',
+            kod='FIZIBILITE_BELIRLENEMEDI',
+            mesaj='Tam model kesin bir fizibilite kararı üretemedi.',
+            oneri='Analizi yeniden çalıştırın.',
+            solver=solver_bilgi,
+        )
+        fizibilite.update({
+            'tam_doluluk_mumkun': None,
+            'kismi_cozum': kismi_cozum if min_cozum_var else None,
+            'teshis': {
+                'pencereler': [],
+                'rol_sorunlari': [],
+                'feasibility_debug': feasibility_debug,
+                'unsat_core': [],
+                'unsat_core_bilgisi': {},
+                'karsi_olgusal_oneriler': [],
+                'gun_bazli_on_analiz': gun_bazli_on_analiz or {},
+            },
+        })
+        return fizibilite
+
+    core_bilgisi: Dict = {}
+    kalan = _kalan_tam_saniye(deadline)
+    core_fn = getattr(solver, 'diagnose_tam_doluluk_with_unsat_core', None)
+    if callable(core_fn) and (deadline is None or kalan >= 1):
+        core_bilgisi = core_fn(max_sure_saniye=1) or {}
+
+    adaylar = _what_if_adaylari(
+        ara_gun=ara_gun,
+        personeller=personeller,
+        gorevler=gorevler,
+        gorev_havuzlari=gorev_havuzlari,
+        bos_slot_detaylari=kismi_cozum['bos_slot_detaylari'],
+        manuel_atamalar=manuel_atamalar,
+        limit=2,
+    )
+    what_if_sonuclari = _what_if_senaryolari_coz(
+        adaylar=adaylar,
+        baseline=kismi_cozum,
+        deadline=deadline,
+        solver_kwargs=solver_kwargs,
+    )
+
+    on_analiz_neden = (gun_bazli_on_analiz or {}).get('neden') or {}
+    on_analiz_detay = dict(on_analiz_neden.get('detay') or {})
+    pencereler = list(on_analiz_detay.get('ara_gun_pencere_aciklari') or [])
+    rol_sorunlari = list(feasibility_debug.get('role_ara_gun_capacity_issues') or [])
+    teshis = {
+        'pencereler': pencereler,
+        'rol_sorunlari': rol_sorunlari,
+        'feasibility_debug': feasibility_debug,
+        'unsat_core': list(core_bilgisi.get('core_groups') or []),
+        'unsat_core_bilgisi': core_bilgisi,
+        'karsi_olgusal_oneriler': what_if_sonuclari,
+        'gun_bazli_on_analiz': gun_bazli_on_analiz or {},
+    }
+    if not min_cozum_var:
+        teshis['kismi_cozum_engeli'] = min_status
+
+    if (gun_bazli_on_analiz or {}).get('durum') == 'INFEASIBLE':
+        kod = on_analiz_neden.get('kod') or 'TAM_CIZELGE_KISIT_CAKISMASI'
+        mesaj = on_analiz_neden.get('mesaj') or 'Tam doluluk mümkün değil.'
+        oneri = (gun_bazli_on_analiz or {}).get('oneri')
+        neden_detay = on_analiz_detay
+    else:
+        kod = 'TAM_CIZELGE_KISIT_CAKISMASI'
+        mesaj = 'Görev, havuz, mazeret, ara gün, manuel ve personel kurallarıyla tüm slotlar doldurulamıyor.'
+        oneri = 'Boş görevleri ve kanıt düzeyi belirtilen karşı-olgusal seçenekleri inceleyin.'
+        neden_detay = {}
+    neden_detay.update({
+        'feasibility_debug': feasibility_debug,
+        'minimum_bosluk_status': kismi_cozum['solver_status'],
+        'bos_slot': kismi_cozum['bos_slot'],
+        'optimum_kanitlandi': kismi_cozum['optimum_kanitlandi'],
+    })
+
+    fizibilite = _fizibilite_sonucu(
         'INFEASIBLE',
-        kod='TAM_CIZELGE_KISIT_CAKISMASI',
-        mesaj='Görev, havuz, mazeret, ara gün, manuel ve personel kurallarıyla tüm slotlar doldurulamıyor.',
-        oneri='Riskli günleri, görev havuzlarını ve hard birlikte/ayrı kurallarını gözden geçirin.',
-        detay={'feasibility_debug': solver_bilgi['feasibility_debug']},
+        kod=kod,
+        mesaj=mesaj,
+        oneri=oneri,
+        detay=neden_detay,
         solver=solver_bilgi,
     )
+    fizibilite.update({
+        'tam_doluluk_mumkun': False,
+        'kismi_cozum': kismi_cozum if min_cozum_var else None,
+        'teshis': teshis,
+    })
+    return fizibilite
 
 
 def gun_bazli_fizibilite_kontrolu(
@@ -370,19 +1186,18 @@ def gun_bazli_fizibilite_kontrolu(
             for bitis in range(baslangic, gun_sayisi + 1):
                 ust_kapasite = 0
                 for pid in pids:
-                    uygun = [
+                    uygun = {
                         gun for gun in range(baslangic, bitis + 1)
                         if musait_mi(pid, gun)
-                    ]
-                    secilen = []
-                    for gun in uygun:
-                        if not secilen or gun - secilen[-1] > ara_gun:
-                            secilen.append(gun)
-                    istisna_sayisi = sum(
-                        1 for gun1, gun2 in aragun_istisna_map.get(pid, set())
-                        if gun1 in uygun and gun2 in uygun
+                    }
+                    ust_kapasite += _pencere_kisi_ust_kapasitesi(
+                        pid=pid,
+                        uygun_gunler=uygun,
+                        baslangic=baslangic,
+                        bitis=bitis,
+                        ara_gun=ara_gun,
+                        aragun_istisnalari=aragun_istisna_map.get(pid, set()),
                     )
-                    ust_kapasite += min(len(uygun), len(secilen) + istisna_sayisi)
                 pencere_gun = bitis - baslangic + 1
                 talep = pencere_gun * slot_sayisi
                 if ust_kapasite < talep:
@@ -500,8 +1315,12 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
                      kurallar: Optional[List[SolverKural]] = None,
                      gorev_havuzlari: Optional[Dict[str, Set[int]]] = None,
                      kisitlama_istisnalari: Optional[List[Dict]] = None,
+                     kilitli_hedefler: Optional[Dict[Any, Dict[str, int]]] = None,
                      kurum_profili: str = 'genel',
                      max_sure_saniye: int = 10) -> Dict:
+    analiz_baslangici = time.monotonic()
+    toplam_butce = max(1, int(max_sure_saniye or 10))
+    deadline = analiz_baslangici + toplam_butce
     slot_sayisi = int(slot_sayisi or 0)
     ara_gun = int(ara_gun or 0)
     if slot_sayisi < 1:
@@ -532,6 +1351,7 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
     aragun_istisnalari = list(aragun_istisnalari or [])
     gorev_havuzlari = dict(gorev_havuzlari or {})
     kisitlama_istisnalari = list(kisitlama_istisnalari or [])
+    kilitli_hedefler = dict(kilitli_hedefler or {})
 
     tip_sayilari = {t: 0 for t in GUN_TIPLERI}
     for g, tip in gun_tipleri.items():
@@ -539,7 +1359,9 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
             tip_sayilari[tip] += 1
 
     tip_slotlari = {t: tip_sayilari[t] * slot_sayisi for t in GUN_TIPLERI}
-    toplam_slot = sum(tip_slotlari.values())
+    # Otoritatif talep gerçek gün × gerçek görev-slotu sayısıdır. Gün tipi
+    # kırılımında tanınmayan/eksik bir etiket toplam talebi küçültmemelidir.
+    toplam_slot = gun_sayisi * slot_sayisi
 
     kapasite_listesi = []
     for p in personeller:
@@ -556,16 +1378,26 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
             'musait_tipler': musait
         })
 
-    gun_bazli_fizibilite = gun_bazli_fizibilite_kontrolu(
-        gun_sayisi=gun_sayisi,
-        personeller=personeller,
-        slot_sayisi=slot_sayisi,
-        ara_gun=ara_gun,
-        manuel_atamalar=manuel_atamalar,
-        birlikte_kurallar=birlikte_kurallari,
-        birlikte_istisnalari=birlikte_istisnalari,
-        aragun_istisnalari=aragun_istisnalari,
-    )
+    if toplam_butce >= 2:
+        gun_bazli_fizibilite = gun_bazli_fizibilite_kontrolu(
+            gun_sayisi=gun_sayisi,
+            personeller=personeller,
+            slot_sayisi=slot_sayisi,
+            ara_gun=ara_gun,
+            manuel_atamalar=manuel_atamalar,
+            birlikte_kurallar=birlikte_kurallari,
+            birlikte_istisnalari=birlikte_istisnalari,
+            aragun_istisnalari=aragun_istisnalari,
+            max_sure_saniye=1,
+        )
+    else:
+        gun_bazli_fizibilite = _fizibilite_sonucu(
+            'UNKNOWN',
+            kod='ON_ANALIZ_BUTCE_YOK',
+            mesaj='Hızlı danışman analizi süre bütçesini tam modele bırakmak için atlandı.',
+            oneri='Daha ayrıntılı pencere analizi için süre sınırını artırın.',
+            solver={'status': 'SKIPPED'},
+        )
 
     tam_fizibilite = _tam_doluluk_fizibilite_kontrolu(
         gun_sayisi=gun_sayisi,
@@ -579,15 +1411,16 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
         kisitlama_istisnalari=kisitlama_istisnalari,
         birlikte_istisnalari=birlikte_istisnalari,
         aragun_istisnalari=aragun_istisnalari,
+        kilitli_hedefler=kilitli_hedefler,
         kurum_profili=kurum_profili,
         max_sure_saniye=max_sure_saniye,
+        gun_bazli_on_analiz=gun_bazli_fizibilite,
+        deadline=deadline,
     )
 
-    if tam_fizibilite['durum'] == 'INFEASIBLE' and gun_bazli_fizibilite['durum'] == 'INFEASIBLE':
-        gun_bazli_fizibilite['solver'] = tam_fizibilite.get('solver') or {}
-        fizibilite = gun_bazli_fizibilite
-    else:
-        fizibilite = tam_fizibilite
+    # Tek otorite gerçek kişi × gün × görev-slotu modelidir. Kişi-gün modeli
+    # yalnız açıklayıcı ön analiz olarak ``teshis`` altında taşınır.
+    fizibilite = tam_fizibilite
 
     durum = fizibilite['durum']
     uygulanabilir = True if durum == 'FEASIBLE' else False if durum == 'INFEASIBLE' else None
@@ -599,9 +1432,21 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
     else:
         mesaj = f"{durum}: {neden_mesaji or 'Fizibilite kesinleştirilemedi.'}"
 
+    kapsam = {
+        'otoritatif_model': 'KISI_GUN_GOREV_SLOTU',
+        'hard_operasyon_kisitlari': 'DAHIL',
+        'kilitli_hedefler': 'DAHIL' if kilitli_hedefler else 'YOK',
+        'kilitli_hedef_sayisi': len(kilitli_hedefler),
+        # Otomatik hedef/adalet planı bu endpoint'ten sonra üretildiği için
+        # fiziksel fizibilite hükmünün parçası değildir; bu açıkça raporlanır.
+        'otomatik_plan_hedefleri': 'HENUZ_URETILMEDI',
+    }
+    fizibilite['kapsam'] = kapsam
+
     return {
         'durum': durum,
         'uygulanabilir': uygulanabilir,
+        'tam_doluluk_mumkun': fizibilite.get('tam_doluluk_mumkun'),
         'mesaj': mesaj,
         'neden': fizibilite.get('neden'),
         'oneri': fizibilite.get('oneri'),
@@ -611,5 +1456,9 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
         'toplam_slot': toplam_slot,
         'personel_sayisi': len(personeller),
         'kapasiteler': kapasite_listesi,
+        'kismi_cozum': fizibilite.get('kismi_cozum'),
+        'teshis': fizibilite.get('teshis') or {},
+        'kapsam': kapsam,
+        'analiz_suresi_ms': int((time.monotonic() - analiz_baslangici) * 1000),
         'fizibilite': fizibilite,
     }

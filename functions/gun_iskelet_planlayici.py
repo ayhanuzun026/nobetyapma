@@ -37,6 +37,9 @@ class GunIskeletPlanlayici:
         ara_gun: int = 2,
         gorev_kisitlamalari: Optional[Dict[int, dict]] = None,
         gorev_havuzlari: Optional[Dict[str, Set[int]]] = None,
+        kisitlama_istisnalari: Optional[List[Dict]] = None,
+        birlikte_istisnalari: Optional[List[Dict]] = None,
+        aragun_istisnalari: Optional[List[Dict]] = None,
     ):
         self.gun_sayisi = gun_sayisi
         self.gun_tipleri = gun_tipleri
@@ -49,6 +52,47 @@ class GunIskeletPlanlayici:
         self.ara_gun = ara_gun
         self.gorev_kisitlamalari = gorev_kisitlamalari or {}
         self.gorev_havuzlari = gorev_havuzlari or {}
+        # Hazırlık iskeleti, hedef ve gerçek solver ile aynı onaylı
+        # istisna bağlamını kullanmalıdır. Kimlikleri burada tekrar normalize
+        # etmek, doğrudan bu sınıfı kullanan çağrıları da güvenli tutar.
+        self.kisitlama_istisna_map: Dict[Tuple[int, int], Set[str]] = {}
+        for raw in kisitlama_istisnalari or []:
+            try:
+                pid = find_matching_id(
+                    raw.get("personel_id", raw.get("personelId")),
+                    self.personeller.keys(),
+                )
+                gun = int(raw.get("gun", 0) or 0)
+                rol = raw.get("istisna_gorev", raw.get("istisnaGorev"))
+                if pid is not None and gun > 0 and rol:
+                    self.kisitlama_istisna_map.setdefault((pid, gun), set()).add(str(rol))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        self.birlikte_istisna_set: Set[Tuple[int, int]] = set()
+        for raw in birlikte_istisnalari or []:
+            try:
+                pid = find_matching_id(
+                    raw.get("personel_id", raw.get("personelId")),
+                    self.personeller.keys(),
+                )
+                gun = int(raw.get("gun", 0) or 0)
+                if pid is not None and gun > 0:
+                    self.birlikte_istisna_set.add((pid, gun))
+            except (AttributeError, TypeError, ValueError):
+                continue
+        self.aragun_istisna_set: Set[Tuple[int, int, int]] = set()
+        for raw in aragun_istisnalari or []:
+            try:
+                pid = find_matching_id(
+                    raw.get("personel_id", raw.get("personelId")),
+                    self.personeller.keys(),
+                )
+                gun1 = int(raw.get("gun1", 0) or 0)
+                gun2 = int(raw.get("gun2", 0) or 0)
+                if pid is not None and gun1 > 0 and gun2 > 0:
+                    self.aragun_istisna_set.add((pid, min(gun1, gun2), max(gun1, gun2)))
+            except (AttributeError, TypeError, ValueError):
+                continue
         self.gunluk_kapasite = max(len(gorevler), 1)
 
         # Exclusive görev setini hazırla
@@ -201,7 +245,12 @@ class GunIskeletPlanlayici:
         if self.ara_gun <= 0:
             return False
         for mevcut in self.planlanan_gunler[pid]:
-            if mevcut != gun and abs(mevcut - gun) <= self.ara_gun:
+            if (
+                mevcut != gun
+                and abs(mevcut - gun) <= self.ara_gun
+                and (pid, min(mevcut, gun), max(mevcut, gun))
+                    not in getattr(self, "aragun_istisna_set", set())
+            ):
                 return True
         return False
 
@@ -225,19 +274,26 @@ class GunIskeletPlanlayici:
         tasma_gorevi = kisit.get("tasmaGorevi") if kisit else getattr(personel, "tasma_gorevi", None)
         return kisitli_gorev, tasma_gorevi
 
-    def _role_personel_uygun_mu(self, pid: int, rol: str) -> bool:
+    def _role_personel_uygun_mu(self, pid: int, rol: str, gun: Optional[int] = None) -> bool:
         if pid not in self.personeller:
             return False
 
         kisitli_gorev, tasma_gorevi = self._personel_rol_kisitlari(pid)
+        izinli_istisna = (
+            gun is not None
+            and rol in getattr(self, "kisitlama_istisna_map", {}).get((pid, int(gun)), set())
+        )
 
-        if kisitli_gorev and rol not in {kisitli_gorev, tasma_gorevi}:
+        if kisitli_gorev and rol not in {kisitli_gorev, tasma_gorevi} and not izinli_istisna:
             return False
 
         allowed_ids = self.gorev_havuzlari.get(rol)
         if allowed_ids is not None and pid not in allowed_ids:
-            if rol not in {kisitli_gorev, tasma_gorevi}:
-                return False
+            # Günlük kısıtlama istisnası yalnız kişinin kısıtlı görev hard
+            # kuralını (H7) açar. Otoritatif görev havuzu (H10) ve exclusive
+            # rol erişimi istisna ile bypass edilemez; final solver ile aynı
+            # aday kümesini koru.
+            return False
 
         if rol in self.exclusive_gorevler and rol not in {kisitli_gorev, tasma_gorevi}:
             if allowed_ids is None or pid not in allowed_ids:
@@ -261,7 +317,7 @@ class GunIskeletPlanlayici:
                 continue
             if not self._gun_rol_kapasitesi_var_mi(gun, rol):
                 continue
-            if not self._role_personel_uygun_mu(pid, rol):
+            if not self._role_personel_uygun_mu(pid, rol, gun=gun):
                 continue
             roller.append(rol)
 
@@ -356,6 +412,12 @@ class GunIskeletPlanlayici:
         adaylar = []
         for gun in range(1, self.gun_sayisi + 1):
             tip = self.gun_tipleri.get(gun)
+            # Onaylı birlikte istisnası olan kişi-günlerde grubun ortak gün
+            # yerleştirmesi yapılmaz. Bu gün, istisnalı üye(ler) için hard
+            # birlikte zorunluluğu olmadığı için daha sonra bireysel geçişte
+            # bağımsız aday olarak değerlendirilecektir.
+            if any((pid, gun) in getattr(self, "birlikte_istisna_set", set()) for pid in grup):
+                continue
             if not self._gun_kapasitesi_var_mi(gun, len(grup)):
                 continue
 

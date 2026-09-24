@@ -8,7 +8,11 @@ from unittest.mock import patch
 from firestore_logger import _chunk_json, _redact
 from gun_iskelet_planlayici import GunIskeletPlanlayici
 from hedef_hesaplayici import HedefHesaplayici
-from kapasite import kapasite_hesapla
+from kapasite import (
+    _what_if_senaryolari_coz,
+    kapasite_hesapla,
+    gun_bazli_fizibilite_kontrolu,
+)
 from ortools_solver import NobetSolver
 from parsers import (
     parse_gorev_havuzlari,
@@ -18,7 +22,9 @@ from parsers import (
     parse_solver_gorevler_nobet_coz,
     parse_solver_personeller_hedef,
 )
-from planlayici import frontend_kilitli_hedefleri_topla, plan_kontrati_hash_yenile
+from planlayici import (
+    frontend_kilitli_hedefleri_topla, plan_kontrati_hash_yenile, plan_girdi_hash,
+)
 from preflight_analyzer import analyze_preflight
 from solve_strategy import solve_with_diagnostics
 from solver_models import SolverAtama, SolverGorev, SolverKural, SolverPersonel, SolverSonuc
@@ -42,6 +48,24 @@ def test_js_safe_ids():
     assert normalize_id("abc") == text_id
 
 
+def test_preview_and_final_plan_input_hash_ignores_generated_targets():
+    payload = {
+        "yil": 2026, "ay": 9, "gunSayisi": 30, "slotSayisi": 1,
+        "araGun": 2, "saatDegerleri": {"hici": 8},
+        "personeller": [{"id": 1, "ad": "A", "gorevKotalari": {"R": 2}}],
+        "gorevler": [{"id": "r", "ad": "R", "baseName": "R"}],
+        "gorevKisitlamalari": [], "kurallar": [], "manuelAtamalar": [],
+        "gorevHavuzlari": {}, "kilitliHedefler": {},
+    }
+    assert plan_girdi_hash(payload) == plan_girdi_hash(deepcopy(payload))
+    degisen = deepcopy(payload)
+    degisen["personeller"][0]["gorevKotalari"]["R"] = 3
+    degisen["personeller"][0]["hici"] = 5
+    assert plan_girdi_hash(payload) == plan_girdi_hash(degisen)
+    degisen["manuelAtamalar"] = [{"personelId": 1, "gun": 1, "slotIdx": 0}]
+    assert plan_girdi_hash(payload) != plan_girdi_hash(degisen)
+
+
 def test_ara_gun_semantigi():
     gun_tipleri = {g: "hici" for g in range(1, 6)}
     personel = SolverPersonel(id=1, ad="A")
@@ -62,6 +86,64 @@ def test_ara_gun_semantigi():
     planlayici.planlanan_gunler = {1: {1}}
     assert planlayici._ara_gun_ihlali_var_mi(1, 3) is True
     assert planlayici._ara_gun_ihlali_var_mi(1, 4) is False
+
+
+def test_p0_http_preview_solve_and_stale_manual_edit():
+    """Gerçek endpoint/parser/solver zinciri; yalnız auth ve log I/O sahtedir."""
+    import main
+    from flask import Flask, request
+    from parsers import build_gun_tipleri
+
+    app = Flask(__name__)
+    data = {
+        "sozlesmeSurumu": 2, "yil": 2026, "ay": 2,
+        "gunSayisi": 28, "slotSayisi": 1, "araGun": 2, "maxSure": 5,
+        "gunTipleri": build_gun_tipleri(2026, 2, 28, []),
+        "personeller": [{"id": i, "ad": "Ayni Isim", "yillikGerceklesen": {"cmt": i},
+                          "gecmisVeriDurumu": "tam"} for i in range(1, 5)],
+        "gorevler": [{"id": 10, "ad": "Acil", "baseName": "Acil"}],
+        "tamirPolitikasi": {"mod": "strict", "otomatikGevsetme": False},
+        "saatDegerleri": {"hici": 7, "prs": 9, "cum": 15, "cmt": 23, "pzr": 17},
+    }
+
+    def call(endpoint, payload):
+        with app.test_request_context('/', method='POST', json=payload):
+            return endpoint.__wrapped__(request)
+
+    with patch.object(main, '_authorized', return_value=True), patch.object(main, 'log_session'):
+        preview = call(main.nobet_hedef_hesapla, data)
+        assert preview.status_code == 200, preview.get_data(as_text=True)
+        plan = preview.get_json()
+        assert plan['basari'], plan
+        final_data = deepcopy(data)
+        final_data.pop('gunSayisi')
+        final_data.pop('gunTipleri')
+        final_data['planHash'] = plan['planHash']
+        for personel, hedef in zip(final_data['personeller'], plan['hedefler']):
+            assert personel['id'] == hedef['id']
+            personel['gorevKotalari'] = hedef.get('gorev_kotalari', {})
+            for tip in ('hici', 'prs', 'cum', 'cmt', 'pzr'):
+                personel[tip] = hedef.get('hedef_' + tip, 0)
+        final = call(main.nobet_coz, final_data)
+        assert final.status_code == 200, final.get_data(as_text=True)
+        result = final.get_json()
+        assert result['basari'], result
+        assert len(result['atamalar']) == 28
+        assert {a['personel_id'] for a in result['atamalar']} == {1, 2, 3, 4}
+
+        modified = deepcopy(final_data)
+        modified['manuelAtamalar'] = [{'personelId': 1, 'gun': 1, 'slotIdx': 0}]
+        with patch.object(main, 'ortak_plan_uret') as planner:
+            stale = call(main.nobet_coz, modified)
+            assert stale.status_code == 409, stale.get_data(as_text=True)
+            planner.assert_not_called()
+
+        # Yeni manuel girdi yeniden hedef hesabına ve farklı imzaya yansır.
+        modified.update(gunSayisi=28, gunTipleri=data['gunTipleri'])
+        refreshed = call(main.nobet_hedef_hesapla, modified).get_json()
+        assert refreshed['basari'], refreshed
+        assert refreshed['planHash'] != plan['planHash']
+        assert refreshed['planKontrati']['personeller'][0]['kilitli_gunler'] == [1]
 
 
 def test_contract_v2_fields_and_explicit_target_locks():
@@ -510,6 +592,52 @@ def _takas_solver(personeller, gorevler=None, ara_gun=2, gun_sayisi=3, kurum_pro
     )
 
 
+def _aragun_istisnali_danisman_solver():
+    return NobetSolver(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A")],
+        gorevler=[SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")],
+        hedefler={1: {"hedef_toplam": 2, "hedef_tipler": {"hici": 2}}},
+        ara_gun=1,
+        aragun_istisnalari=[{"personel_id": 1, "gun1": 1, "gun2": 2}],
+        max_sure_saniye=2,
+    )
+
+
+def test_rol_kapasite_danismani_aragun_istisnasini_hesaba_katar():
+    solver = _aragun_istisnali_danisman_solver()
+    debug = solver._build_feasibility_diagnostics()
+
+    assert debug["role_ara_gun_capacity_issues"] == [], debug
+    assert solver._max_assignable_with_ara_gun([1, 2], personel_id=1) == 2
+
+
+def test_bos_slot_aciklamasi_aragun_istisnasini_engel_saymaz():
+    solver = _aragun_istisnali_danisman_solver()
+    aciklamalar = solver._bos_slot_aciklamalari([
+        {"gun": 1, "slot_idx": 0, "personel_id": 1},
+    ])
+    gun2 = next(item for item in aciklamalar if item["gun"] == 2)
+
+    assert gun2["sebep_sayilari"].get("ara_gun", 0) == 0, gun2
+    assert gun2["sebep_sayilari"].get("serbest") == 1, gun2
+
+
+def test_takas_danismani_aragun_istisnali_cifti_uygun_kabul_eder():
+    solver = _aragun_istisnali_danisman_solver()
+    oneriler = solver._bos_slot_takas_onerileri([
+        {"gun": 1, "slot_idx": 0, "personel_id": 1},
+    ])
+    dogrudan = [
+        oneri for oneri in oneriler
+        if oneri["tur"] == "dogrudan_atama" and oneri["gun"] == 2
+    ]
+
+    assert len(dogrudan) == 1, oneriler
+    assert dogrudan[0]["personel_id"] == 1
+
+
 def test_takas_onerileri_ikili_takas_dogrudan_ve_negatif():
     # "Atanamama durumunda sor" — boş slotlar için salt-okunur, doğrulanmış
     # eyleme dönük öneriler (çoklu çözüm kartı). Analiz solve'dan bağımsız
@@ -697,6 +825,40 @@ def test_together_is_hard_and_manual_ara_gun_is_not_implicit():
     conflict_codes = {c["code"] for c in manuel_solver._manual_hard_conflict_diagnostics()}
     assert "ARA_GUN_IHLALI" in conflict_codes
     assert manuel_solver.aragun_istisna_set == set()
+
+
+def test_manuel_aragun_tanisi_istisnali_zincirde_tum_ciftleri_kontrol_eder():
+    """Komşu çift istisnaları, kapsamdaki ilk-son ihlalini gizleyemez."""
+    solver = NobetSolver(
+        gun_sayisi=3,
+        gun_tipleri={1: "hici", 2: "hici", 3: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A")],
+        gorevler=[SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")],
+        manuel_atamalar=[
+            SolverAtama(personel_id=1, gun=1, slot_idx=0),
+            SolverAtama(personel_id=1, gun=2, slot_idx=0),
+            SolverAtama(personel_id=1, gun=3, slot_idx=0),
+        ],
+        aragun_istisnalari=[
+            {"personel_id": 1, "gun1": 1, "gun2": 2},
+            {"personel_id": 1, "gun1": 2, "gun2": 3},
+        ],
+        hedefler={1: {"hedef_toplam": 3, "hedef_tipler": {"hici": 3}}},
+        ara_gun=2,
+        max_sure_saniye=2,
+    )
+
+    conflicts = solver._manual_hard_conflict_diagnostics()
+    ara_gun_pairs = {
+        (item["gun1"], item["gun2"])
+        for item in conflicts
+        if item["code"] == "ARA_GUN_IHLALI"
+    }
+    assert ara_gun_pairs == {(1, 3)}, conflicts
+
+    sonuc = solver.minimum_bosluk_coz(2)
+    assert sonuc.basarili is False
+    assert sonuc.istatistikler["status"] == "MANUAL_CONFLICT"
 
 
 def test_critical_role_quota_is_not_authority():
@@ -945,6 +1107,77 @@ def test_preflight_skoru_kapasiteyi_maskelemez():
     assert sonuc["metrikler"]["kapasite"]["roller"][0]["eksik"] == 20
 
 
+def test_ortak_plan_ayri_kural_hedeflerini_final_modelle_uyumlar():
+    """Hedef dağıtımı hard ayrı kuralı yüzünden final modeli kilitlememeli.
+
+    Üç gün ve iki slotta A/B aynı binada ayrı tutulur. D'nin kullanıcı kilidi
+    sıfırdır. Fiziksel kapasite dolu olsa da eski hedef dağıtımı A=B=2, C=2
+    üreterek A+B'yi üç günde dört kez yazmaya zorlayıp finali INFEASIBLE
+    yapıyordu. Ortak hedef modeli ayrı kuralı kişi-gün düzeyinde görmeli ve
+    hedefleri A=1, B=2, C=3 gibi uygulanabilir biçimde yeniden dağıtmalıdır.
+    """
+    from copy import deepcopy
+    from kapasite import kapasite_hesapla
+    from planlayici import ortak_plan_uret
+
+    gun_tipleri = {1: "hici", 2: "hici", 3: "hici"}
+    personeller = [
+        SolverPersonel(id=1, ad="A"),
+        SolverPersonel(id=2, ad="B"),
+        SolverPersonel(id=3, ad="C"),
+        SolverPersonel(id=4, ad="D"),
+    ]
+    gorevler = [
+        SolverGorev(id=1, ad="G1", slot_idx=0, base_name="G"),
+        SolverGorev(id=2, ad="G2", slot_idx=1, base_name="G"),
+    ]
+    kurallar = [SolverKural(tur="ayri", kisiler=[1, 2], politika="hard")]
+    kilitli_hedefler = {4: {"hici": 0, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0}}
+
+    kapasite = kapasite_hesapla(
+        gun_sayisi=3,
+        gun_tipleri=gun_tipleri,
+        personeller=deepcopy(personeller),
+        slot_sayisi=2,
+        gorevler=gorevler,
+        kurallar=kurallar,
+        ara_gun=0,
+        kilitli_hedefler=kilitli_hedefler,
+        max_sure_saniye=10,
+    )
+    assert kapasite["durum"] == "FEASIBLE", kapasite
+
+    plan = ortak_plan_uret(
+        gun_sayisi=3,
+        gun_tipleri=gun_tipleri,
+        personeller=personeller,
+        gorevler=gorevler,
+        kurallar=kurallar,
+        ara_gun=0,
+        kilitli_hedefler=kilitli_hedefler,
+    )
+    assert plan["basarili"], plan
+    hedefler = plan["hedefler_map"]
+    assert hedefler[4]["hedef_toplam"] == 0
+    assert hedefler[1]["hedef_toplam"] + hedefler[2]["hedef_toplam"] <= 3
+    assert sum(h["hedef_toplam"] for h in hedefler.values()) == 6
+
+    sonuc = NobetSolver(
+        gun_sayisi=3,
+        gun_tipleri=gun_tipleri,
+        personeller=personeller,
+        gorevler=gorevler,
+        kurallar=kurallar,
+        hedefler=hedefler,
+        ara_gun=0,
+        plan_kontrati=plan["plan_kontrati"].to_dict(),
+        max_sure_saniye=2,
+    ).coz()
+    assert sonuc.basarili, sonuc.mesaj
+    assert sonuc.istatistikler["status"] in {"OPTIMAL", "FEASIBLE"}
+    assert len(sonuc.atamalar) == 6
+
+
 def test_kapasite_gun_bazli_ara_gun_fizibilitesini_kesinlestirir():
     sonuc = kapasite_hesapla(
         gun_sayisi=2,
@@ -1133,6 +1366,506 @@ def test_kapasite_soft_asla_gevsetme_birlikte_kuralini_hard_uygular():
 
     assert sonuc["durum"] == "INFEASIBLE"
     assert sonuc["neden"]["kod"] == "BIRLIKTE_MANUEL_MAZERET_CAKISMASI"
+
+
+def test_kapasite_tam_model_nested_kismi_cozum_ve_what_if_kaniti():
+    personeller = [SolverPersonel(id=1, ad="A")]
+    sonuc = kapasite_hesapla(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=personeller,
+        slot_sayisi=1,
+        ara_gun=1,
+        max_sure_saniye=10,
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert sonuc["tam_doluluk_mumkun"] is False
+    kismi = sonuc["kismi_cozum"]
+    assert kismi["solver_status"] == "OPTIMAL", kismi
+    assert kismi["optimum_kanitlandi"] is True
+    assert kismi["doldurulan_slot"] == 1
+    assert kismi["toplam_slot"] == 2
+    assert kismi["bos_slot"] == 1
+    assert kismi["minimum_bosluk_alt_siniri"] == 1
+    assert kismi["objective_bound"] == 1
+    assert len(kismi["atamalar"]) == 1
+    assert len(kismi["bos_slot_detaylari"]) == 1
+    assert sonuc["fizibilite"]["kismi_cozum"] == kismi
+
+    senaryolar = sonuc["teshis"]["karsi_olgusal_oneriler"]
+    ara = next(s for s in senaryolar if s["tur"] == "ara_gun_azalt")
+    assert ara["solver_status"] == "OPTIMAL", ara
+    assert ara["bos_slot"] == 0
+    assert ara["delta_bos_slot"] == 1
+    assert ara["delta_kanitlandi"] is True
+    assert ara["tam_doluluk_saglandi"] is True
+    assert ara["otomatik_uygulandi"] is False
+
+
+def test_kapasite_what_if_mazereti_salt_okunur_dogrular():
+    personel = SolverPersonel(id=1, ad="Ayşe", mazeret_gunleri={1})
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[personel],
+        slot_sayisi=1,
+        ara_gun=0,
+        max_sure_saniye=8,
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE"
+    senaryolar = sonuc["teshis"]["karsi_olgusal_oneriler"]
+    mazeret = next(s for s in senaryolar if s["tur"] == "mazeret_kaldir")
+    assert mazeret["bos_slot"] == 0, mazeret
+    assert mazeret["tam_doluluk_saglandi"] is True
+    assert mazeret["optimum_kanitlandi"] is True
+    assert personel.mazeret_gunleri == {1}  # what-if gerçek veriyi değiştirmez
+
+
+def test_kapasite_what_if_gorev_havuzu_adayini_salt_okunur_dogrular():
+    havuzlar = {"Ambulans": set()}
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[SolverPersonel(id=1, ad="Mehmet")],
+        slot_sayisi=1,
+        ara_gun=0,
+        gorevler=[
+            SolverGorev(id=1, ad="Ambulans", slot_idx=0, base_name="Ambulans")
+        ],
+        gorev_havuzlari=havuzlar,
+        max_sure_saniye=8,
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE"
+    havuz = next(
+        s for s in sonuc["teshis"]["karsi_olgusal_oneriler"]
+        if s["tur"] == "havuz_ekle"
+    )
+    assert havuz["bos_slot"] == 0, havuz
+    assert havuz["tam_doluluk_saglandi"] is True
+    assert havuz["optimum_kanitlandi"] is True
+    assert havuzlar == {"Ambulans": set()}  # gerçek havuz salt-okunur kalır
+
+
+def test_kapasite_cakisan_aragun_istisnalarinda_pencereyi_sisirmez():
+    sonuc = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=3,
+        personeller=[SolverPersonel(id=1, ad="A")],
+        slot_sayisi=1,
+        ara_gun=2,
+        aragun_istisnalari=[
+            {"personel_id": 1, "gun1": 1, "gun2": 2},
+            {"personel_id": 1, "gun1": 2, "gun2": 3},
+        ],
+        max_sure_saniye=2,
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE"
+    aciklar = sonuc["neden"]["detay"]["ara_gun_pencere_aciklari"]
+    tum_pencere = next(a for a in aciklar if a["baslangic"] == 1 and a["bitis"] == 3)
+    assert tum_pencere["ust_kapasite"] == 2, tum_pencere
+    assert tum_pencere["eksik"] == 1
+
+
+def test_kapasite_tam_model_statusu_feasible_ile_unknownu_ayirir():
+    class FeasiblePartialSolver:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tam_doluluk_fizibilitesi(self, max_sure_saniye=1):
+            return SolverSonuc(False, [], {"status": "INFEASIBLE"}, 1, "infeasible")
+
+        def minimum_bosluk_coz(self, max_sure_saniye=1):
+            return SolverSonuc(True, [{"gun": 1, "slot_idx": 0, "personel_id": 1}], {
+                "status": "FEASIBLE",
+                "minimum_bosluk_status": "FEASIBLE",
+                "bulunan_bosluk": 1,
+                "bos_slot_sayisi": 1,
+                "minimum_bosluk_alt_siniri": 0,
+                "objective_bound": 0,
+                "optimum_kanitlandi": False,
+                "bos_slot_aciklamalari": [],
+                "takas_onerileri": [],
+            }, 1, "partial")
+
+        def diagnose_tam_doluluk_with_unsat_core(self, max_sure_saniye=1):
+            return {"status": "INFEASIBLE", "core_groups": []}
+
+    with patch("ortools_solver.NobetSolver", FeasiblePartialSolver):
+        feasible = kapasite_hesapla(
+            gun_sayisi=2,
+            gun_tipleri={1: "hici", 2: "hici"},
+            personeller=[SolverPersonel(id=1, ad="A")],
+            slot_sayisi=1,
+            ara_gun=0,
+            max_sure_saniye=5,
+        )
+    assert feasible["durum"] == "INFEASIBLE"
+    assert feasible["kismi_cozum"]["solver_status"] == "FEASIBLE"
+    assert feasible["kismi_cozum"]["optimum_kanitlandi"] is False
+    assert feasible["kismi_cozum"]["kesinlik"] == "BULUNAN_EN_IYI"
+
+    class UnknownSolver(FeasiblePartialSolver):
+        def tam_doluluk_fizibilitesi(self, max_sure_saniye=1):
+            return SolverSonuc(False, [], {"status": "UNKNOWN"}, 1, "unknown")
+
+    with patch("ortools_solver.NobetSolver", UnknownSolver):
+        unknown = kapasite_hesapla(
+            gun_sayisi=2,
+            gun_tipleri={1: "hici", 2: "hici"},
+            personeller=[SolverPersonel(id=1, ad="A")],
+            slot_sayisi=1,
+            ara_gun=0,
+            max_sure_saniye=5,
+        )
+    assert unknown["durum"] == "UNKNOWN"
+    assert unknown["tam_doluluk_mumkun"] is None
+    assert unknown["kismi_cozum"]["solver_status"] == "FEASIBLE"
+    assert unknown["kismi_cozum"]["bos_slot"] == 1
+    assert unknown["kismi_cozum"]["optimum_kanitlandi"] is False
+
+    class UnknownThenFullWitness(FeasiblePartialSolver):
+        def tam_doluluk_fizibilitesi(self, max_sure_saniye=1):
+            return SolverSonuc(False, [], {"status": "UNKNOWN"}, 1, "unknown")
+
+        def minimum_bosluk_coz(self, max_sure_saniye=1):
+            return SolverSonuc(True, [
+                {"gun": 1, "slot_idx": 0, "personel_id": 1},
+                {"gun": 2, "slot_idx": 0, "personel_id": 1},
+            ], {
+                "status": "FEASIBLE",
+                "minimum_bosluk_status": "FEASIBLE",
+                "bulunan_bosluk": 0,
+                "bos_slot_sayisi": 0,
+                "minimum_bosluk_alt_siniri": 0,
+                "objective_bound": 0,
+                "optimum_kanitlandi": True,
+            }, 1, "full witness")
+
+    with patch("ortools_solver.NobetSolver", UnknownThenFullWitness):
+        witness = kapasite_hesapla(
+            gun_sayisi=2,
+            gun_tipleri={1: "hici", 2: "hici"},
+            personeller=[SolverPersonel(id=1, ad="A")],
+            slot_sayisi=1,
+            ara_gun=0,
+            max_sure_saniye=5,
+        )
+    assert witness["durum"] == "FEASIBLE"
+    assert witness["tam_doluluk_mumkun"] is True
+
+    class UnknownThenOptimalGap(UnknownThenFullWitness):
+        def minimum_bosluk_coz(self, max_sure_saniye=1):
+            return SolverSonuc(True, [{"gun": 1, "slot_idx": 0, "personel_id": 1}], {
+                "status": "OPTIMAL",
+                "minimum_bosluk_status": "OPTIMAL",
+                "bulunan_bosluk": 1,
+                "bos_slot_sayisi": 1,
+                "minimum_bosluk_alt_siniri": 1,
+                "objective_bound": 1,
+                "optimum_kanitlandi": True,
+                "bos_slot_aciklamalari": [],
+                "takas_onerileri": [],
+            }, 1, "optimal gap")
+
+    with patch("ortools_solver.NobetSolver", UnknownThenOptimalGap):
+        proven_gap = kapasite_hesapla(
+            gun_sayisi=2,
+            gun_tipleri={1: "hici", 2: "hici"},
+            personeller=[SolverPersonel(id=1, ad="A")],
+            slot_sayisi=1,
+            ara_gun=0,
+            max_sure_saniye=5,
+        )
+    assert proven_gap["durum"] == "INFEASIBLE"
+    assert proven_gap["tam_doluluk_mumkun"] is False
+    assert proven_gap["kismi_cozum"]["optimum_kanitlandi"] is True
+
+
+def test_kapasite_manuel_hard_cakismada_kural_atlamaz():
+    manuel = [
+        SolverAtama(personel_id=1, gun=1, slot_idx=0),
+        SolverAtama(personel_id=2, gun=1, slot_idx=0),
+    ]
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A"), SolverPersonel(id=2, ad="B")],
+        slot_sayisi=1,
+        ara_gun=0,
+        manuel_atamalar=manuel,
+        max_sure_saniye=8,
+    )
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert sonuc["neden"]["kod"] == "MANUEL_ATAMA_CAKISMASI"
+    assert sonuc["kismi_cozum"] is None
+    assert sonuc["teshis"]["kismi_cozum_engeli"] == "MANUEL_ATAMA_CAKISMASI"
+    senaryolar = sonuc["teshis"]["karsi_olgusal_oneriler"]
+    kaldir = next(s for s in senaryolar if s["tur"] == "manuel_atama_kaldir")
+    assert kaldir["bos_slot"] == 0, kaldir
+    assert kaldir["tam_doluluk_saglandi"] is True
+    assert kaldir["otomatik_uygulandi"] is False
+    assert kaldir["kapsam"]["kilitli_hedefler"] == "DAHIL"
+    assert kaldir["minimum_duzeltme_kanitlandi"] is False
+    assert len(manuel) == 2  # analiz gerçek manuel kayıtları değiştirmez
+
+
+def test_kapasite_manuel_what_if_yalniz_ilgili_ve_iyilestiren_kaydi_gosterir():
+    manuel = [
+        SolverAtama(personel_id=1, gun=1, slot_idx=0),
+        SolverAtama(personel_id=2, gun=1, slot_idx=0),
+        # Çakışmayla ilgisiz, geçerli kayıt korunmalı ve aday olmamalı.
+        SolverAtama(personel_id=3, gun=2, slot_idx=0),
+    ]
+    sonuc = kapasite_hesapla(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[
+            SolverPersonel(id=1, ad="A"),
+            SolverPersonel(id=2, ad="B"),
+            SolverPersonel(id=3, ad="C"),
+        ],
+        slot_sayisi=1,
+        ara_gun=0,
+        manuel_atamalar=manuel,
+        max_sure_saniye=8,
+    )
+    senaryolar = sonuc["teshis"]["karsi_olgusal_oneriler"]
+    assert senaryolar, sonuc
+    assert all(s["tur"] == "manuel_atama_kaldir" for s in senaryolar)
+    assert all(s["degisiklik"]["manuel_atama_index"] in {0, 1} for s in senaryolar)
+    assert all(s["bos_slot"] == 0 for s in senaryolar)
+    assert all(s["minimum_duzeltme_kanitlandi"] is False for s in senaryolar)
+    assert len(manuel) == 3
+
+
+def test_kapasite_manuel_what_if_ortak_cakisma_nedenini_once_dener():
+    """İki çakışmayı birden gideren üçüncü kayıt, iki senaryo limitine takılmaz."""
+    manuel = [
+        SolverAtama(personel_id=1, gun=1, slot_idx=0),
+        SolverAtama(personel_id=2, gun=1, slot_idx=1),
+        SolverAtama(personel_id=3, gun=1, slot_idx=0),
+        # Raporlanan çakışmalarla ilgisiz kayıt hiçbir zaman aday olmamalı.
+        SolverAtama(personel_id=4, gun=2, slot_idx=0),
+    ]
+    sonuc = kapasite_hesapla(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[SolverPersonel(id=i, ad=f"P{i}") for i in range(1, 5)],
+        slot_sayisi=2,
+        ara_gun=0,
+        manuel_atamalar=manuel,
+        kurallar=[SolverKural(
+            tur="ayri", kisiler=[2, 3], politika="hard", asla_gevsetme=True,
+        )],
+        max_sure_saniye=8,
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE", sonuc
+    conflicts = sonuc["neden"]["detay"]["manual_conflicts"]
+    assert {c["code"] for c in conflicts} >= {
+        "AYNI_SLOT_CIFT_ATAMA", "AYRI_KURALI_IHLALI",
+    }, conflicts
+    senaryolar = sonuc["teshis"]["karsi_olgusal_oneriler"]
+    assert [s["degisiklik"]["manuel_atama_index"] for s in senaryolar] == [2], senaryolar
+    assert senaryolar[0]["bos_slot"] == 0
+    assert senaryolar[0]["onceki_bos_slot"] is None
+    assert senaryolar[0]["delta_kanitlandi"] is False
+
+
+def test_kapasite_what_if_iyilestirmeyen_senaryoyu_sunmaz():
+    class IyilestirmeyenWhatIfSolver:
+        call_count = 0
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def tam_doluluk_fizibilitesi(self, max_sure_saniye=1):
+            return SolverSonuc(False, [], {"status": "INFEASIBLE"}, 1, "infeasible")
+
+        def minimum_bosluk_coz(self, max_sure_saniye=1):
+            type(self).call_count += 1
+            return SolverSonuc(True, [{"gun": 1, "slot_idx": 0, "personel_id": 1}], {
+                "status": "OPTIMAL",
+                "minimum_bosluk_status": "OPTIMAL",
+                "bulunan_bosluk": 1,
+                "bos_slot_sayisi": 1,
+                "minimum_bosluk_alt_siniri": 1,
+                "objective_bound": 1,
+                "optimum_kanitlandi": True,
+                "bos_slot_aciklamalari": [{
+                    "gun": 2, "slot_idx": 0, "gorev": "Nöbetçi 1",
+                    "sebep_sayilari": {"ara_gun": 1},
+                }],
+                "takas_onerileri": [],
+            }, 1, "same gap")
+
+        def diagnose_tam_doluluk_with_unsat_core(self, max_sure_saniye=1):
+            return {"status": "INFEASIBLE", "core_groups": []}
+
+    with patch("ortools_solver.NobetSolver", IyilestirmeyenWhatIfSolver):
+        sonuc = kapasite_hesapla(
+            gun_sayisi=2,
+            gun_tipleri={1: "hici", 2: "hici"},
+            personeller=[SolverPersonel(id=1, ad="A")],
+            slot_sayisi=1,
+            ara_gun=1,
+            max_sure_saniye=8,
+        )
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert sonuc["teshis"]["karsi_olgusal_oneriler"] == []
+
+
+def test_kapasite_what_if_feasible_etkiyi_kanit_diye_sunmaz_unknownu_eler():
+    class SenaryoSolver:
+        def __init__(self, sonuc):
+            self.sonuc = sonuc
+
+        def minimum_bosluk_coz(self, max_sure_saniye=1):
+            return self.sonuc
+
+    feasible = SolverSonuc(True, [
+        {"gun": 1, "slot_idx": 0, "personel_id": 1},
+        {"gun": 2, "slot_idx": 0, "personel_id": 1},
+    ], {
+        "status": "FEASIBLE",
+        "minimum_bosluk_status": "FEASIBLE",
+        "bulunan_bosluk": 1,
+        "objective_bound": 0,
+        "minimum_bosluk_alt_siniri": 0,
+        "optimum_kanitlandi": False,
+    }, 1, "incumbent")
+    unknown = SolverSonuc(True, [
+        {"gun": 1, "slot_idx": 0, "personel_id": 1},
+        {"gun": 2, "slot_idx": 0, "personel_id": 1},
+        {"gun": 3, "slot_idx": 0, "personel_id": 1},
+    ], {
+        "status": "UNKNOWN",
+        "minimum_bosluk_status": "UNKNOWN",
+        "bulunan_bosluk": 0,
+        "optimum_kanitlandi": False,
+    }, 1, "unknown")
+    siradaki = iter([SenaryoSolver(feasible), SenaryoSolver(unknown)])
+    gorulen_kwargs = []
+
+    def solver_uret(**kwargs):
+        gorulen_kwargs.append(kwargs)
+        return next(siradaki)
+
+    kilitler = {1: {"hici": 2}}
+    solver_kwargs = {
+        "gun_sayisi": 3,
+        "gun_tipleri": {1: "hici", 2: "hici", 3: "hici"},
+        "personeller": [SolverPersonel(id=1, ad="A")],
+        "gorevler": [SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")],
+        "kurallar": [],
+        "gorev_havuzlari": {},
+        "kisitlama_istisnalari": [],
+        "birlikte_istisnalari": [],
+        "aragun_istisnalari": [],
+        "kilitli_hedefler": kilitler,
+        "manuel_atamalar": [],
+        "ara_gun": 2,
+        "max_sure_saniye": 1,
+        "kurum_profili": "genel",
+    }
+    adaylar = [
+        {"id": "feasible", "tur": "ara_gun_azalt", "degisiklik": {"yeni_ara_gun": 1}},
+        {"id": "unknown", "tur": "ara_gun_azalt", "degisiklik": {"yeni_ara_gun": 0}},
+    ]
+
+    with patch("kapasite._kapasite_solver_olustur", side_effect=solver_uret):
+        sonuclar = _what_if_senaryolari_coz(
+            adaylar=adaylar,
+            baseline={"bos_slot": 2, "optimum_kanitlandi": True},
+            deadline=None,
+            solver_kwargs=solver_kwargs,
+        )
+
+    assert [s["id"] for s in sonuclar] == ["feasible"], sonuclar
+    assert sonuclar[0]["delta_bos_slot"] == 1
+    assert sonuclar[0]["solver_status"] == "FEASIBLE"
+    assert sonuclar[0]["optimum_kanitlandi"] is False
+    assert sonuclar[0]["delta_kanitlandi"] is False
+    assert sonuclar[0]["minimum_duzeltme_kanitlandi"] is False
+    assert all(k["kilitli_hedefler"] == kilitler for k in gorulen_kwargs)
+    assert solver_kwargs["kilitli_hedefler"] == kilitler
+
+    kotulesen = SolverSonuc(True, [], {
+        "status": "OPTIMAL",
+        "minimum_bosluk_status": "OPTIMAL",
+        "bulunan_bosluk": 3,
+        "objective_bound": 3,
+        "minimum_bosluk_alt_siniri": 3,
+        "optimum_kanitlandi": True,
+    }, 1, "worse")
+    with patch(
+        "kapasite._kapasite_solver_olustur",
+        return_value=SenaryoSolver(kotulesen),
+    ):
+        kotulesen_sonuclar = _what_if_senaryolari_coz(
+            adaylar=[adaylar[0]],
+            baseline={"bos_slot": 2, "optimum_kanitlandi": True},
+            deadline=None,
+            solver_kwargs=solver_kwargs,
+        )
+    assert kotulesen_sonuclar == []
+
+    # Baseline ölçülemiyorsa, non-manuel pozitif-boşluk incumbent'ı iyileşme
+    # diye sunulamaz; yalnız tam-doluluk tanığı veya manuel hard çakışmanın ilk
+    # geçerli çözümü bu özel durumda anlamlıdır.
+    with patch(
+        "kapasite._kapasite_solver_olustur",
+        return_value=SenaryoSolver(feasible),
+    ):
+        olculemeyen_sonuclar = _what_if_senaryolari_coz(
+            adaylar=[adaylar[0]],
+            baseline={"bos_slot": None, "optimum_kanitlandi": False},
+            deadline=None,
+            solver_kwargs=solver_kwargs,
+        )
+    assert olculemeyen_sonuclar == []
+
+
+def test_kapasite_kilitli_hedefleri_tam_modelde_hard_uygular():
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A")],
+        slot_sayisi=1,
+        ara_gun=0,
+        kilitli_hedefler={1: {"hici": 0}},
+        max_sure_saniye=8,
+    )
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert sonuc["kapsam"]["kilitli_hedefler"] == "DAHIL"
+    assert sonuc["kapsam"]["kilitli_hedef_sayisi"] == 1
+    assert sonuc["kismi_cozum"]["bos_slot"] == 1
+    assert sonuc["kismi_cozum"]["optimum_kanitlandi"] is True
+    core = sonuc["teshis"]["unsat_core_bilgisi"]
+    assert core["minimum_duzeltme_kanitlandi"] is False
+
+
+def test_kapasite_kilitli_hedef_what_ifler_tarafindan_sessizce_gevsetilmez():
+    sonuc = kapasite_hesapla(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[
+            SolverPersonel(id=1, ad="A"),
+            SolverPersonel(id=2, ad="B"),
+        ],
+        slot_sayisi=1,
+        ara_gun=1,
+        kilitli_hedefler={1: {"hici": 0}},
+        max_sure_saniye=10,
+    )
+    assert sonuc["durum"] == "INFEASIBLE"
+    assert all(
+        s["kapsam"]["kilitli_hedefler"] == "DAHIL"
+        for s in sonuc["teshis"]["karsi_olgusal_oneriler"]
+    )
 
 
 def test_kapasite_gecersiz_slot_ve_ara_gun_degerlerini_reddeder():
@@ -1819,6 +2552,9 @@ def test_hedef_cozumsuzlugunde_insan_dili_tani():
     assert "nöbet" in sonuc.mesaj.lower() or "personel" in sonuc.mesaj.lower()
 
     tani = sonuc.istatistikler.get("hedef_tanisi", {})
+    assert sonuc.istatistikler.get("status") == "INFEASIBLE"
+    assert sonuc.istatistikler.get("karar_durumu") == "INFEASIBLE"
+    assert sonuc.istatistikler.get("optimum_kanitlandi") is False
     assert tani.get("neden") == "kapasite_yetersiz", tani
     assert tani.get("oneriler"), tani
     # Ara gün somut önerisi: 2 → 1 kapasiteyi 93'ün üstüne çıkarır.
@@ -1943,6 +2679,63 @@ def test_yari_vardiya_onerileri_112():
     genel = _takas_solver(personeller, ara_gun=0, gun_sayisi=5, kurum_profili="genel")
     oneriler_g = genel._bos_slot_takas_onerileri(atamalar)
     assert not [o for o in oneriler_g if o["tur"] == "yari_vardiya"], oneriler_g
+
+
+def test_solver_yollari_genel_min_nobet_hard_semantigini_paylasir():
+    """Normal, hazırlık ve teşhis yolları aynı genel min_nobet kuralını görür.
+
+    Tek slotu iki kişinin ayrı ayrı asgari bir nöbet talebiyle doldurmak
+    imkânsızdır. Genel profilde bütün çözüm yolları bunu reddetmeli; 112
+    profilinde aynı alan mesai borcu/soft hedef olduğu için çizelgeyi
+    kırmamalıdır.
+    """
+    gun_tipleri = {1: "hici"}
+    personeller = [
+        SolverPersonel(id=1, ad="A", min_nobet=1),
+        SolverPersonel(id=2, ad="B", min_nobet=1),
+    ]
+    gorevler = [SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")]
+    hedefler = {
+        1: {"hedef_toplam": 1, "hedef_tipler": {}},
+        2: {"hedef_toplam": 1, "hedef_tipler": {}},
+    }
+
+    def solver_olustur(profil):
+        return NobetSolver(
+            gun_sayisi=1,
+            gun_tipleri=gun_tipleri,
+            personeller=personeller,
+            gorevler=gorevler,
+            hedefler=hedefler,
+            ara_gun=0,
+            max_sure_saniye=2,
+            kurum_profili=profil,
+        )
+
+    genel_normal = solver_olustur("genel").coz()
+    genel_tam = solver_olustur("genel").tam_doluluk_fizibilitesi(2)
+    genel_minimum = solver_olustur("genel").minimum_bosluk_coz(2)
+    genel_core = solver_olustur("genel").diagnose_with_unsat_core(2)
+
+    for sonuc in (genel_normal, genel_tam, genel_minimum):
+        assert sonuc.basarili is False, sonuc
+        assert sonuc.istatistikler["status"] == "INFEASIBLE", sonuc.istatistikler
+    assert genel_core["status"] == "INFEASIBLE", genel_core
+    assert any(
+        str(kayit.get("group", "")).startswith("GENEL_MIN_NOBET:")
+        for kayit in genel_core.get("core_groups", [])
+    ), genel_core
+
+    # 112'de min_nobet hard yapılmaz: tek slot tam doldurulabilir ve iki
+    # kişiden birinin soft asgari hedefi karşılanmayabilir.
+    for sonuc in (
+        solver_olustur("112").coz(),
+        solver_olustur("112").tam_doluluk_fizibilitesi(2),
+        solver_olustur("112").minimum_bosluk_coz(2),
+    ):
+        assert sonuc.basarili is True, sonuc.mesaj
+        assert len(sonuc.atamalar) == 1, sonuc.atamalar
+        assert sonuc.istatistikler["bos_slot_sayisi"] == 0, sonuc.istatistikler
 
 
 def test_izin_yerlesim_112():

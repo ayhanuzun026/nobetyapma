@@ -72,7 +72,11 @@ class HedefHesaplayici:
                  kilitli_hedefler: Dict[int, Dict[str, int]] = None,
                  gorev_havuzlari: Dict[str, set] = None,
                  kurum_profili: str = "genel",
-                 resmi_tatil_gunleri: set = None):
+                 resmi_tatil_gunleri: set = None,
+                 kisitlama_istisnalari: List[dict] = None,
+                 birlikte_istisnalari: List[dict] = None,
+                 aragun_istisnalari: List[dict] = None,
+                 kurallar: List[SolverKural] = None):
         self.gun_sayisi = gun_sayisi
         # Kurum profili: "112" ise 112'ye ozel domain kurallari aktiflesir;
         # "genel" (default) mevcut davranis.
@@ -84,6 +88,7 @@ class HedefHesaplayici:
         self.personel_listesi = personeller
         self.gorevler = gorevler
         self.birlikte_kurallar = birlikte_kurallar or []
+        self.kurallar = list(kurallar or self.birlikte_kurallar)
         self.gorev_kisitlamalari = gorev_kisitlamalari or {}
         self.manuel_atamalar = manuel_atamalar or []
         self.ara_gun = ara_gun
@@ -94,6 +99,25 @@ class HedefHesaplayici:
             str(rol): set(ids)
             for rol, ids in (gorev_havuzlari or {}).items()
         }
+        self.birlikte_istisna_set = set()
+        for raw in birlikte_istisnalari or []:
+            try:
+                pid = find_matching_id(raw.get('personel_id', raw.get('personelId')), self.personeller.keys())
+                gun = int(raw.get('gun', 0))
+                if pid is not None and gun > 0:
+                    self.birlikte_istisna_set.add((pid, gun))
+            except (AttributeError, TypeError, ValueError):
+                pass
+        self.aragun_istisna_set = set()
+        for raw in aragun_istisnalari or []:
+            try:
+                pid = find_matching_id(raw.get('personel_id', raw.get('personelId')), self.personeller.keys())
+                g1, g2 = int(raw.get('gun1', 0)), int(raw.get('gun2', 0))
+                if pid is not None and g1 > 0 and g2 > 0:
+                    self.aragun_istisna_set.add((pid, min(g1, g2), max(g1, g2)))
+            except (AttributeError, TypeError, ValueError):
+                pass
+        self.kisitlama_istisnalari = list(kisitlama_istisnalari or [])
 
         # Rol yapıları (kişi-gün-görev birleşik kapasite katmanı için).
         # Rol = slot'un base_name'i (yoksa adı); final solver ile aynı tanım.
@@ -446,24 +470,57 @@ class HedefHesaplayici:
             'wd': wd,
         }
 
-    def _max_assignable_with_ara_gun(self, gunler, zorunlu_gunler=None) -> int:
+    def _max_assignable_with_ara_gun(self, gunler, zorunlu_gunler=None, personel_id=None) -> int:
         uygun_gunler = sorted({int(gun) for gun in gunler})
         zorunlu = sorted({int(gun) for gun in (zorunlu_gunler or [])})
+        if any(gun not in uygun_gunler for gun in zorunlu):
+            return -1
         if self.ara_gun <= 0:
             return len(uygun_gunler)
 
-        for idx in range(1, len(zorunlu)):
-            if zorunlu[idx] - zorunlu[idx - 1] <= self.ara_gun:
-                return -1
+        for idx, gun1 in enumerate(zorunlu):
+            for gun2 in zorunlu[idx + 1:]:
+                if gun2 - gun1 > self.ara_gun:
+                    break
+                if (personel_id, gun1, gun2) not in self.aragun_istisna_set:
+                    return -1
 
         adaylar = [
             gun for gun in uygun_gunler
             if gun not in zorunlu
-            and all(abs(gun - sabit_gun) > self.ara_gun for sabit_gun in zorunlu)
+            and all(
+                abs(gun - sabit_gun) > self.ara_gun
+                or (personel_id, min(gun, sabit_gun), max(gun, sabit_gun)) in self.aragun_istisna_set
+                for sabit_gun in zorunlu
+            )
         ]
+        if any(pid == personel_id for pid, _, _ in self.aragun_istisna_set):
+            durumlar = {(): 0}
+            zorunlu_set = set(zorunlu)
+            def cakisir(a, b):
+                return abs(a - b) <= self.ara_gun and (
+                    personel_id, min(a, b), max(a, b)
+                ) not in self.aragun_istisna_set
+            for gun in uygun_gunler:
+                yeni = {}
+                for yakin, toplam in durumlar.items():
+                    etkin = tuple(g for g in yakin if gun - g <= self.ara_gun)
+                    if gun not in zorunlu_set:
+                        yeni[etkin] = max(yeni.get(etkin, -1), toplam)
+                    if all(not cakisir(gun, g) for g in etkin):
+                        secili = etkin + (gun,)
+                        yeni[secili] = max(yeni.get(secili, -1), toplam + 1)
+                durumlar = yeni
+                if len(durumlar) > 50000:
+                    return len(zorunlu) + len(adaylar)
+            return max(durumlar.values(), default=0)
         secilen = list(zorunlu)
         for gun in adaylar:
-            if all(abs(gun - mevcut) > self.ara_gun for mevcut in secilen):
+            if all(
+                abs(gun - mevcut) > self.ara_gun
+                or (personel_id, min(gun, mevcut), max(gun, mevcut)) in self.aragun_istisna_set
+                for mevcut in secilen
+            ):
                 secilen.append(gun)
         return len(secilen)
 
@@ -622,6 +679,7 @@ class HedefHesaplayici:
             ara_gun_kapasitesi = self._max_assignable_with_ara_gun(
                 p.musait_gunler,
                 tekil_manuel_gunler,
+                personel_id=pid,
             )
             if ara_gun_kapasitesi < 0:
                 return HedefSonuc(
@@ -775,7 +833,8 @@ class HedefHesaplayici:
                     for gun2 in gunler[idx + 1:]:
                         if gun2 - gun1 > self.ara_gun:
                             break
-                        model.Add(kisi_gun[pid, gun1] + kisi_gun[pid, gun2] <= 1)
+                        if (pid, gun1, gun2) not in self.aragun_istisna_set:
+                            model.Add(kisi_gun[pid, gun1] + kisi_gun[pid, gun2] <= 1)
 
         # Her gün tanımlı tüm görev slotları kadar farklı personel seçilmeli.
         for gun in gunler:
@@ -787,6 +846,20 @@ class HedefHesaplayici:
         # Gün tipi toplamları tutmalı
         for tip in GUN_TIPLERI:
             model.Add(sum(h[pid, tip] for pid in pids) == self.tip_slotlari[tip])
+
+        # Necessary daily bound for hard separate groups.
+        bina_sayisi = max(1, len({str(getattr(g, 'bina_id', '') or 'ANA_BINA') for g in self.gorevler}))
+        for kural in self.kurallar:
+            if getattr(kural, 'tur', None) != 'ayri':
+                continue
+            politika = str(getattr(kural, 'politika', 'kullanici_onayli') or '').lower()
+            if politika == 'soft' and not bool(getattr(kural, 'asla_gevsetme', False)):
+                continue
+            grup = [find_matching_id(raw, self.personeller.keys()) for raw in getattr(kural, 'kisiler', [])]
+            grup = list(dict.fromkeys(pid for pid in grup if pid is not None))
+            if len(grup) > bina_sayisi:
+                for gun in gunler:
+                    model.Add(sum(kisi_gun[pid, gun] for pid in grup) <= bina_sayisi)
 
         # Kişi-gün-görev birleşik kapasite: role hapsedilmiş kişilerin gün tipi
         # bazındaki hedefi, rolün o tipteki fiziksel slot arzını aşamaz
@@ -1071,11 +1144,13 @@ class HedefHesaplayici:
             politika = str(getattr(kural, 'politika', 'kullanici_onayli') or 'kullanici_onayli').strip().lower()
             birlikte_debug.append(f"Grup: {grup_adlar} / politika={politika}")
 
-            if politika != 'soft':
-                referans_id = grup[0]
-                for diger_id in grup[1:]:
-                    for gun in gunler:
-                        model.Add(kisi_gun[referans_id, gun] == kisi_gun[diger_id, gun])
+            if politika != 'soft' or bool(getattr(kural, 'asla_gevsetme', False)):
+                for idx, referans_id in enumerate(grup):
+                    for diger_id in grup[idx + 1:]:
+                        for gun in gunler:
+                            if politika == 'kullanici_onayli' and not bool(getattr(kural, 'asla_gevsetme', False)) and ((referans_id, gun) in self.birlikte_istisna_set or (diger_id, gun) in self.birlikte_istisna_set):
+                                continue
+                            model.Add(kisi_gun[referans_id, gun] == kisi_gun[diger_id, gun])
                 continue
 
             # All-pairs: tüm çiftleri karşılaştır — SOFT constraint
@@ -1233,7 +1308,7 @@ class HedefHesaplayici:
             politika = str(
                 getattr(kural, 'politika', 'kullanici_onayli') or 'kullanici_onayli'
             ).strip().lower()
-            if politika == 'soft':
+            if politika == 'soft' and not bool(getattr(kural, 'asla_gevsetme', False)):
                 continue
             grup = []
             for pid in kural.kisiler:
@@ -1242,8 +1317,12 @@ class HedefHesaplayici:
                     grup.append(matched_id)
             if len(grup) < 2:
                 continue
-            for diger_id in grup[1:]:
-                projection_model.Add(projection_t[grup[0]] == projection_t[diger_id])
+            grup_istisnasi = politika == 'kullanici_onayli' and not bool(getattr(kural, 'asla_gevsetme', False)) and any(
+                (pid, gun) in self.birlikte_istisna_set for pid in grup for gun in gunler
+            )
+            if not grup_istisnasi:
+                for diger_id in grup[1:]:
+                    projection_model.Add(projection_t[grup[0]] == projection_t[diger_id])
 
         projection_model.Minimize(sum(projection_penalties))
         projection_solver = cp.CpSolver()
@@ -1373,7 +1452,11 @@ class HedefHesaplayici:
                 mesaj += " Öneriler: " + " ".join(tani['oneriler'])
             return HedefSonuc(
                 False, [], [], {},
-                {'hedef_tanisi': tani,
+                {'status': solver_status_name,
+                 'solver_status': solver_status_name,
+                 'karar_durumu': 'INFEASIBLE' if status == cp.INFEASIBLE else 'UNKNOWN',
+                 'optimum_kanitlandi': False,
+                 'hedef_tanisi': tani,
                  'adalet': {'sinirlar': personel_sinirlar, 'uyarilar': adalet_uyarilari}},
                 mesaj,
             )

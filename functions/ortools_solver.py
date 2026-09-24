@@ -158,6 +158,10 @@ class NobetSolver:
         self.max_sure = max_sure_saniye
         self.leksikografik = leksikografik
         self._leksikografik_kullanildi = False
+        # Tier 1 (minimum bosluk) ile Tier 2 (kalite/adalet) kanit
+        # seviyelerini birbirine karistirmadan disari tasimak icin tutulur.
+        self._tier1_bosluk_istatistikleri = None
+        self._kalite_solver_status = None
         self.slot_sayisi = len(gorevler)
         self.manual_mazeret_override_days = set()
         self.manual_mazeret_override_slots = set()
@@ -753,9 +757,10 @@ class NobetSolver:
 
         for pid, gunler in manual_days.items():
             gunler = sorted(gunler)
-            for i in range(len(gunler) - 1):
-                g1, g2 = gunler[i], gunler[i + 1]
-                if g2 - g1 <= self.ara_gun:
+            for i, g1 in enumerate(gunler):
+                for g2 in gunler[i + 1:]:
+                    if g2 - g1 > self.ara_gun:
+                        break
                     if (pid, g1, g2) not in self.aragun_istisna_set:
                         p = self.personeller.get(pid)
                         conflicts.append({
@@ -903,12 +908,64 @@ class NobetSolver:
 
         return True
 
-    def _max_assignable_with_ara_gun(self, gunler: List[int]) -> int:
+    def _ara_gun_cakismasi_var_mi(self, personel_id: int, gun1: int, gun2: int) -> bool:
+        """İki farklı günün H4'e göre gerçekten çatışıp çatışmadığını döndürür."""
+        if gun1 == gun2 or self.ara_gun <= 0:
+            return False
+        g1, g2 = sorted((int(gun1), int(gun2)))
+        return (
+            g2 - g1 <= self.ara_gun
+            and (personel_id, g1, g2) not in self.aragun_istisna_set
+        )
+
+    def _max_assignable_with_ara_gun(self, gunler: List[int],
+                                      personel_id: int = None) -> int:
+        """Verilen günlerde H4'e uygun en yüksek kişi kapasitesini döndürür.
+
+        İstisna yokken sıralı açgözlü seçim aralık grafiği için tamdır. Kişiye
+        özel ara-gün istisnası varsa son ``ara_gun`` içindeki seçimleri taşıyan
+        küçük bir DP kullanılır. Olağan dışı biçimde durum sayısı büyürse
+        ``len(gunler)`` güvenli (gevşek) üst sınır olarak döner; böylece danışman
+        katmanı hiçbir zaman sahte kapasite açığı üretmez.
+        """
         if not gunler:
             return 0
+        gunler = sorted(set(int(gun) for gun in gunler))
+
+        personel_istisnasi_var = personel_id is not None and any(
+            pid == personel_id for pid, _gun1, _gun2 in self.aragun_istisna_set
+        )
+        if personel_istisnasi_var:
+            durumlar = {(): 0}
+            max_durum = 50_000
+            for gun in gunler:
+                yeni_durumlar = {}
+                for yakin_gunler, toplam in durumlar.items():
+                    etkin = tuple(
+                        onceki for onceki in yakin_gunler
+                        if gun - onceki <= self.ara_gun
+                    )
+                    yeni_durumlar[etkin] = max(
+                        toplam, yeni_durumlar.get(etkin, -1)
+                    )
+                    if all(
+                        not self._ara_gun_cakismasi_var_mi(
+                            personel_id, onceki, gun
+                        )
+                        for onceki in etkin
+                    ):
+                        secili = etkin + (gun,)
+                        yeni_durumlar[secili] = max(
+                            toplam + 1, yeni_durumlar.get(secili, -1)
+                        )
+                durumlar = yeni_durumlar
+                if len(durumlar) > max_durum:
+                    return len(gunler)
+            return max(durumlar.values(), default=0)
+
         secilen = 0
         son_gun = -10_000
-        for g in sorted(gunler):
+        for g in gunler:
             # H4, farki ara_gun veya daha az olan iki atamayi yasaklar.
             if g - son_gun > self.ara_gun:
                 secilen += 1
@@ -965,7 +1022,9 @@ class NobetSolver:
             ara_gun_upper_capacity = 0
             for p in self.personel_listesi:
                 uygun_gunler = [g for g in range(1, self.gun_sayisi + 1) if p.id in role_daily_union[g]]
-                ara_gun_upper_capacity += self._max_assignable_with_ara_gun(uygun_gunler)
+                ara_gun_upper_capacity += self._max_assignable_with_ara_gun(
+                    uygun_gunler, personel_id=p.id
+                )
 
             if demand > ara_gun_upper_capacity:
                 role_summaries.append({
@@ -1072,9 +1131,9 @@ class NobetSolver:
                 if hedef_toplam <= 0:
                     return ('hedef_dolu', f"{ad} (nöbet kotası 0)")
                 return ('hedef_dolu', f"{ad} (kotası dolu: {hedef_toplam})")
-            # 3) Ara gün: yakın günde nöbeti var (gap < ara_gun)
+            # 3) Ara gün: H4, farkı ara_gun veya daha az olan çifti yasaklar.
             for gg in kisi_gunler.get(pid, []):
-                if gg != g and abs(gg - g) < self.ara_gun:
+                if self._ara_gun_cakismasi_var_mi(pid, gg, g):
                     return ('ara_gun', f"{ad} ({gg}. günde nöbeti var, ara gün={self.ara_gun})")
             # 4) Ayrı kuralı: karşı taraf o gün nöbette
             cakisan = ayri_map.get(pid, set()) & atananlar
@@ -1153,9 +1212,13 @@ class NobetSolver:
 
         "Atanamama durumunda sor" akışı: çözüm bir slotu dolduramadığında
         kullanıcıya SOMUT alternatifler (çoklu çözüm kartı) sunulur. Bu analiz
-        SALT-OKUNUR'dur; çözümü değiştirmez, yalnız uygulanabilir öneriler üretir
-        (her öneri tüm sert kısıtlara — mazeret/havuz/ara_gün/ayrı/kota — karşı
-        doğrulanır, uygulanırsa geçerli çizelge verir):
+        SALT-OKUNUR'dur; çözümü değiştirmez. ``dogrudan_atama`` ve
+        ``ikili_takas`` mevcut slot modeli üzerinde yalnız yerel aday taramasıdır;
+        hard birlikte/görev ailesi/plan gibi bütün kısıtları yeniden çözmediği
+        için uygulanabilirlik garantisi vermez. Tam-model yeniden çözümü gerekir.
+        ``yari_vardiya`` ise açık alt-slot/saat modeli bulunmadığı için yalnız
+        model-dışı inceleme taslağıdır; geçerli çizelge veya çözüm garantisi
+        değildir:
 
           * ``dogrudan_atama`` (1-taşıma): boş slota uygun, müsait, o gün boşta,
             kotası dolmamış, ara_gün/ayrı çakışması olmayan biri doğrudan atanır.
@@ -1197,7 +1260,7 @@ class NobetSolver:
             for gg in kisi_gunler.get(pid, set()):
                 if gg == hedef_gun or gg == haric_gun:
                     continue
-                if abs(gg - hedef_gun) < self.ara_gun:
+                if self._ara_gun_cakismasi_var_mi(pid, gg, hedef_gun):
                     return False
             return True
 
@@ -1220,13 +1283,14 @@ class NobetSolver:
             return pid in gun_atananlar.get(gun, set())
 
         def _yari_vardiya_onerisi(g: int, s: int, gorev: str, gun_tipi: str):
-            """112 son çare: boş 24s slotu gündüz+gece 12'şer saatle böl.
+            """112 için model-dışı 12/12 inceleme taslağı üret.
 
             Gündüz (08-20) adayı: o gün müsait, boşta ve önceki gün nöbette
             değil (sabah dinlenmiş). Gece (20-08) adayı: aynılara ek olarak
             ertesi gün de nöbette değil (gece çıkışı sonraki nöbete çakışmasın).
-            İki YARI farklı kişilere gider; ``ara_gün`` bilinçli gevşetilir
-            (12s yarım vardiya, son çare) ama gece-dinlenme kuralı korunur.
+            İki YARI farklı kişilere gider; ``ara_gün`` bilinçli gevşetilir.
+            Alt-slot, saat hedefi ve bütün dinlenme kuralları modellenmediğinden
+            sonuç doğrulanmış sayılmaz ve otomatik uygulanamaz.
             """
             atananlar_g = gun_atananlar.get(g, set())
             gunduz, gece = [], []
@@ -1249,12 +1313,18 @@ class NobetSolver:
                         continue
                     return {
                         'tur': 'yari_vardiya',
+                        'model_disi_taslak': True,
+                        'dogrulanmis': False,
+                        'otomatik_uygulanabilir': False,
+                        'cozum_garantisi': False,
+                        'kanit_durumu': 'MODELLENMEDI',
                         'gun': g, 'gun_tipi': gun_tipi, 'slot_idx': s, 'gorev': gorev,
                         'gunduz_personel_id': d, 'gece_personel_id': n,
                         'aciklama': (
-                            f"{g}. gün '{gorev}' boş → son çare 12/12 bölme: "
+                            f"{g}. gün '{gorev}' boş → model-dışı 12/12 inceleme taslağı: "
                             f"gündüz (08-20) {kisi_ad.get(d)}, gece (20-08) {kisi_ad.get(n)}. "
-                            f"Gece nöbetçisi sabah çıktığı için ertesi akşam yazılamaz."),
+                            "Alt-slot ve saat/dinlenme modeli bulunmadığı için tam çözüm "
+                            "olduğu doğrulanmadı; otomatik uygulanamaz."),
                     }
             return None
 
@@ -1278,10 +1348,15 @@ class NobetSolver:
                 if dogrudan is not None:
                     oneriler.append({
                         'tur': 'dogrudan_atama',
+                        'dogrulanmis': False,
+                        'cozum_garantisi': False,
+                        'tam_model_yeniden_cozum_gerekli': True,
+                        'otomatik_uygulanabilir': False,
                         'gun': g, 'gun_tipi': gun_tipi, 'slot_idx': s, 'gorev': gorev,
                         'personel_id': dogrudan,
                         'aciklama': (f"{g}. gün '{gorev}' boş → {kisi_ad.get(dogrudan)} "
-                                     f"doğrudan atanabilir (uygun, boşta, kota müsait)."),
+                                     "yerel kontrole göre doğrudan atama adayıdır; "
+                                     "tam modelde yeniden çözülmeden uygulanamaz."),
                     })
                     if len(oneriler) >= limit:
                         break
@@ -1300,7 +1375,7 @@ class NobetSolver:
                     # P yalnız ara_gün'e mi takılı? Yakın günde nöbeti olmalı.
                     yakin_gunler = [
                         gg for gg in kisi_gunler.get(pid, set())
-                        if abs(gg - g) < self.ara_gun and gg != g
+                        if self._ara_gun_cakismasi_var_mi(pid, gg, g)
                     ]
                     if self.ara_gun <= 0 or not yakin_gunler:
                         continue
@@ -1329,6 +1404,10 @@ class NobetSolver:
                     gg_gorev = self._role_name_by_slot(sP) or f"Slot {sP}"
                     oneriler.append({
                         'tur': 'ikili_takas',
+                        'dogrulanmis': False,
+                        'cozum_garantisi': False,
+                        'tam_model_yeniden_cozum_gerekli': True,
+                        'otomatik_uygulanabilir': False,
                         'gun': g, 'gun_tipi': gun_tipi, 'slot_idx': s, 'gorev': gorev,
                         'tasinan_personel_id': pid,
                         'tasinan_kaynak_gun': gg, 'tasinan_kaynak_slot': sP,
@@ -1336,7 +1415,8 @@ class NobetSolver:
                         'aciklama': (
                             f"{g}. gün '{gorev}' boş → {kisi_ad.get(pid)} {gg}. gündeki "
                             f"'{gg_gorev}' nöbetini buraya taşısın; {gg}. günkü yerini "
-                            f"{kisi_ad.get(qid)} doldursun (ara gün kuralı korunur)."),
+                            f"{kisi_ad.get(qid)} doldursun: yerel takas adayıdır; "
+                            "tam modelde yeniden çözülmeden uygulanamaz."),
                     })
                     if len(oneriler) >= limit:
                         break
@@ -2047,11 +2127,31 @@ class NobetSolver:
         for p in self.personel_listesi:
             hedef = self.hedefler.get(p.id, {})
             hedef_tipler = hedef.get('hedef_tipler', {})
+            kapasite_kilitli = bool(hedef.get('kapasite_kilitli_hedef', False))
+            kilitli_tipler = hedef.get('kilitli_hedef_tipler', {}) or {}
             for tip in GUN_TIPLERI:
                 tip_hedef = hedef_tipler.get(tip, 0)
                 tip_gunleri = self.gunler_by_tip.get(tip, [])
+                tip_atama = sum(
+                    x[p.id, g, s]
+                    for g in tip_gunleri
+                    for s in range(self.slot_sayisi)
+                )
+                if kapasite_kilitli:
+                    kilitli_deger = int(kilitli_tipler.get(tip, 0) or 0)
+                    hard_add(
+                        model.Add(tip_atama == kilitli_deger),
+                        f'KAPASITE_KILITLI_HEDEF_TIP:{p.id}:{tip}',
+                        'kilitli_hedefi_incele',
+                        'Kullanici kilitli gun-tipi hedefi',
+                        {
+                            'personel_id': p.id,
+                            'personel_ad': p.ad,
+                            'gun_tipi': tip,
+                            'kilitli_hedef': kilitli_deger,
+                        },
+                    )
                 if tip_gunleri:
-                    tip_atama = sum(x[p.id, g, s] for g in tip_gunleri for s in range(self.slot_sayisi))
                     if self._plan_aktif_mi():
                         hard_add(
                             model.Add(tip_atama <= tip_hedef + plan_gun_tipi_tol),
@@ -2127,7 +2227,28 @@ class NobetSolver:
             # plan-hard modda model.Add(0 == 3) => dogrudan INFEASIBLE uretiyordu.
             hedef_toplam = hedef.get('hedef_toplam', 0)
             toplam_atama = sum(x[p.id, g, s] for g in range(1, self.gun_sayisi + 1) for s in range(self.slot_sayisi))
-            if self._plan_toplam_hard_mi():
+            if hedef.get('kapasite_kilitli_hedef', False):
+                kilitli_toplam = int(hedef.get('kilitli_hedef_toplam', 0) or 0)
+                hard_add(
+                    model.Add(toplam_atama == kilitli_toplam),
+                    f'KAPASITE_KILITLI_HEDEF_TOPLAM:{p.id}',
+                    'kilitli_hedefi_incele',
+                    'Kullanici kilitli toplam hedefi',
+                    {
+                        'personel_id': p.id,
+                        'personel_ad': p.ad,
+                        'kilitli_hedef_toplam': kilitli_toplam,
+                    },
+                )
+                # ``hedef_toplam`` kapasite/max_nobet üst sınırıdır. Kilit bu
+                # sınırı aşıyorsa modelin bunu açıkça çelişki sayması gerekir.
+                hard_add(
+                    model.Add(toplam_atama <= hedef_toplam),
+                    'S3_TOPLAM_HEDEF',
+                    'hedef_kontrol',
+                    'Toplam hedef ust siniri',
+                )
+            elif self._plan_toplam_hard_mi():
                 hard_add(
                     model.Add(toplam_atama == hedef_toplam),
                     'S3_TOPLAM_HEDEF_PLAN',
@@ -2451,12 +2572,108 @@ class NobetSolver:
         if penalties:
             model.Minimize(sum(penalties))
         
-        return _SolveContext(
+        context = _SolveContext(
             cp=cp, model=model, x=x, kisi_gun_atama=kisi_gun_atama,
             bos_slotlar=bos_slotlar, penalties=penalties,
             eliminated_vars=eliminated_vars,
             unsat_registry=unsat_registry,
         )
+        # Bütün çözüm yolları (normal üretim, tam-doluluk, minimum-boşluk ve
+        # unsat-core) aynı hard modeli görmelidir. Genel profil min_nobet alt
+        # sınırını burada tek kez eklemek, hazırlık analizinin üretimden daha
+        # katı olmasını engeller. 112 profili yardımcı içinde bilinçli olarak
+        # soft bırakılır.
+        self._add_genel_min_nobet_hard_constraints(context)
+        return context
+
+    def _add_genel_min_nobet_hard_constraints(self, context: _SolveContext) -> int:
+        """Genel profildeki kişi asgari nöbetlerini ortak hard modele ekler.
+
+        Hazırlık fizibilitesi ile minimum-boşluk çözümünün aynı hard modeli
+        görmesi gerekir. 112 profilinde ``min_nobet`` mesai borcu soft olarak
+        ele alındığından burada bilinçli olarak hard yapılmaz.
+        """
+        if self.kurum_profili == "112":
+            return 0
+
+        eklenen = 0
+        registry = context.unsat_registry
+        for personel in self.personel_listesi:
+            min_nobet = max(0, int(getattr(personel, "min_nobet", 0) or 0))
+            if min_nobet <= 0:
+                continue
+            constraint = context.model.Add(
+                sum(
+                    context.kisi_gun_atama[personel.id, gun]
+                    for gun in range(1, self.gun_sayisi + 1)
+                ) >= min_nobet
+            )
+            if registry is not None:
+                registry.enforce(
+                    constraint,
+                    f'GENEL_MIN_NOBET:{personel.id}',
+                    'min_nobet_azalt',
+                    f'{personel.ad} için asgari nöbet alt sınırı',
+                    {
+                        'personel_id': personel.id,
+                        'personel_ad': personel.ad,
+                        'min_nobet': min_nobet,
+                    },
+                )
+            eklenen += 1
+        return eklenen
+
+    @staticmethod
+    def _safe_integer_lower_bound(raw_bound: Any, upper_limit: int = None):
+        """Tamsayılı minimizasyon bound'unu güvenli tamsayı alt sınıra çevirir."""
+        try:
+            value = float(raw_bound)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(value):
+            return None
+
+        # Boş-slot amacı negatif olamaz. Sayısal gürültünün (örn.
+        # 12.0000000001) alt sınırı yanlışlıkla 13'e yükseltmesini engelle.
+        value = max(0.0, value)
+        if upper_limit is not None:
+            value = min(value, float(max(0, upper_limit)))
+        nearest = round(value)
+        if abs(value - nearest) <= 1e-6:
+            return int(nearest)
+        return int(math.ceil(value))
+
+    def _minimum_bosluk_istatistikleri(self, context: _SolveContext,
+                                       solver: Any, status: int,
+                                       bulunan_bosluk: int = None) -> Dict:
+        """Minimum-boşluk geçişinin incumbent/bound/kanıt sözleşmesi."""
+        cp = context.cp
+        status_name = solver.StatusName(status)
+        objective_bound = None
+        alt_sinir = None
+        if status in (cp.OPTIMAL, cp.FEASIBLE, cp.UNKNOWN):
+            try:
+                raw_bound = float(solver.BestObjectiveBound())
+                if math.isfinite(raw_bound):
+                    rounded = round(raw_bound, 6)
+                    objective_bound = int(rounded) if float(rounded).is_integer() else rounded
+                    alt_sinir = self._safe_integer_lower_bound(
+                        raw_bound,
+                        bulunan_bosluk if bulunan_bosluk is not None else len(context.bos_slotlar),
+                    )
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                pass
+
+        return {
+            'minimum_bosluk_status': status_name,
+            'bulunan_bosluk': bulunan_bosluk,
+            'minimum_bosluk_alt_siniri': alt_sinir,
+            'objective_bound': objective_bound,
+            # Yalnız CP-SAT OPTIMAL statüsü optimum kanıtıdır. FEASIBLE,
+            # incumbent ile bound eşit görünse dahi kesin diye sunulmaz.
+            'optimum_kanitlandi': status == cp.OPTIMAL,
+            'minimum_bosluk_solver_wall_time_s': round(solver.WallTime(), 3),
+        }
 
     def _solve(self, context: _SolveContext):
         """Leksikografik (çok geçişli) çözüm.
@@ -2472,6 +2689,8 @@ class NobetSolver:
         model = context.model
         toplam_sure = max(1, int(self.max_sure))
         self._leksikografik_kullanildi = False
+        self._tier1_bosluk_istatistikleri = None
+        self._kalite_solver_status = None
 
         # 1 saniyelik bütçe ikiye bölünemez → tek geçiş (davranış değişmez).
         leksikografik_aktif = (
@@ -2489,9 +2708,17 @@ class NobetSolver:
             )
             model.Minimize(sum(context.bos_slotlar))
             tier1_status = tier1_solver.Solve(model)
+            tier1_bulunan_bosluk = (
+                int(round(tier1_solver.ObjectiveValue()))
+                if tier1_status in (cp.OPTIMAL, cp.FEASIBLE)
+                else None
+            )
+            self._tier1_bosluk_istatistikleri = self._minimum_bosluk_istatistikleri(
+                context, tier1_solver, tier1_status, tier1_bulunan_bosluk
+            )
 
             if tier1_status in (cp.OPTIMAL, cp.FEASIBLE):
-                en_az_bos = int(round(tier1_solver.ObjectiveValue()))
+                en_az_bos = tier1_bulunan_bosluk
                 model.Add(sum(context.bos_slotlar) <= en_az_bos)
 
                 tier2_solver = cp.CpSolver()
@@ -2501,6 +2728,7 @@ class NobetSolver:
                 )
                 model.Minimize(sum(context.penalties))
                 tier2_status = tier2_solver.Solve(model)
+                self._kalite_solver_status = tier2_solver.StatusName(tier2_status)
                 self._leksikografik_kullanildi = True
                 if tier2_status in (cp.OPTIMAL, cp.FEASIBLE):
                     return tier2_solver, tier2_status
@@ -2576,8 +2804,177 @@ class NobetSolver:
                 'suggested_actions': [],
             }
 
+    def diagnose_tam_doluluk_with_unsat_core(self, max_sure_saniye: int = 10) -> Dict:
+        """Tam doluluk varsayımlarının yeterli (minimum olmayan) core'unu döndürür.
+
+        Her ``(gün, görev-slotu) dolu olmalı`` koşulu ayrı bir assumption
+        literalidir. Kural assumption'larıyla birlikte dönen core, çatışmayı
+        açıklamaya *yeterli* bir alt kümedir; en küçük düzeltme kümesi değildir.
+        """
+        manual_conflicts = self._manual_hard_conflict_diagnostics()
+        if manual_conflicts:
+            return {
+                'enabled': True,
+                'status': 'MANUAL_CONFLICT',
+                'solver_status_name': 'MANUAL_CONFLICT',
+                'tam_doluluk_mumkun': False,
+                'solver_wall_time_s': 0.0,
+                'core_size': 0,
+                'core_groups': [],
+                'slot_core_groups': [],
+                'kural_core_groups': [],
+                'suggested_actions': ['manuel_atamalari_duzelt'],
+                'manual_conflict_count': len(manual_conflicts),
+                'manual_conflicts': manual_conflicts[:50],
+                'core_turu': 'MANUAL_CONFLICT_DIAGNOSTIC',
+                'minimum_duzeltme_kanitlandi': False,
+                'note': 'Manuel hard çakışmalar çözülmeden tam doluluk modeli kurulamaz.',
+            }
+
+        cp = _get_cp_model()
+        try:
+            context = self._build_model(cp, collect_unsat_core=True)
+            registry = context.unsat_registry
+            tam_doluluk_assumption_count = 0
+
+            for index, bos_mu in enumerate(context.bos_slotlar):
+                gun = (index // self.slot_sayisi) + 1 if self.slot_sayisi else 0
+                slot_idx = index % self.slot_sayisi if self.slot_sayisi else index
+                gorev = self.gorevler[slot_idx] if slot_idx < len(self.gorevler) else None
+                gorev_ad = gorev.ad if gorev else f'Slot {slot_idx}'
+                gorev_base = (
+                    gorev.base_name if gorev and gorev.base_name else gorev_ad
+                )
+                registry.enforce(
+                    context.model.Add(bos_mu == 0),
+                    f'TAM_DOLULUK_SLOT:{gun}:{slot_idx}',
+                    'slot_kisitlarini_incele',
+                    f"{gun}. gün '{gorev_ad}' görevi dolu olmalı",
+                    {
+                        'gun': gun,
+                        'gun_tipi': self.gun_tipleri.get(gun, 'hici'),
+                        'slot_idx': slot_idx,
+                        'gorev': gorev_ad,
+                        'gorev_base': gorev_base,
+                    },
+                )
+                tam_doluluk_assumption_count += 1
+
+            context.model.ClearObjective()
+            solver = cp.CpSolver()
+            solver.parameters.max_time_in_seconds = max(1, int(max_sure_saniye or 1))
+            # Assumption core üretimi tek worker ile daha öngörülebilir.
+            solver.parameters.num_search_workers = 1
+            status = solver.Solve(context.model)
+            status_name = solver.StatusName(status)
+
+            result = {
+                'enabled': True,
+                'status': 'INFEASIBLE' if status == cp.INFEASIBLE else status_name,
+                'solver_status_name': status_name,
+                'tam_doluluk_mumkun': (
+                    True if status in (cp.OPTIMAL, cp.FEASIBLE)
+                    else False if status == cp.INFEASIBLE
+                    else None
+                ),
+                'solver_wall_time_s': round(solver.WallTime(), 3),
+                'tam_doluluk_assumption_count': tam_doluluk_assumption_count,
+                'core_turu': 'SUFFICIENT_NOT_MINIMUM',
+                'minimum_duzeltme_kanitlandi': False,
+            }
+
+            if status != cp.INFEASIBLE or registry is None:
+                result.update({
+                    'core_size': 0,
+                    'core_groups': [],
+                    'slot_core_groups': [],
+                    'kural_core_groups': [],
+                    'suggested_actions': [],
+                    'tracked_assumption_count': (
+                        len(registry._order) if registry is not None else 0
+                    ),
+                    'note': (
+                        'Tam dolu gerçek çizelge bulundu; core yok.'
+                        if status in (cp.OPTIMAL, cp.FEASIBLE)
+                        else 'Solver kesin INFEASIBLE hükmüne ulaşmadı; core raporu yok.'
+                    ),
+                })
+                return result
+
+            core_fn = getattr(solver, 'sufficient_assumptions_for_infeasibility', None)
+            if core_fn is None:
+                core_fn = getattr(solver, 'SufficientAssumptionsForInfeasibility', None)
+            if core_fn is None:
+                result.update({
+                    'core_size': 0,
+                    'core_groups': [],
+                    'slot_core_groups': [],
+                    'kural_core_groups': [],
+                    'suggested_actions': [],
+                    'note': 'OR-Tools assumption core API bulunamadı.',
+                })
+                return result
+
+            result.update(registry.describe_core(core_fn()))
+            core_groups = result.get('core_groups', [])
+            result['slot_core_groups'] = [
+                item for item in core_groups
+                if str(item.get('group', '')).startswith('TAM_DOLULUK_SLOT:')
+            ]
+            result['kural_core_groups'] = [
+                item for item in core_groups
+                if not str(item.get('group', '')).startswith('TAM_DOLULUK_SLOT:')
+            ]
+            result['note'] = (
+                'Bu, çatışmayı açıklamaya yeterli bir assumption core’udur; '
+                'minimum düzeltme veya minimum sayıda sorun iddiası taşımaz.'
+            )
+            if result.get('core_size', 0) == 0:
+                result['note'] += (
+                    ' Core boş olduğu için guard edilmeyen temel kısıtlar veya '
+                    'değişken eliminasyonu ayrıca incelenmelidir.'
+                )
+            return result
+        except Exception as exc:
+            return {
+                'enabled': True,
+                'status': 'ERROR',
+                'tam_doluluk_mumkun': None,
+                'error': str(exc)[:300],
+                'core_size': 0,
+                'core_groups': [],
+                'slot_core_groups': [],
+                'kural_core_groups': [],
+                'suggested_actions': [],
+                'core_turu': 'SUFFICIENT_NOT_MINIMUM',
+                'minimum_duzeltme_kanitlandi': False,
+            }
+
     def _extract_solution(self, context: _SolveContext, solver: Any, status: int, sure_ms: int) -> SolverSonuc:
         cp = context.cp
+        final_solver_status = solver.StatusName(status)
+        kalite_solver_status = self._kalite_solver_status or final_solver_status
+        minimum_bosluk_status = (
+            (self._tier1_bosluk_istatistikleri or {}).get('minimum_bosluk_status')
+        )
+        # Leksikografik çözümün bütünü ancak her iki katman da optimumsa
+        # OPTIMAL olabilir. Tier 1 FEASIBLE iken Tier 2'nin OPTIMAL olması,
+        # minimum boşluğun kanıtlandığı anlamına gelmez.
+        if self._tier1_bosluk_istatistikleri is None:
+            # Tam-doluluk, minimum_bosluk_coz ve leksikografik olmayan normal
+            # geçişlerde ikinci bir kanıt katmanı yoktur: CP-SAT statüsü aynen
+            # korunur.
+            overall_status = 'OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE'
+        else:
+            overall_status = (
+                'OPTIMAL'
+                if (
+                    status == cp.OPTIMAL
+                    and minimum_bosluk_status == 'OPTIMAL'
+                    and kalite_solver_status == 'OPTIMAL'
+                )
+                else 'FEASIBLE'
+            )
         atamalar = []
         kisi_sayac = {p.id: {'toplam': 0, 'tipler': {t: 0 for t in GUN_TIPLERI}, 'gorevler': {}} for p in self.personel_listesi}
         bos_slot_sayisi = sum(1 for bos_mu in context.bos_slotlar if solver.Value(bos_mu) == 1)
@@ -2624,14 +3021,14 @@ class NobetSolver:
                 })
             
         istatistikler = {
-            'status': 'OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE',
+            'status': overall_status,
             'objective': solver.ObjectiveValue() if context.penalties else 0,
             'leksikografik_kullanildi': self._leksikografik_kullanildi,
             'toplam_atama': toplam_atama, 'toplam_slot': toplam_slot,
             'bos_slot_sayisi': bos_slot_sayisi,
             'ara_gun': self.ara_gun,
             'max_ara_gun': self.max_ara_gun,
-            'solver_status_name': solver.StatusName(status),
+            'solver_status_name': final_solver_status,
             'doluluk_yuzde': round(100 * toplam_atama / toplam_slot, 1) if toplam_slot > 0 else 0,
             'min_nobet': min_nobet, 'max_nobet': max_nobet,
             'denge_farki': max_nobet - min_nobet,
@@ -2665,8 +3062,13 @@ class NobetSolver:
             'takas_onerileri': self._bos_slot_takas_onerileri(atamalar) if bos_slot_sayisi > 0 else [],
             'gorev_listesi': [{'idx': i, 'ad': g.ad, 'base_name': g.base_name} for i, g in enumerate(self.gorevler)]
         }
+        if self._tier1_bosluk_istatistikleri is not None:
+            # Dış ``status`` iki katmanın ortak kanıt düzeyidir; kalite
+            # solver'ının kendi statüsü ve minimum-boşluk statüsü ayrıca korunur.
+            istatistikler['kalite_solver_status'] = kalite_solver_status
+            istatistikler.update(self._tier1_bosluk_istatistikleri)
         return SolverSonuc(basarili=True, atamalar=atamalar, istatistikler=istatistikler,
-                          sure_ms=sure_ms, mesaj='OPTIMAL' if status == cp.OPTIMAL else 'FEASIBLE')
+                          sure_ms=sure_ms, mesaj=overall_status)
 
     def _build_failure_result(self, context: _SolveContext, solver: Any, status: int, sure_ms: int) -> SolverSonuc:
         cp = context.cp
@@ -2722,6 +3124,8 @@ class NobetSolver:
     def tam_doluluk_fizibilitesi(self, max_sure_saniye: int = 10) -> SolverSonuc:
         """Tüm slotların hard kısıtlarla doldurulabildiğini kesin olarak denetler."""
         baslangic = time.time()
+        self._tier1_bosluk_istatistikleri = None
+        self._kalite_solver_status = None
         manual_conflicts = self._manual_hard_conflict_diagnostics()
         if manual_conflicts:
             return self._manual_conflict_result(baslangic, manual_conflicts)
@@ -2730,16 +3134,6 @@ class NobetSolver:
         context = self._build_model(cp)
         for bos_mu in context.bos_slotlar:
             context.model.Add(bos_mu == 0)
-        if self.kurum_profili != "112":
-            for personel in self.personel_listesi:
-                min_nobet = max(0, int(getattr(personel, "min_nobet", 0) or 0))
-                if min_nobet > 0:
-                    context.model.Add(
-                        sum(
-                            context.kisi_gun_atama[personel.id, gun]
-                            for gun in range(1, self.gun_sayisi + 1)
-                        ) >= min_nobet
-                    )
         context.model.ClearObjective()
 
         solver = cp.CpSolver()
@@ -2751,6 +3145,74 @@ class NobetSolver:
         if status in [cp.OPTIMAL, cp.FEASIBLE]:
             return self._extract_solution(context, solver, status, sure_ms)
         return self._build_failure_result(context, solver, status, sure_ms)
+
+    def minimum_bosluk_coz(self, max_sure_saniye: int = 10) -> SolverSonuc:
+        """Aynı tam görev-slotu modelinde yalnız boş slot sayısını minimize eder.
+
+        Kalite/adalet amaçları bu hazırlık geçişinde çalıştırılmaz. Sonuç,
+        bulunan incumbent ile CP-SAT'in matematiksel alt sınırını ve optimumun
+        kanıtlanıp kanıtlanmadığını birbirinden ayrı alanlarda taşır.
+        """
+        baslangic = time.time()
+        self._tier1_bosluk_istatistikleri = None
+        self._kalite_solver_status = None
+        manual_conflicts = self._manual_hard_conflict_diagnostics()
+        if manual_conflicts:
+            result = self._manual_conflict_result(baslangic, manual_conflicts)
+            result.istatistikler.update({
+                'minimum_bosluk_status': 'MANUAL_CONFLICT',
+                'bulunan_bosluk': None,
+                'bos_slot_sayisi': None,
+                'minimum_bosluk_alt_siniri': None,
+                'objective_bound': None,
+                'optimum_kanitlandi': False,
+                'minimum_bosluk_solver_wall_time_s': 0.0,
+            })
+            return result
+
+        cp = _get_cp_model()
+        context = self._build_model(cp)
+        context.model.ClearObjective()
+        context.model.Minimize(sum(context.bos_slotlar))
+
+        solver = cp.CpSolver()
+        solver.parameters.max_time_in_seconds = max(1, int(max_sure_saniye or 1))
+        solver.parameters.num_search_workers = 4
+        status = solver.Solve(context.model)
+        sure_ms = int((time.time() - baslangic) * 1000)
+
+        if status in (cp.OPTIMAL, cp.FEASIBLE):
+            result = self._extract_solution(context, solver, status, sure_ms)
+            bulunan_bosluk = int(result.istatistikler.get('bos_slot_sayisi', 0) or 0)
+            result.istatistikler.update(
+                self._minimum_bosluk_istatistikleri(
+                    context, solver, status, bulunan_bosluk
+                )
+            )
+            result.istatistikler['objective'] = bulunan_bosluk
+            result.mesaj = (
+                f"Minimum boşluk kanıtlandı: {bulunan_bosluk}"
+                if status == cp.OPTIMAL else
+                f"Bulunan en iyi kısmi çizelge: {bulunan_bosluk} boşluk; optimum kanıtlanmadı"
+            )
+            return result
+
+        result = self._build_failure_result(context, solver, status, sure_ms)
+        result.istatistikler.update(
+            self._minimum_bosluk_istatistikleri(context, solver, status, None)
+        )
+        result.istatistikler['bos_slot_sayisi'] = None
+        etkin_sure = max(1, int(max_sure_saniye or 1))
+        result.istatistikler['max_sure_saniye'] = etkin_sure
+        if status == cp.UNKNOWN:
+            result.istatistikler['timeout_olasi'] = (
+                sure_ms >= max(etkin_sure * 1000 - 500, 0)
+            )
+            if result.istatistikler['timeout_olasi']:
+                result.istatistikler['reason_hint'] = (
+                    'Minimum boşluk aramasında süre doldu; kesin hüküm yok.'
+                )
+        return result
 
     def coz(self) -> SolverSonuc:
         baslangic = time.time()

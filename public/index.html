@@ -1331,6 +1331,7 @@
           <button class="btn btn-success" onclick="listeyiIndir()">
             <i class="fa-solid fa-download"></i> Excel İndir
           </button>
+          <button class="btn btn-secondary" onclick="cizelgeyiGecmiseKaydet()">Geçmişe kaydet</button>
         </div>
       </div>
 
@@ -1515,6 +1516,8 @@
     let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
     let hedeflerBayat = true;
     let hazirlikKapasiteSonucu = null;
+    let hazirlikKismiCozumOnayi = null;
+    let bekleyenHazirlikKarari = null;
     let aktifPlanKontrati = null;
     let aktifPlanHash = null;
 
@@ -1575,7 +1578,9 @@
 
     function hedefleriBayatIsaretle(neden = '') {
       hedeflerBayat = true;
+      hazirlikBekleyenKarariBitir('stale');
       hazirlikKapasiteSonucu = null;
+      hazirlikKismiCozumOnayi = null;
       aktifPlanKontrati = null;
       aktifPlanHash = null;
       const hazirlikPaneli = document.getElementById('hazirlik-analizi');
@@ -1583,7 +1588,32 @@
         hazirlikPaneli.innerHTML = '';
         hazirlikPaneli.style.display = 'none';
       }
+      document.getElementById('kismi-cozum-onizleme-uyari')?.remove();
+      if (hesaplananListe || window.sonExcelUrl) {
+        cozumuGecersizKil(neden || 'Çözümü etkileyen veriler değişti.');
+      }
       if (neden) console.log(`[HEDEF] Hedefler bayat: ${neden}`);
+    }
+
+    function planHedefiniGecersizKil(neden = '') {
+      aktifPlanKontrati = null;
+      aktifPlanHash = null;
+      hazirlikKismiCozumOnayi = null;
+      if (hazirlikKapasiteSonucu) {
+        const normalize = hazirlikKapasiteYanitiNormalizeEt(hazirlikKapasiteSonucu);
+        hazirlikKapasiteSonucu = {
+          ...normalize.fizibilite,
+          _girdiImzasi: cozumGirdiImzasiOlustur(),
+          kapsam: {
+            ...(normalize.kapsam || {}),
+            otomatik_plan_hedefleri: 'KULLANICI_TARAFINDAN_DEGISTIRILDI_FINAL_MODELE_AKTARILACAK'
+          }
+        };
+      }
+      if (hesaplananListe || window.sonExcelUrl) {
+        cozumuGecersizKil(neden || 'Plan hedefi değişti.');
+      }
+      if (neden) console.log(`[PLAN] Plan hedefi geçersizleşti: ${neden}`);
     }
 
     function kuralPolitikaAlanlari(kural) {
@@ -1869,6 +1899,10 @@
         ay,
         gunluk: parseInt(document.getElementById('inp-gunluk').value) || 0,
         araGun: parseInt(document.getElementById('inp-aragun').value) || 0,
+        maxAraGun: parseInt(document.getElementById('inp-max-aragun')?.value) || 0,
+        kurumProfili: getKurumProfili(),
+        gecmisDonemPolitikasi: GECMIS_DONEM_POLITIKASI,
+        tamirPolitikasi: { ...VARSAYILAN_TAMIR_POLITIKASI },
         saatler: Object.fromEntries(GUN_TIPLERI.map(tip => [tip, getSaatDeger(tip)])),
         personelListesi,
         resmiTatiller,
@@ -1896,6 +1930,7 @@
 
     function cozumuGecersizKil(neden = 'Çözümü etkileyen veriler değişti.') {
       const cozumVardi = Boolean(hesaplananListe || window.sonExcelUrl);
+      hazirlikKismiCozumOnayi = null;
       hesaplananListe = null;
       atananlar = {};
       devirListesi = [];
@@ -1905,6 +1940,7 @@
       window.ortoolsIstatistikler = null;
       window.bosSlotAnaliz = [];
       window.birlikteGunMap = {};
+      document.getElementById('kismi-cozum-onizleme-uyari')?.remove();
 
       const tbody = document.querySelector('#liste-table tbody');
       if (tbody) tbody.innerHTML = '';
@@ -4681,6 +4717,11 @@
       try {
         const result = await hedefHesaplaOrtools();
 
+        if (result?.kismiCozumBenimsendi) {
+          mazeretDegisti = false;
+          return 'partial_adopted';
+        }
+
         if (result.basari && result.hedefler) {
           console.log(`[HEDEF] ${result.hedefler.length} kişiye hedef atandı`);
           if (result.istatistikler) {
@@ -4861,6 +4902,7 @@
           console.log('OR-Tools ile hedef hesaplanıyor...');
           sonHedefHatasi = null;
           const basarili = await hedefleriHesaplaOrtoolsAsync();
+          if (basarili === 'partial_adopted') return;
           if (!basarili) {
             throw sonHedefHatasi
               || new Error('OR-Tools hedef hesaplama başarısız. Yerel fallback kapalı.');
@@ -4870,7 +4912,7 @@
         }
       } catch (error) {
         console.error('Hedef hesaplama hatası:', error);
-        hedefHatasiniGoster(error);
+        if (!error?.hazirlikKullaniciIptali) hedefHatasiniGoster(error);
       } finally {
         hedefHesaplamaAktif = false;
       }
@@ -7520,6 +7562,7 @@
         toplamInput.value = gorevKapasiteAyar[gorevAdi].toplam;
       }
 
+      hedefleriBayatIsaretle('Görev kapasite hedefi değişti.');
       kaydetDebounced();
     }
 
@@ -7546,6 +7589,7 @@
 
         ozelGorevKotalariniDagit(ozelGorevler, gunSayisi);
         ozelGorevSectionGuncelle();
+        planHedefiniGecersizKil('Görev kotaları yeniden dağıtıldı.');
         kaydetDebounced();
       } catch (e) {
         console.error('[KOTA] ozelGorevKotalariniYenidenDagit hatası:', e);
@@ -7590,6 +7634,7 @@
 
       if (!p.gorevKotalari) p.gorevKotalari = {};
       p.gorevKotalari[gorevAdi] = yeniDeger;
+      planHedefiniGecersizKil('Kişi görev kotası değişti.');
 
       // Personel satırındaki "Toplam Hedef" badge'ini güncelle
       const ozelGorevler = getOzelGorevler();
@@ -8390,10 +8435,12 @@
           </div>` : ''}
         ${takasOnerileri.length ? `
           <div class="rule-box" style="background:#fff; margin-bottom:12px;">
-            <strong>Boş Slot İçin Uygulanabilir Öneriler (${rapor.takasOnerileri.length})</strong>
-            <div class="help" style="margin-top:4px;">Atanamayan slotları doldurmak için sert kısıtlara uygun (ara gün/kota korunur) somut öneriler:</div>
+            <strong>Boş Slot İçin Düzeltme Adayları (${rapor.takasOnerileri.length})</strong>
+            <div class="help" style="margin-top:4px;">Adaylar tam modelde yeniden çözülmeden kesin çözüm sayılmaz ve otomatik uygulanmaz.</div>
             <div style="margin-top:8px; max-height:220px; overflow:auto;">
-              ${takasOnerileri.map(o => `<div class="badge ${o.tur === 'dogrudan_atama' ? 'badge-ok' : o.tur === 'yari_vardiya' ? 'badge-warn' : 'badge-info'}" style="display:block; margin:4px 0; white-space:normal;">${o.tur === 'yari_vardiya' ? '⏱️ ' : ''}${escapeHtml(String(o.aciklama || o.tur))}</div>`).join('')}
+              ${takasOnerileri.map(o => o.tur === 'yari_vardiya'
+                ? `<div class="badge badge-warn" style="display:block; margin:4px 0; white-space:normal;"><strong>12/12 — model dışı taslak:</strong> ${escapeHtml(String(o.aciklama || o.tur))}<br><span style="font-weight:400;">Doğrulanmamıştır; açık alt-slot modeli gerekir ve otomatik uygulanmaz.</span></div>`
+                : `<div class="badge ${o.tur === 'dogrudan_atama' ? 'badge-ok' : 'badge-info'}" style="display:block; margin:4px 0; white-space:normal;">${escapeHtml(String(o.aciklama || o.tur))}</div>`).join('')}
             </div>
           </div>` : ''}
         <div class="rule-box" style="background:#fff;">
@@ -8405,105 +8452,760 @@
       `;
     }
 
+    function hazirlikKapasiteYanitiNormalizeEt(result) {
+      const zarf = result && typeof result === 'object' ? result : {};
+      const fizibiliteKaynak = zarf.fizibilite && typeof zarf.fizibilite === 'object'
+        ? zarf.fizibilite
+        : zarf;
+      const kismiCozum = fizibiliteKaynak.kismi_cozum || zarf.kismi_cozum || null;
+      const teshis = fizibiliteKaynak.teshis || zarf.teshis || {};
+      const kapsam = fizibiliteKaynak.kapsam || zarf.kapsam || {};
+      const durum = String(fizibiliteKaynak.durum || zarf.durum || 'UNKNOWN').toUpperCase();
+      const fizibilite = {
+        ...fizibiliteKaynak,
+        durum,
+        kismi_cozum: kismiCozum,
+        teshis,
+        kapsam
+      };
+      return {
+        zarf,
+        fizibilite,
+        durum,
+        kismiCozum,
+        teshis,
+        kapsam,
+        neden: fizibilite.neden && typeof fizibilite.neden === 'object'
+          ? fizibilite.neden
+          : {}
+      };
+    }
+
+    function hazirlikHedefDurumuNormalizeEt(istatistikler) {
+      const ham = String(
+        istatistikler?.karar_durumu || istatistikler?.status
+        || istatistikler?.solver_status || 'UNKNOWN'
+      ).toUpperCase();
+      return ham === 'INFEASIBLE' ? 'INFEASIBLE' : 'UNKNOWN';
+    }
+
+    function hazirlikHedefModeliHatasiniKaydet(result, tani) {
+      const onceki = hazirlikKapasiteYanitiNormalizeEt(hazirlikKapasiteSonucu || {});
+      const istatistikler = result?.istatistikler || {};
+      const durum = hazirlikHedefDurumuNormalizeEt(istatistikler);
+      const oneriler = Array.isArray(tani?.oneriler) ? tani.oneriler : [];
+      const mesaj = [tani?.baslik, tani?.detay].filter(Boolean).join(' ')
+        || result?.mesaj || result?.error || 'Hedef/plan modeli sonuç üretemedi.';
+      hazirlikKapasiteSonucu = {
+        durum,
+        tam_doluluk_mumkun: null,
+        neden: {
+          kod: 'HEDEF_PLAN_MODELI_' + durum,
+          mesaj,
+          detay: { hedef_tanisi: tani || null }
+        },
+        oneri: oneriler.length
+          ? oneriler.join(' ')
+          : 'Hedef kilitlerini ve plan girdilerini gözden geçirip yeniden analiz edin.',
+        solver: {
+          ...istatistikler,
+          kapasite_on_kontrol_durumu: onceki.durum
+        },
+        kismi_cozum: null,
+        teshis: { hedef_tanisi: tani || null },
+        kapsam: {
+          ...(onceki.kapsam || {}),
+          otomatik_plan_hedefleri: 'HEDEF_MODELI_BASARISIZ'
+        },
+        _girdiImzasi: cozumGirdiImzasiOlustur(),
+        _hedefModeliHatasi: true
+      };
+      hedeflerBayat = true;
+      aktifPlanKontrati = null;
+      aktifPlanHash = null;
+      cozumuGecersizKil(`Hedef/plan modeli durumu ${durum}`);
+      hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
+      return hazirlikKapasiteSonucu;
+    }
+
+    function hazirlikIlkSayi(...degerler) {
+      for (const deger of degerler) {
+        if (deger === null || deger === undefined || deger === '') continue;
+        const sayi = Number(deger);
+        if (Number.isFinite(sayi)) return sayi;
+      }
+      return null;
+    }
+
+    function hazirlikKayitMetni(kayit, varsayilan = 'Ayrıntı sağlanmadı') {
+      if (kayit === null || kayit === undefined) return varsayilan;
+      if (typeof kayit === 'string' || typeof kayit === 'number') return String(kayit);
+      const anaMetin = kayit.aciklama || kayit.mesaj || kayit.detay || kayit.oneri
+        || kayit.baslik || kayit.detail || kayit.description || kayit.kok_neden_aciklama;
+      if (anaMetin) return String(anaMetin);
+      const parcalar = [];
+      const baslangic = kayit.baslangic_gunu ?? kayit.baslangic;
+      const bitis = kayit.bitis_gunu ?? kayit.bitis;
+      if (baslangic !== undefined && bitis !== undefined) {
+        parcalar.push(`Gün aralığı: ${baslangic}-${bitis}`);
+      }
+      const alanlar = [
+        ['kategori', 'Kategori'], ['tur', 'Tür'], ['gorev', 'Görev'],
+        ['gorev_ad', 'Görev'], ['gun', 'Gün'], ['talep', 'Talep'],
+        ['ust_kapasite', 'Üst kapasite'], ['ara_gun_ust_kapasite', 'Üst kapasite'],
+        ['eksik', 'Eksik'], ['etki', 'Etki']
+      ];
+      alanlar.forEach(([alan, etiket]) => {
+        if (kayit[alan] !== undefined && kayit[alan] !== null && kayit[alan] !== '') {
+          parcalar.push(`${etiket}: ${kayit[alan]}`);
+        }
+      });
+      if (parcalar.length) return parcalar.join(' · ');
+      try {
+        return JSON.stringify(kayit);
+      } catch (_) {
+        return varsayilan;
+      }
+    }
+
+    function hazirlikDizi(value) {
+      return Array.isArray(value) ? value : [];
+    }
+
+    function hazirlikBosSlotDetaylari(kismiCozum) {
+      return hazirlikDizi(
+        kismiCozum?.bos_slot_detaylari
+        || kismiCozum?.bos_slot_aciklamalari
+        || kismiCozum?.istatistikler?.doluluk_raporu?.slot_detaylari
+      );
+    }
+
+    function hazirlikAtamalari(kismiCozum) {
+      return hazirlikDizi(kismiCozum?.atamalar || kismiCozum?.cizelge_atamalari);
+    }
+
+    function hazirlikTarihEtiketi(gun) {
+      const { ay } = getYilAy();
+      const gunNo = Number.parseInt(gun, 10);
+      return Number.isFinite(gunNo)
+        ? `${gunNo} ${AY_ISIMLERI[ay] || `${ay}. ay`}`
+        : 'Tarih belirtilmedi';
+    }
+
+    function hazirlikBosSlotMetni(detay) {
+      const gorev = detay?.gorev || detay?.gorev_ad || detay?.gorevAdi
+        || detay?.gorev_base || `Slot ${Number(detay?.slot_idx ?? detay?.slotIdx ?? 0) + 1}`;
+      const aciklama = detay?.aciklama || detay?.mesaj || detay?.neden;
+      const nedenler = Array.isArray(detay?.nedenler)
+        ? detay.nedenler.map(x => hazirlikKayitMetni(x)).join(', ')
+        : '';
+      const ek = aciklama || nedenler;
+      return `${hazirlikTarihEtiketi(detay?.gun)} · ${gorev}${ek ? ` — ${ek}` : ''}`;
+    }
+
+    function hazirlikAtamaMetni(atama) {
+      const personelId = atama?.personel_id ?? atama?.personelId;
+      const personel = personelListesi.find(p => String(p.id) === String(personelId));
+      const personelAdi = atama?.personel_ad || atama?.personelAdi || atama?.personel
+        || personel?.ad || `Personel ${personelId ?? '-'}`;
+      const slotIdx = Number.parseInt(atama?.slot_idx ?? atama?.slotIdx, 10);
+      const gorev = atama?.gorev_ad || atama?.gorevAdi || atama?.gorev
+        || (Number.isFinite(slotIdx) ? gorevler[slotIdx]?.ad : null) || 'Görev belirtilmedi';
+      return `${hazirlikTarihEtiketi(atama?.gun)} · ${gorev} · ${personelAdi}`;
+    }
+
+    function hazirlikKismiCizelgeTablosu(kismiCozum) {
+      const { yil, ay } = getYilAy();
+      const gunSayisi = getGunSayisi(yil, ay);
+      const hucreler = new Map();
+      hazirlikKismiAtamalariNormalizeEt(kismiCozum).forEach(atama => {
+        const gun = Number.parseInt(atama?.gun, 10);
+        const slotIdx = Number.parseInt(atama?.slot_idx, 10);
+        const kisi = personelListesi.find(p => String(p.id) === String(atama?.personel_id));
+        if (kisi && gun >= 1 && gun <= gunSayisi && slotIdx >= 0 && slotIdx < gorevler.length) {
+          hucreler.set(`${gun}:${slotIdx}`, kisi.ad);
+        }
+      });
+      const baslik = gorevler.map(gorev => `<th style="padding:6px; white-space:nowrap;">${escapeHtml(gorev.ad || gorev.baseName || 'Görev')}</th>`).join('');
+      const satirlar = Array.from({ length: gunSayisi }, (_, index) => {
+        const gun = index + 1;
+        const tarih = new Date(yil, ay - 1, gun);
+        const gunAdi = ['Pzr', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'][tarih.getDay()];
+        const hucreHtml = gorevler.map((_, slotIdx) => {
+          const personelAdi = hucreler.get(`${gun}:${slotIdx}`);
+          return `<td style="padding:5px; border-bottom:1px solid #e5e7eb; white-space:nowrap;${personelAdi ? '' : ' color:#b91c1c; font-weight:700;'}">${escapeHtml(personelAdi || '—')}</td>`;
+        }).join('');
+        return `<tr><th style="padding:5px; text-align:left; white-space:nowrap; border-bottom:1px solid #e5e7eb;">${escapeHtml(`${gun} ${AY_ISIMLERI[ay] || `${ay}. ay`} ${gunAdi}`)}</th>${hucreHtml}</tr>`;
+      }).join('');
+      return `<div class="table-responsive"><table class="custom-table" style="font-size:11px; width:100%;"><thead><tr><th style="padding:6px; text-align:left;">Tarih</th>${baslik}</tr></thead><tbody>${satirlar}</tbody></table></div>`;
+    }
+
+    function hazirlikEngelKategorileri(normalize) {
+      const kategoriler = new Set();
+      const ekle = value => {
+        if (value === null || value === undefined || value === '') return;
+        if (typeof value === 'object') {
+          const metin = value.kategori || value.tur || value.kod || value.baslik
+            || value.aciklama || value.mesaj;
+          if (metin) kategoriler.add(String(metin));
+        } else {
+          kategoriler.add(String(value));
+        }
+      };
+      hazirlikDizi(normalize.teshis?.engel_kategorileri).forEach(ekle);
+      hazirlikDizi(normalize.teshis?.rol_sorunlari).forEach(x => ekle(x?.kategori || 'Görev yetkisi / görev havuzu'));
+      hazirlikDizi(normalize.teshis?.pencereler).forEach(x => ekle(x?.kategori || 'Ara gün / tarih penceresi'));
+      hazirlikBosSlotDetaylari(normalize.kismiCozum).forEach(detay => {
+        hazirlikDizi(detay?.engeller).forEach(ekle);
+        hazirlikDizi(detay?.nedenler).forEach(ekle);
+        Object.entries(detay?.sebep_sayilari || {}).forEach(([kategori, adet]) => {
+          if (Number(adet) > 0) ekle(kategori);
+        });
+      });
+      const kategoriEtiketleri = {
+        mazeret: 'Mazeret / izin', ara_gun: 'Ara gün / dinlenme',
+        yetki: 'Görev yetkisi', gorev_yetkisi: 'Görev yetkisi',
+        havuz: 'Görev havuzu', gorev_havuzu: 'Görev havuzu',
+        manuel: 'Manuel atama', manuel_atama: 'Manuel atama',
+        ayri: 'Ayrı kuralı', birlikte: 'Birlikte kuralı',
+        hedef_dolu: 'Kişi hedefi / üst sınırı', max_nobet: 'Maksimum nöbet'
+      };
+      return [...kategoriler].map(kategori => kategoriEtiketleri[kategori] || kategori);
+    }
+
+    function hazirlikWhatIfMetni(oneri) {
+      const metin = hazirlikKayitMetni(oneri, 'Senaryo ayrıntısı sağlanmadı');
+      const once = oneri?.onceki_doluluk || oneri?.mevcut_doluluk;
+      const sonra = oneri?.yeni_doluluk || oneri?.sonraki_doluluk;
+      if (once && sonra) return `${metin} (${once} → ${sonra})`;
+      if (oneri?.bos_slot !== undefined && oneri?.bos_slot !== null) {
+        const toplam = Number(oneri?.toplam_slot);
+        const oncekiHam = oneri?.onceki_bos_slot;
+        const oncekiBos = oncekiHam === null || oncekiHam === undefined || oncekiHam === ''
+          ? null : Number(oncekiHam);
+        const yeniBos = Number(oneri?.bos_slot);
+        const yeniDolu = Number(oneri?.doldurulan_slot);
+        const deltaHam = oneri?.delta_bos_slot;
+        const delta = deltaHam === null || deltaHam === undefined || deltaHam === ''
+          ? null : Number(deltaHam);
+        const karsilastirmaVar = Number.isFinite(toplam) && Number.isFinite(oncekiBos)
+          && Number.isFinite(yeniBos);
+        const doluluk = karsilastirmaVar
+          ? `${toplam - oncekiBos}/${toplam} → ${Number.isFinite(yeniDolu) ? yeniDolu : toplam - yeniBos}/${toplam}`
+          : Number.isFinite(toplam) && Number.isFinite(yeniBos)
+            ? `değişiklik sonrası ${Number.isFinite(yeniDolu) ? yeniDolu : toplam - yeniBos}/${toplam}`
+            : `değişiklik sonrası ${oneri.bos_slot} boş slot`;
+        const kazanilan = Number.isFinite(delta) && delta > 0 ? `; ${delta} boşluk kapandı` : '';
+        const tamTanik = oneri?.tam_doluluk_saglandi === true ? '; tam dolu çizelge tanığı bulundu' : '';
+        return `${metin} (${doluluk}${kazanilan}${tamTanik})`;
+      }
+      return metin;
+    }
+
+    function hazirlikYariVardiyaMi(oneri) {
+      const tur = String(oneri?.tur || oneri?.type || '').toLowerCase();
+      const metin = hazirlikKayitMetni(oneri, '').toLowerCase();
+      return tur === 'yari_vardiya' || tur === '12/12' || metin.includes('12/12');
+    }
+
+    function hazirlikKismiOptimumKanitlandi(kismiCozum) {
+      const status = String(
+        kismiCozum?.solver_status || kismiCozum?.minimum_bosluk_status
+        || kismiCozum?.status || 'UNKNOWN'
+      ).toUpperCase();
+      return status === 'OPTIMAL' && kismiCozum?.optimum_kanitlandi === true;
+    }
+
     function hazirlikKapasiteSonucuGoster(result) {
       const container = document.getElementById('hazirlik-analizi');
       if (!container) return;
 
-      const fizibilite = result?.fizibilite || result || {};
-      const durum = String(fizibilite.durum || 'UNKNOWN').toUpperCase();
+      const normalize = hazirlikKapasiteYanitiNormalizeEt(result);
+      const { fizibilite, durum, kismiCozum, teshis, neden, kapsam } = normalize;
+      const hedefModeliHatasi = fizibilite?._hedefModeliHatasi === true;
       const uygun = durum === 'FEASIBLE';
-      const neden = fizibilite.neden || {};
-      const detay = neden.detay || {};
-      const renk = uygun ? '#16a34a' : durum === 'INFEASIBLE' ? '#dc2626' : '#d97706';
-      const arkaPlan = uygun ? '#f0fdf4' : durum === 'INFEASIBLE' ? '#fef2f2' : '#fffbeb';
-      const baslik = uygun
+      const bilinmiyor = durum === 'UNKNOWN';
+      const renk = uygun ? '#16a34a' : bilinmiyor ? '#d97706' : '#dc2626';
+      const arkaPlan = uygun ? '#f0fdf4' : bilinmiyor ? '#fffbeb' : '#fef2f2';
+      const baslik = hedefModeliHatasi
+        ? (bilinmiyor ? 'Hedef/plan modeli için kesin hüküm verilemedi' : 'Hedef/plan modeli çözümsüz')
+        : uygun
         ? 'Hazırlık kapasitesi doğrulandı'
-        : durum === 'INFEASIBLE'
-          ? 'INFEASIBLE: Hazırlık kapasitesi yetersiz'
-          : 'Hazırlık kapasitesi doğrulanamadı';
-      const varsayilanMesaj = uygun
-        ? 'Gün bazlı sert kısıtlarla tüm görev slotları doldurulabiliyor.'
-        : durum === 'INFEASIBLE'
-          ? 'Gün bazlı sert kısıtlarla tüm görev slotlarını doldurmak imkânsız.'
-          : 'Kapasite kontrolü kesin bir sonuç üretemedi.';
-      const pencere = detay.ara_gun_pencere_aciklari?.[0] || detay;
-      const pencereBaslangic = pencere.baslangic_gunu ?? pencere.baslangic;
-      const pencereBitis = pencere.bitis_gunu ?? pencere.bitis;
-      const pencereMetni = pencereBaslangic && pencereBitis
-        ? `${pencereBaslangic}-${pencereBitis}. gün: talep ${pencere.talep ?? '-'}, üst kapasite ${pencere.ust_kapasite ?? '-'}, eksik ${pencere.eksik ?? '-'}`
-        : '';
+        : bilinmiyor
+          ? 'Kesin hüküm verilemedi'
+          : 'Tam doluluğun imkânsız olduğu kanıtlandı';
+      const varsayilanMesaj = hedefModeliHatasi
+        ? 'Fiziksel kapasite ön kontrolünden sonraki hedef/plan katmanı sonuç üretemedi.'
+        : uygun
+        ? 'Bütün gerçek görev slotlarını dolduran geçerli bir çizelge bulundu.'
+        : bilinmiyor
+          ? 'Solver süre içinde mümkün veya imkânsız olduğuna kesin karar veremedi.'
+          : 'Sert kurallar korunurken bütün görev slotları aynı anda doldurulamıyor.';
+
+      const solverStatus = String(
+        kismiCozum?.solver_status || kismiCozum?.minimum_bosluk_status
+        || kismiCozum?.status || 'UNKNOWN'
+      ).toUpperCase();
+      const optimumKanitlandi = hazirlikKismiOptimumKanitlandi(kismiCozum);
+      const doldurulan = hazirlikIlkSayi(kismiCozum?.doldurulan_slot, kismiCozum?.dolu_slot);
+      const toplam = hazirlikIlkSayi(kismiCozum?.toplam_slot, fizibilite?.toplam_slot);
+      const bos = hazirlikIlkSayi(
+        kismiCozum?.bos_slot,
+        kismiCozum?.bulunan_bosluk,
+        kismiCozum?.bos_slot_sayisi,
+        doldurulan !== null && toplam !== null ? toplam - doldurulan : null
+      );
+      const gercekDoldurulan = doldurulan !== null
+        ? doldurulan
+        : toplam !== null && bos !== null ? toplam - bos : null;
+      const objectiveBound = hazirlikIlkSayi(
+        kismiCozum?.objective_bound,
+        kismiCozum?.minimum_bosluk_alt_siniri
+      );
+      const kanitMetni = optimumKanitlandi
+        ? 'OPTIMAL — minimum boşluk matematiksel olarak kanıtlandı.'
+        : solverStatus === 'FEASIBLE'
+          ? 'FEASIBLE — geçerli bir kısmi çizelge bulundu; optimum henüz kanıtlanmadı.'
+          : 'UNKNOWN — minimum boşluk için kesin hüküm verilemedi.';
+
+      const bosSlotlar = hazirlikBosSlotDetaylari(kismiCozum);
+      const atamalar = hazirlikAtamalari(kismiCozum);
+      const pencereler = hazirlikDizi(teshis?.pencereler || neden?.detay?.ara_gun_pencere_aciklari);
+      const rolSorunlari = hazirlikDizi(teshis?.rol_sorunlari);
+      const manuelCakismalar = hazirlikDizi(
+        teshis?.manual_conflicts || neden?.detay?.manual_conflicts || fizibilite?.solver?.manual_conflicts
+      );
+      const whatIfler = hazirlikDizi(
+        teshis?.karsi_olgusal_oneriler || teshis?.what_if_onerileri || kismiCozum?.karsi_olgusal_oneriler
+      );
+      const takaslar = hazirlikDizi(kismiCozum?.takas_onerileri || teshis?.takas_onerileri);
+      const yariVardiyaTaslaklari = [...whatIfler, ...takaslar].filter(hazirlikYariVardiyaMi);
+      const whatIfKartlari = whatIfler.filter(x => !hazirlikYariVardiyaMi(x));
+      const duzeltmeAdaylari = takaslar.filter(x => !hazirlikYariVardiyaMi(x));
+      const coreKaynak = teshis?.unsat_core || teshis?.core || {};
+      const coreGruplari = Array.isArray(coreKaynak)
+        ? coreKaynak
+        : hazirlikDizi(coreKaynak?.core_groups || coreKaynak?.kural_core_groups);
+      const engeller = hazirlikEngelKategorileri(normalize);
+      if (manuelCakismalar.length && !engeller.includes('Manuel atama')) engeller.push('Manuel atama');
+      const analizImzasi = fizibilite?._girdiImzasi || hazirlikKapasiteSonucu?._girdiImzasi;
+      const kararBekleniyor = Boolean(
+        bekleyenHazirlikKarari && bekleyenHazirlikKarari.girdiImzasi === analizImzasi
+      );
+      const kismiOnizlemeVar = Boolean(kismiCozum && atamalar.length);
+      const kismiBenimsemeVar = Boolean(durum === 'INFEASIBLE' && kismiOnizlemeVar);
+      const planKapsami = String(kapsam?.otomatik_plan_hedefleri || 'HENUZ_URETILMEDI');
+      const planKapsamMetni = planKapsami === 'HEDEF_MODELI_BASARISIZ'
+        ? 'Otomatik hedef/plan modeli çalıştı ancak sonuç üretemedi; bu hata fiziksel kapasite kanıtı sayılmaz.'
+        : planKapsami === 'KULLANICI_TARAFINDAN_DEGISTIRILDI_FINAL_MODELE_AKTARILACAK'
+          ? 'Kullanıcı görev kotası değişikliği final tam modele aktarılacak; önceki plan kontratı geçersizleştirildi.'
+          : 'Otomatik plan hedefleri bu analizden sonra üretilir.';
+      const kapsamMetni = (kapsam?.kilitli_hedefler === 'DAHIL'
+        ? `${Number(kapsam?.kilitli_hedef_sayisi) || 0} açık hedef kilidi tam görev-slotu modeline hard olarak dahil edildi. `
+        : 'Açık hedef kilidi yok. ') + planKapsamMetni;
+
+      const sorunKartlari = [
+        ...bosSlotlar.map(detay => hazirlikBosSlotMetni(detay)),
+        ...manuelCakismalar.map(x => hazirlikKayitMetni(x)),
+        ...rolSorunlari.map(x => hazirlikKayitMetni(x)),
+        ...pencereler.map(x => hazirlikKayitMetni(x))
+      ].slice(0, 30);
+
+      const aksiyonlar = uygun || (!kararBekleniyor && !hedefModeliHatasi) ? '' : `
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:14px;">
+          <button type="button" class="btn btn-secondary" data-hazirlik-action="edit">Verilere dön ve düzelt</button>
+          <button type="button" class="btn btn-secondary" data-hazirlik-action="retry">Tekrar analiz et</button>
+          ${kismiOnizlemeVar ? '<button type="button" class="btn btn-secondary" data-hazirlik-action="preview">Kısmi çizelgeyi salt-okunur önizle</button>' : ''}
+          ${(whatIfKartlari.length || duzeltmeAdaylari.length || yariVardiyaTaslaklari.length)
+          ? '<button type="button" class="btn btn-secondary" data-hazirlik-action="whatif">What-if seçeneklerini incele</button>' : ''}
+          ${kismiBenimsemeVar
+          ? '<button type="button" class="btn btn-warning" data-hazirlik-action="partial">Bilinçli olarak kısmi çizelge oluştur</button>' : ''}
+        </div>`;
 
       container.style.display = 'block';
       container.innerHTML = `
         <div style="background:${arkaPlan}; border:2px solid ${renk}; border-radius:8px; padding:16px; margin-top:16px; color:#172033;">
           <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;">
             <div>
-              <div style="font-size:16px; font-weight:800; color:${renk};">${escapeHtml(baslik)}</div>
-              <div style="font-size:12px; margin-top:5px;">${escapeHtml(neden.mesaj || varsayilanMesaj)}</div>
+              <div style="font-size:17px; font-weight:800; color:${renk};">${escapeHtml(baslik)}</div>
+              <div style="font-size:12px; margin-top:5px;">${escapeHtml(neden.mesaj || fizibilite.mesaj || varsayilanMesaj)}</div>
+              ${fizibilite.oneri ? `<div style="font-size:12px; margin-top:6px;"><strong>Öneri:</strong> ${escapeHtml(fizibilite.oneri)}</div>` : ''}
             </div>
-            <span class="badge ${uygun ? 'badge-ok' : 'badge-bad'}" style="font-size:13px; padding:6px 10px;">${escapeHtml(durum)}</span>
+            <span class="badge ${uygun ? 'badge-ok' : bilinmiyor ? 'badge-warn' : 'badge-bad'}" style="font-size:13px; padding:6px 10px;">${escapeHtml(durum)}</span>
           </div>
-          ${pencereMetni ? `<div style="margin-top:10px; font-weight:700; color:#991b1b;">${escapeHtml(pencereMetni)}</div>` : ''}
-          ${fizibilite.oneri ? `<div style="margin-top:10px;"><strong>Öneri:</strong> ${escapeHtml(fizibilite.oneri)}</div>` : ''}
-          ${!uygun ? '<div style="margin-top:10px; font-weight:800; color:#991b1b;">Hedef ve çizelge hesaplaması engellendi.</div>' : ''}
-          ${Object.keys(detay).length ? `
-            <details style="margin-top:10px;">
-              <summary style="cursor:pointer; font-weight:700;">Teknik ayrıntı</summary>
-              <pre style="margin:8px 0 0; white-space:pre-wrap; overflow:auto; font-size:11px;">${escapeHtml(JSON.stringify(detay, null, 2))}</pre>
+
+          ${kismiCozum ? `
+            <div class="form-grid" style="margin-top:14px;">
+              <div class="rule-box" style="background:#fff;"><strong>${escapeHtml(gercekDoldurulan ?? '-')} / ${escapeHtml(toplam ?? '-')}</strong><div class="help">Doldurulabilen gerçek görev slotu</div></div>
+              <div class="rule-box" style="background:#fff;"><strong>${escapeHtml(bos ?? '-')}</strong><div class="help">Boş kalan görev slotu</div></div>
+              <div class="rule-box" style="background:#fff;"><strong>${escapeHtml(objectiveBound ?? '-')}</strong><div class="help">Matematiksel alt sınır (bound)</div></div>
+            </div>
+            <div style="margin-top:10px; padding:9px; background:#fff; border-radius:6px; font-weight:700;">${escapeHtml(kanitMetni)}</div>
+            ${solverStatus === 'FEASIBLE' && objectiveBound !== null && bos !== null
+            ? `<div class="help" style="margin-top:5px;">Gerçek minimum boşluk ${escapeHtml(objectiveBound)} ile ${escapeHtml(bos)} arasındadır.</div>` : ''}
+          ` : ''}
+
+          <div class="help" style="margin-top:8px;">${escapeHtml(kapsamMetni)}</div>
+
+          ${engeller.length ? `
+            <div class="rule-box" style="background:#fff; margin-top:12px;">
+              <strong>Engel kategorileri</strong>
+              <div style="display:flex; gap:5px; flex-wrap:wrap; margin-top:7px;">${engeller.map(x => `<span class="badge badge-warn">${escapeHtml(x)}</span>`).join('')}</div>
+            </div>` : ''}
+
+          ${sorunKartlari.length ? `
+            <div class="rule-box" style="background:#fff; margin-top:12px;">
+              <strong>Sorunlu günler, görevler ve kısıtlar</strong>
+              <div style="max-height:250px; overflow:auto; margin-top:7px;">${sorunKartlari.map(x => `<div style="padding:7px 8px; margin:4px 0; border-left:3px solid #dc2626; background:#fff7ed;">${escapeHtml(x)}</div>`).join('')}</div>
+            </div>` : ''}
+
+          ${coreGruplari.length ? `
+            <details style="margin-top:12px; background:#fff; padding:9px; border-radius:6px;">
+              <summary style="cursor:pointer; font-weight:700;">İmkânsızlık çekirdeği (${escapeHtml(coreGruplari.length)})</summary>
+              <div class="help" style="margin:6px 0;">Bu küme çatışmayı açıklamaya yeterlidir; en küçük düzeltme kümesi olduğu iddia edilmez.</div>
+              ${coreGruplari.slice(0, 30).map(x => `<div style="padding:5px 0; border-bottom:1px solid #e5e7eb;">${escapeHtml(hazirlikKayitMetni(x))}</div>`).join('')}
             </details>` : ''}
+
+          <div id="hazirlik-kismi-onizleme" style="display:none; margin-top:12px; background:#fff; padding:10px; border-radius:6px;">
+            <strong>Salt-okunur kısmi çizelge önizlemesi</strong>
+            <div class="help" style="margin:4px 0 8px;">Bu, minimum boşluk geçişinin gerçek görev-slotu atamalarıdır; burada düzenlenemez.</div>
+            <div style="max-height:420px; overflow:auto;">${atamalar.length
+              ? hazirlikKismiCizelgeTablosu(kismiCozum)
+              : '<div class="help">Önizlenecek gerçek atama bulunmuyor.</div>'}</div>
+          </div>
+
+          <div id="hazirlik-whatif" style="display:none; margin-top:12px; background:#fff; padding:10px; border-radius:6px;">
+            <strong>Salt-okunur what-if ve düzeltme seçenekleri</strong>
+            <div class="help" style="margin:4px 0 8px;">Bu seçenekler verilerinizi otomatik olarak değiştirmez.</div>
+            ${whatIfKartlari.map(x => {
+              const status = String(x?.solver_status || x?.status || 'UNKNOWN').toUpperCase();
+              const deltaKanitli = x?.delta_kanitlandi === true;
+              const delta = Number(x?.delta_bos_slot);
+              const karsilastirmaVar = x?.onceki_bos_slot !== null
+                && x?.onceki_bos_slot !== undefined && Number.isFinite(delta) && delta > 0;
+              const tamDolulukTanigi = x?.tam_doluluk_saglandi === true
+                && Number(x?.bos_slot) === 0 && ['OPTIMAL', 'FEASIBLE'].includes(status);
+              const etiket = tamDolulukTanigi
+                ? 'Tam dolu çizelge tanığı'
+                : deltaKanitli ? 'Kanıtlı etki'
+                  : karsilastirmaVar ? 'Bulunan iyileşme' : 'Geçerli çözüm tanığı';
+              return `<div style="padding:8px; margin:5px 0; border-left:3px solid ${(deltaKanitli || tamDolulukTanigi) ? '#16a34a' : '#d97706'}; background:#f8fafc;"><strong>${escapeHtml(etiket)}</strong><div>${escapeHtml(hazirlikWhatIfMetni(x))}</div><div class="help">Solver: ${escapeHtml(status)}${deltaKanitli ? ' · Doluluk artışı matematiksel olarak karşılaştırıldı.' : ' · Etki optimum olarak kanıtlanmamış olabilir.'}</div></div>`;
+            }).join('')}
+            ${duzeltmeAdaylari.map(x => `<div style="padding:8px; margin:5px 0; border-left:3px solid #3b82f6; background:#eff6ff;"><strong>Düzeltme adayı</strong><div>${escapeHtml(hazirlikKayitMetni(x))}</div><div class="help">Tam modelde yeniden çözülmeden kesin sonuç sayılmaz.</div></div>`).join('')}
+            ${yariVardiyaTaslaklari.map(x => `<div style="padding:8px; margin:5px 0; border-left:3px solid #9333ea; background:#faf5ff;"><strong>12/12 — model dışı taslak</strong><div>${escapeHtml(hazirlikKayitMetni(x))}</div><div class="help">Doğrulanmamıştır; açık alt-slot modeli gerekir ve otomatik uygulanmaz.</div></div>`).join('')}
+          </div>
+
+          ${!uygun ? `<div style="margin-top:12px; font-weight:800; color:#991b1b;">${hedefModeliHatasi ? 'Hedef/plan modeli düzeltilmeden yeni çizelge üretimine geçilmez.' : 'Açık kullanıcı kararı olmadan hedef veya yeni çizelge üretimine geçilmez.'}</div>` : ''}
+          ${aksiyonlar}
+          ${!uygun && !kararBekleniyor ? '<div class="help" style="margin-top:7px;">Bu rapor salt okunurdur; yeni işlem için “Tekrar analiz et”i kullanın.</div>' : ''}
         </div>
       `;
+
+      container.querySelectorAll('[data-hazirlik-action]').forEach(button => {
+        button.addEventListener('click', () => hazirlikKapasiteEylemiUygula(button.dataset.hazirlikAction));
+      });
+    }
+
+    function hazirlikBekleyenKarariBitir(eylem) {
+      if (!bekleyenHazirlikKarari) return false;
+      const bekleyen = bekleyenHazirlikKarari;
+      bekleyenHazirlikKarari = null;
+      bekleyen.resolve(eylem);
+      return true;
+    }
+
+    function hazirlikKullaniciKarariBekle(girdiImzasi) {
+      hazirlikBekleyenKarariBitir('superseded');
+      return new Promise(resolve => {
+        bekleyenHazirlikKarari = { girdiImzasi, resolve };
+      });
+    }
+
+    function hazirlikKismiCozumOnayiGecerliMi() {
+      if (!hazirlikKismiCozumOnayi || !hesaplananListe?._kismiCozum) return false;
+      const guncelImza = cozumGirdiImzasiOlustur();
+      return hazirlikKismiCozumOnayi.girdiImzasi === guncelImza
+        && hesaplananListe._girdiImzasi === guncelImza;
+    }
+
+    function hazirlikKismiAtamalariNormalizeEt(kismiCozum) {
+      return hazirlikAtamalari(kismiCozum).map(atama => {
+        const personelAdi = atama?.personel_ad || atama?.personelAdi || atama?.personel;
+        const hamPersonelId = atama?.personel_id ?? atama?.personelId;
+        const adaGoreEslesmeler = hamPersonelId === null || hamPersonelId === undefined
+          ? personelListesi.filter(p => p.ad === personelAdi)
+          : [];
+        const kisi = hamPersonelId !== null && hamPersonelId !== undefined
+          ? personelListesi.find(p => String(p.id) === String(hamPersonelId))
+          : adaGoreEslesmeler.length === 1 ? adaGoreEslesmeler[0] : null;
+        let slotIdx = Number.parseInt(atama?.slot_idx ?? atama?.slotIdx, 10);
+        if (!Number.isFinite(slotIdx)) {
+          const gorevId = atama?.gorev_id ?? atama?.gorevId;
+          const gorevAdi = atama?.gorev_ad || atama?.gorevAdi || atama?.gorev;
+          slotIdx = gorevler.findIndex(g => String(g.id) === String(gorevId)
+            || g.ad === gorevAdi || g.baseName === gorevAdi);
+        }
+        return {
+          ...atama,
+          personel_id: kisi?.id ?? hamPersonelId,
+          slot_idx: slotIdx
+        };
+      });
+    }
+
+    function hazirlikKismiAtamalariniDogrula(kismiCozum, gunSayisi) {
+      const hamAtamalar = hazirlikAtamalari(kismiCozum);
+      if (!hamAtamalar.length) return { gecerli: false, hata: 'Gerçek görev-slotu ataması yok.' };
+      const atamalar = hazirlikKismiAtamalariNormalizeEt(kismiCozum);
+      const gunSlotlar = new Set();
+      const kisiGunler = new Set();
+      const solverStatus = String(
+        kismiCozum?.solver_status || kismiCozum?.minimum_bosluk_status || 'UNKNOWN'
+      ).toUpperCase();
+      if (!['OPTIMAL', 'FEASIBLE'].includes(solverStatus)) {
+        return { gecerli: false, hata: 'Kısmi çözümün geçerli bir solver tanığı yok.' };
+      }
+
+      for (const atama of atamalar) {
+        const gun = Number.parseInt(atama?.gun, 10);
+        const slotIdx = Number.parseInt(atama?.slot_idx, 10);
+        const personelId = atama?.personel_id;
+        const personelEslesmeleri = personelListesi.filter(p => String(p.id) === String(personelId));
+        if (personelEslesmeleri.length !== 1) {
+          return { gecerli: false, hata: 'Atamadaki personel kimliği bulunamadı veya benzersiz değil.' };
+        }
+        if (!(gun >= 1 && gun <= gunSayisi)) return { gecerli: false, hata: 'Atamada geçersiz gün var.' };
+        if (!(slotIdx >= 0 && slotIdx < gorevler.length)) return { gecerli: false, hata: 'Atamada geçersiz görev slotu var.' };
+
+        const gunSlotAnahtari = `${gun}:${slotIdx}`;
+        const kisiGunAnahtari = `${String(personelId)}:${gun}`;
+        if (gunSlotlar.has(gunSlotAnahtari)) return { gecerli: false, hata: 'Aynı gün ve görev slotunda birden fazla atama var.' };
+        if (kisiGunler.has(kisiGunAnahtari)) return { gecerli: false, hata: 'Aynı kişi aynı gün birden fazla göreve atanmış.' };
+        gunSlotlar.add(gunSlotAnahtari);
+        kisiGunler.add(kisiGunAnahtari);
+      }
+
+      const beklenen = hazirlikIlkSayi(kismiCozum?.doldurulan_slot, kismiCozum?.dolu_slot);
+      if (beklenen === null || !Number.isInteger(beklenen) || beklenen < 1) {
+        return { gecerli: false, hata: 'Bildirilen dolu slot sayısı geçersiz.' };
+      }
+      if (atamalar.length !== beklenen) {
+        return { gecerli: false, hata: 'Atama sayısı ile bildirilen dolu slot sayısı uyuşmuyor.' };
+      }
+      const toplam = hazirlikIlkSayi(kismiCozum?.toplam_slot);
+      const bos = hazirlikIlkSayi(kismiCozum?.bos_slot, kismiCozum?.bulunan_bosluk);
+      if (toplam === null || bos === null || bos <= 0 || beklenen + bos !== toplam) {
+        return { gecerli: false, hata: 'Dolu, boş ve toplam slot sayıları birbiriyle uyuşmuyor.' };
+      }
+      return { gecerli: true, atamalar };
+    }
+
+    function hazirlikKismiCozumuKabulEt() {
+      const normalize = hazirlikKapasiteYanitiNormalizeEt(hazirlikKapasiteSonucu || {});
+      if (normalize.durum !== 'INFEASIBLE') return false;
+      const kismiCozum = normalize.kismiCozum;
+      const girdiImzasi = hazirlikKapasiteSonucu?._girdiImzasi;
+      if (!kismiCozum || !girdiImzasi || girdiImzasi !== cozumGirdiImzasiOlustur()) return false;
+
+      if (!hazirlikAtamalari(kismiCozum).length) return false;
+
+      const { yil, ay } = getYilAy();
+      const gunSayisi = getGunSayisi(yil, ay);
+      const atamaDogrulama = hazirlikKismiAtamalariniDogrula(kismiCozum, gunSayisi);
+      if (!atamaDogrulama.gecerli) {
+        console.error('[HEDEF] Kısmi çözüm sözleşmesi reddedildi:', atamaDogrulama.hata);
+        return false;
+      }
+      const atamalar = atamaDogrulama.atamalar;
+      const cizelge = {};
+      const adayListe = isleOrtoolsSonucu({ atamalar, cizelge }, gunSayisi);
+      const donusenAtamaSayisi = Object.values(adayListe?.atanan || {})
+        .reduce((toplam, gun) => toplam + Object.keys(gun || {}).length, 0);
+      if (donusenAtamaSayisi !== atamalar.length) {
+        console.error('[HEDEF] Kısmi çözüm dönüşümünde atama kaybı saptandı.');
+        return false;
+      }
+      aktifCozumIstekImzasi = girdiImzasi;
+      hesaplananListe = adayListe;
+      hesaplananListe._girdiImzasi = girdiImzasi;
+      hesaplananListe._kismiCozum = true;
+      hesaplananListe._optimumKanitlandi = hazirlikKismiOptimumKanitlandi(kismiCozum);
+      hesaplananListe._kapasiteAnalizId = hazirlikKapasiteSonucu.analiz_id || null;
+      atananlar = hesaplananListe.atanan;
+      hazirlikKismiCozumOnayi = {
+        girdiImzasi,
+        analizId: hazirlikKapasiteSonucu.analiz_id || null,
+        onayTarihi: new Date().toISOString()
+      };
+
+      const bosSlotDetaylari = hazirlikBosSlotDetaylari(kismiCozum);
+      window.ortoolsIstatistikler = {
+        ...(window.ortoolsIstatistikler || {}),
+        status: kismiCozum.solver_status || kismiCozum.minimum_bosluk_status || 'UNKNOWN',
+        kismi_cozum: true,
+        optimum_kanitlandi: hazirlikKismiOptimumKanitlandi(kismiCozum),
+        toplam_slot: kismiCozum.toplam_slot,
+        bos_slot_sayisi: kismiCozum.bos_slot ?? kismiCozum.bulunan_bosluk,
+        objective_bound: kismiCozum.objective_bound,
+        doluluk_raporu: { slot_detaylari: bosSlotDetaylari }
+      };
+
+      goStep(6);
+      let uyari = document.getElementById('kismi-cozum-onizleme-uyari');
+      if (!uyari) {
+        uyari = document.createElement('div');
+        uyari.id = 'kismi-cozum-onizleme-uyari';
+        uyari.className = 'rule-box mt-3';
+        uyari.style.cssText = 'background:#fff7ed;border-left:4px solid #ea580c;';
+        const tablo = document.getElementById('preview-table')?.closest('.table-responsive');
+        if (tablo?.parentNode) tablo.parentNode.insertBefore(uyari, tablo);
+      }
+      if (uyari) {
+        const kanitEtiketi = hazirlikKismiOptimumKanitlandi(kismiCozum)
+          ? 'Kanıtlanmış maksimum doluluk'
+          : 'Bulunan geçerli kısmi çözüm; maksimum olduğu kanıtlanmadı';
+        uyari.textContent = `Bilinçli kısmi çizelge — ${kanitEtiketi}. Bu gerçek görev-slotu çözümü salt okunur önizlemedir. Kalite/adalet optimizasyonu çalıştırılmadı; boş görevler aşağıda gösterilir.`;
+      }
+      onizlemeGuncelle();
+      return true;
+    }
+
+    function hazirlikKapasiteEylemiUygula(eylem) {
+      const guncelImza = cozumGirdiImzasiOlustur();
+      const analizImzasi = hazirlikKapasiteSonucu?._girdiImzasi;
+      if (!analizImzasi || analizImzasi !== guncelImza) {
+        hedefleriBayatIsaretle('Hazırlık analizinden sonra girdiler değişti.');
+        alert('Veriler değiştiği için bu analiz ve onay artık geçerli değil. Lütfen tekrar analiz edin.');
+        return;
+      }
+
+      if (eylem === 'preview' || eylem === 'whatif') {
+        const id = eylem === 'preview' ? 'hazirlik-kismi-onizleme' : 'hazirlik-whatif';
+        const alan = document.getElementById(id);
+        if (alan) alan.style.display = alan.style.display === 'none' ? 'block' : 'none';
+        return;
+      }
+      if (!bekleyenHazirlikKarari && hazirlikKapasiteSonucu?._hedefModeliHatasi) {
+        if (eylem === 'edit') {
+          goStep(4);
+        } else if (eylem === 'retry') {
+          hazirlikKapasiteSonucu = null;
+          void hedefleriHesapla();
+        }
+        return;
+      }
+      if (!bekleyenHazirlikKarari) return;
+      document.querySelectorAll('#hazirlik-analizi [data-hazirlik-action]').forEach(button => {
+        button.disabled = true;
+      });
+      if (eylem === 'partial') {
+        const normalize = hazirlikKapasiteYanitiNormalizeEt(hazirlikKapasiteSonucu);
+        if (normalize.durum !== 'INFEASIBLE') {
+          alert('Tam doluluğun imkânsızlığı kanıtlanmadan kısmi çizelge benimsenemez. Lütfen analizi tekrar çalıştırın.');
+          return;
+        }
+        const kismi = normalize.kismiCozum || {};
+        const doldurulan = hazirlikIlkSayi(kismi.doldurulan_slot, kismi.dolu_slot);
+        const toplam = hazirlikIlkSayi(kismi.toplam_slot);
+        const onay = confirm(
+          `Tam doluluğun imkânsızlığı kanıtlandı. ${doldurulan ?? '-'} / ${toplam ?? '-'} gerçek görev slotunu içeren `
+          + 'kısmi çizelgeyi salt-okunur sonuç olarak kabul ediyor musunuz?\n\n'
+          + 'Kalite/adalet optimizasyonu bu aşamada çalıştırılmamıştır.'
+        );
+        if (!onay) {
+          document.querySelectorAll('#hazirlik-analizi [data-hazirlik-action]').forEach(button => {
+            button.disabled = false;
+          });
+          return;
+        }
+        if (!hazirlikKismiCozumuKabulEt()) {
+          alert('Kısmi çizelge atamaları güncel girdilerle doğrulanamadı. Lütfen tekrar analiz edin.');
+          document.querySelectorAll('#hazirlik-analizi [data-hazirlik-action]').forEach(button => {
+            button.disabled = false;
+          });
+          return;
+        }
+        hazirlikBekleyenKarariBitir('partial_adopted');
+        return;
+      }
+      if (eylem === 'edit') goStep(4);
+      hazirlikBekleyenKarariBitir(eylem);
+    }
+
+    function hazirlikSessizIptalHatasi(eylem) {
+      const hata = new Error(eylem === 'stale'
+        ? 'Hazırlık analizi veri değişikliği nedeniyle geçersizleşti.'
+        : 'Hazırlık analizi kullanıcı kararıyla durduruldu.');
+      hata.hazirlikKullaniciIptali = true;
+      hata.hazirlikEylemi = eylem;
+      return hata;
     }
 
     async function hazirlikKapasiteKontrolEt(requestData) {
-      console.log('[HEDEF] Gün bazlı hazırlık kapasitesi kontrol ediliyor...');
-      const response = await authFetch(BACKEND_URL_KAPASITE, {
-        method: 'POST',
-        body: JSON.stringify(requestData),
-        timeoutMs: 60000
-      });
-      const result = await response.json();
-      if (!response.ok) {
-        throw new Error(result?.error || `Kapasite kontrolü HTTP ${response.status}`);
-      }
+      const girdiImzasi = cozumGirdiImzasiOlustur();
+      while (true) {
+        console.log('[HEDEF] Tam görev-slotu hazırlık kapasitesi kontrol ediliyor...');
+        const response = await authFetch(BACKEND_URL_KAPASITE, {
+          method: 'POST',
+          body: JSON.stringify(requestData),
+          timeoutMs: 60000
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result?.error || `Kapasite kontrolü HTTP ${response.status}`);
+        }
+        if (girdiImzasi !== cozumGirdiImzasiOlustur()) {
+          throw hazirlikSessizIptalHatasi('stale');
+        }
 
-      const fizibilite = result?.fizibilite;
-      if (!fizibilite?.durum) {
-        throw new Error('Kapasite kontrolü geçerli bir fizibilite sonucu döndürmedi.');
-      }
+        const hamDurum = result?.fizibilite?.durum || result?.durum;
+        if (!hamDurum) {
+          throw new Error('Kapasite kontrolü geçerli bir fizibilite sonucu döndürmedi.');
+        }
+        const normalize = hazirlikKapasiteYanitiNormalizeEt(result);
+        if (!['FEASIBLE', 'INFEASIBLE', 'UNKNOWN'].includes(normalize.durum)) {
+          throw new Error(`Kapasite kontrolü desteklenmeyen durum döndürdü: ${normalize.durum}`);
+        }
 
-      hazirlikKapasiteSonucu = fizibilite;
-      hazirlikKapasiteSonucuGoster(result);
-      const durum = String(fizibilite.durum).toUpperCase();
-      console.log(`[HEDEF] Hazırlık kapasite sonucu: ${durum}`);
+        hazirlikKapasiteSonucu = {
+          ...normalize.fizibilite,
+          _girdiImzasi: girdiImzasi,
+          analiz_id: normalize.fizibilite.analiz_id || normalize.zarf.analiz_id || null
+        };
+        hazirlikKismiCozumOnayi = null;
+        const durum = normalize.durum;
+        console.log(`[HEDEF] Hazırlık kapasite sonucu: ${durum}`);
 
-      if (durum !== 'FEASIBLE') {
+        if (durum === 'FEASIBLE') {
+          hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
+          return { ...result, action: 'continue' };
+        }
+
         hedeflerBayat = true;
         aktifPlanKontrati = null;
         aktifPlanHash = null;
         cozumuGecersizKil(`Hazırlık kapasite durumu ${durum}`);
-        const mesaj = fizibilite.neden?.mesaj || 'Gün bazlı kapasite kontrolü başarısız.';
-        throw new Error(`${durum}: ${mesaj}`);
+        const kararPromise = hazirlikKullaniciKarariBekle(girdiImzasi);
+        hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
+        const eylem = await kararPromise;
+        if (eylem === 'retry') continue;
+        if (eylem === 'partial_adopted') return { ...result, action: eylem };
+        throw hazirlikSessizIptalHatasi(eylem);
       }
-
-      return result;
     }
 
     // OR-Tools ile hedef hesapla
     async function hedefHesaplaOrtools() {
+      const istekImzasi = cozumGirdiImzasiOlustur();
       const { yil, ay } = getYilAy();
       const gunSayisi = getGunSayisi(yil, ay);
       const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
       const gunluk = parseInt(document.getElementById('inp-gunluk').value) || 5;
 
       // Saat değerlerini al
-      const saatDegerleri = {
-        hici: parseInt(document.getElementById('saat-hici')?.value) || 8,
-        prs: parseInt(document.getElementById('saat-prs')?.value) || 8,
-        cum: parseInt(document.getElementById('saat-cum')?.value) || 16,
-        cmt: parseInt(document.getElementById('saat-cmt')?.value) || 24,
-        pzr: parseInt(document.getElementById('saat-pzr')?.value) || 16
-      };
+      const saatDegerleri = Object.fromEntries(
+        GUN_TIPLERI.map(tip => [tip, getSaatDeger(tip)])
+      );
 
       // Gün tiplerini hazırla
       const gunTipleri = {};
@@ -8547,7 +9249,7 @@
       const gorevData = gorevler.map((g, idx) => ({
         id: g.id,
         ad: g.ad,
-        baseName: g.baseName || g.ad,
+        baseName: g.baseName || g.ad.replace(/ #\d+$/, ''),
         exclusive: kisitlamaExclusive && gorevKisitlamalari.some(k => k.gorevAdi === g.ad || k.gorevAdi === (g.baseName || g.ad)),
         ayriBina: g.ayriBina === true,
         binaId: g.binaId || (g.ayriBina ? `AYRI_BINA:${g.baseName || g.ad}` : 'ANA_BINA'),
@@ -8632,12 +9334,22 @@
         })),
         kilitliHedefler: kilitliHedefler,
         kurumProfili: getKurumProfili(),
+        maxAraGun: parseInt(document.getElementById('inp-max-aragun')?.value) || 0,
+        tamirPolitikasi: { ...VARSAYILAN_TAMIR_POLITIKASI },
+        kisitlamaExclusive,
         resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };
 
       console.log(`[HEDEF] OR-Tools hedef isteği: ${personelData.length} personel, ${gunSayisi} gün, ${gorevData.length} görev, ${kuralData.length} kural`);
 
-      await hazirlikKapasiteKontrolEt(requestData);
+      const kapasiteKarari = await hazirlikKapasiteKontrolEt(requestData);
+      if (kapasiteKarari?.action === 'partial_adopted') {
+        return {
+          basari: true,
+          kismiCozumBenimsendi: true,
+          mesaj: 'Tam modelin geçerli kısmi çizelgesi kullanıcı onayıyla benimsendi.'
+        };
+      }
 
       const response = await authFetch(BACKEND_URL_HEDEF, {
         method: 'POST',
@@ -8651,31 +9363,21 @@
 
       const result = await response.json();
       console.log(`[HEDEF] OR-Tools hedef sonucu: basari=${result.basari}, ${result.hedefler?.length || 0} hedef, mesaj=${result.mesaj || 'yok'}`);
+      if (istekImzasi !== cozumGirdiImzasiOlustur()) {
+        throw hazirlikSessizIptalHatasi('stale');
+      }
 
       if (!result.basari) {
-        const durum = String(result?.istatistikler?.status || 'INFEASIBLE').toUpperCase();
+        const durum = hazirlikHedefDurumuNormalizeEt(result?.istatistikler);
         // Backend insan dili tanı üretir (başlık/detay/öneriler); varsa
         // hazırlık panelindeki jenerik öneri yerine onu kullan.
         const tani = result.hedefTanisi || result.istatistikler?.hedef_tanisi || null;
-        hazirlikKapasiteSonucu = {
-          durum,
-          neden: {
-            kod: 'HEDEF_CP_SAT',
-            mesaj: (tani && tani.baslik) ? tani.baslik : (result.mesaj || 'Hedef modeli çözümsüz.')
-          },
-          oneri: (tani && Array.isArray(tani.oneriler) && tani.oneriler.length)
-            ? tani.oneriler.join(' ')
-            : 'Mazeretleri, ara gün değerini, manuel atamaları ve hard birlikte kurallarını gözden geçirin.',
-          solver: result.istatistikler || {}
-        };
-        hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
-        aktifPlanKontrati = null;
-        aktifPlanHash = null;
-        cozumuGecersizKil(`Hazırlık kapasite durumu ${durum}`);
+        hazirlikHedefModeliHatasiniKaydet(result, tani);
         // Ham CP-SAT debug'ı yalnız konsola gider; tanı hatayla taşınır ki
         // çağıran katman jenerik metinle değiştirmesin.
         const hata = new Error(result.mesaj || 'Hedef hesaplama başarısız');
         hata.hedefTanisi = tani;
+        hata.hedefModeliHatasi = true;
         throw hata;
       }
 
@@ -8727,13 +9429,19 @@
       btnListeOlustur.disabled = true;
 
       try {
+        const kismiOnayli = hazirlikKismiCozumOnayiGecerliMi();
         if (!hazirlikKapasiteSonucu) {
           hedeflerBayat = true;
-        } else if (String(hazirlikKapasiteSonucu.durum).toUpperCase() !== 'FEASIBLE') {
+        } else if (String(hazirlikKapasiteSonucu.durum).toUpperCase() !== 'FEASIBLE' && !kismiOnayli) {
           const durum = String(hazirlikKapasiteSonucu.durum || 'UNKNOWN').toUpperCase();
           goStep(5);
           hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
           throw new Error(`${durum}: Hazırlık kapasitesi uygun olmadığı için çizelge oluşturulamaz.`);
+        }
+        if (kismiOnayli) {
+          atananlar = hesaplananListe.atanan;
+          onizlemeGuncelle();
+          return;
         }
 
         // Hedefler hesaplanmış mı kontrol et
@@ -8766,6 +9474,11 @@
               hedefHesaplamaAktif = true;
               try {
                 const basarili = await hedefleriHesaplaOrtoolsAsync();
+                if (basarili === 'partial_adopted') {
+                  atananlar = hesaplananListe.atanan;
+                  onizlemeGuncelle();
+                  return;
+                }
                 if (!basarili) {
                   throw new Error('OR-Tools hedef hesaplama başarısız. Yerel fallback kapalı.');
                 }
@@ -8841,6 +9554,14 @@
 
       } catch (error) {
         console.error('Backend hatası:', error);
+        if (error?.hazirlikKullaniciIptali) {
+          console.log('[SOLVER] Hazırlık akışı kullanıcı kararı veya veri değişikliği nedeniyle durduruldu.');
+          return;
+        }
+        if (error?.hedefModeliHatasi) {
+          hedefHatasiniGoster(error);
+          return;
+        }
         if (!solverSorunRaporu) {
           solverSorunRaporu = {
             status: 'FRONTEND_ERROR',
@@ -9019,14 +9740,13 @@
 
       const result = await response.json();
 
-      // Bayat-plan (409): araya giren veri değişikliği önceki planHash'i
-      // geçersiz kıldı. Güncel hash'i benimseyip kullanıcıdan yeniden
-      // oluşturmasını iste (aynı verilerle tekrar deneme artık uyuşur).
+      // Bayat planın yalnız hash'ini benimsemek eski hedefleri korurdu.
+      // Önizlemeyi geçersizleştir; sonraki işlem hedefleri de yenilesin.
       if (response.status === 409 && result.error_type === 'PlanBayat') {
-        aktifPlanHash = result.guncelPlanHash || null;
+        hedefleriBayatIsaretle('Plan girdileri değişti.');
+        cozumuGecersizKil('Plan girdileri değişti.');
         const bayatMesaj = 'Veriler değiştiği için önceki plan bayat kaldı. '
-          + 'Plan güncellendi; lütfen "Liste Oluştur"u tekrar çalıştırın.';
-        alert('⚠️ ' + bayatMesaj);
+          + 'Lütfen hedefleri yeniden hesaplayın.';
         throw new Error(bayatMesaj);
       }
 
@@ -9044,7 +9764,13 @@
       solverDetayLogla(result, requestData);
 
       if (!response.ok || result.error) {
-        throw new Error(result.error || 'OR-Tools backend hatası');
+        const hata = new Error(result.error || 'OR-Tools backend hatası');
+        if (result.error_type === 'PlanBos') {
+          hata.hedefTanisi = result.hedefTanisi || result.istatistikler?.hedef_tanisi || null;
+          hata.hedefModeliHatasi = true;
+          hazirlikHedefModeliHatasiniKaydet(result, hata.hedefTanisi);
+        }
+        throw hata;
       }
 
       if (!result.basari) {
@@ -9160,7 +9886,12 @@
           const slotIdx = Number.parseInt(atama.slot_idx ?? atama.slotIdx, 10);
           const personelId = atama.personel_id ?? atama.personelId;
           const personel = personelListesi.find(kisi => String(kisi.id) === String(personelId));
-          if (!personel || !atanan[gunNo] || !(slotIdx >= 0 && slotIdx < siraliGorevler.length)) return;
+          if (!personel || !atanan[gunNo] || !(slotIdx >= 0 && slotIdx < siraliGorevler.length)) {
+            throw new Error('Çizelgedeki personel, gün veya görev kimliği doğrulanamadı.');
+          }
+          if (atanan[gunNo][slotIdx] !== undefined || Object.values(atanan[gunNo]).includes(personel.id)) {
+            throw new Error('Çizelgede aynı hücre veya aynı kişi-gün için birden fazla atama var.');
+          }
           if (atanan[gunNo][slotIdx] === undefined) {
             atanan[gunNo][slotIdx] = personel.id;
             toplamAtama++;
@@ -9168,8 +9899,9 @@
         });
       }
 
-      // Eski backend yanıtları ve normalize edilmiş legacy ID'ler için isim fallback'i.
+      // İsim eşleştirmesi yalnız ID içermeyen eski yanıtlarda ve benzersizse yapılır.
       for (let gunNo = 1; gunNo <= gunSayisi; gunNo++) {
+        if (Array.isArray(result.atamalar)) break;
         const gunAtamalari = result.cizelge?.[String(gunNo)] || result.cizelge?.[gunNo] || [];
 
         if (gunNo <= 3) {
@@ -9178,7 +9910,9 @@
 
         gunAtamalari.forEach((isim, idx) => {
           if (atanan[gunNo][idx] === undefined && isim && isim !== '-' && isim !== null) {
-            const personel = personelListesi.find(kisi => kisi.ad === isim);
+            const eslesenler = personelListesi.filter(kisi => kisi.ad === isim);
+            const personel = eslesenler.length === 1 ? eslesenler[0] : null;
+            if (!personel) throw new Error('İsim tabanlı eski yanıtta personel benzersiz eşleştirilemedi.');
             if (personel) {
               atanan[gunNo][idx] = personel.id;
               toplamAtama++;
@@ -9224,6 +9958,70 @@
       }
 
       return { atanan, kisiAtama, siraliGorevler };
+    }
+
+    function cizelgeGecmisKayitlariniOlustur(liste, yil, ay) {
+      const gunSayisi = getGunSayisi(yil, ay);
+      const kayitlar = Object.fromEntries(personelListesi.map(p => [String(p.id), {
+        ...Object.fromEntries(GUN_TIPLERI.map(tip => [tip, 0])), gorevler: {}
+      }]));
+      for (let gun = 1; gun <= gunSayisi; gun++) {
+        const gorulen = new Set();
+        for (let slot = 0; slot < gorevler.length; slot++) {
+          const pid = liste?.atanan?.[gun]?.[slot];
+          const kisi = String(pid);
+          if (pid === undefined || !Object.hasOwn(kayitlar, kisi) || gorulen.has(kisi)) {
+            throw new Error('Geçmişe yalnız eksiksiz ve geçerli çizelge kaydedilebilir.');
+          }
+          gorulen.add(kisi);
+          const tip = getGunTipi(yil, ay, gun);
+          kayitlar[kisi][tip]++;
+          const gorev = gorevler[slot].baseName || gorevler[slot].ad.replace(/ #\d+$/, '');
+          kayitlar[kisi].gorevler[gorev] = (kayitlar[kisi].gorevler[gorev] || 0) + 1;
+        }
+      }
+      return kayitlar;
+    }
+
+    async function cizelgeyiGecmiseKaydet() {
+      if (!cozumGecerliMi() || hesaplananListe?._kismiCozum) {
+        alert('Geçmişe kaydetmek için güncel ve tam bir çizelge oluşturun.');
+        return;
+      }
+      const { yil, ay } = getYilAy();
+      const kaydedilenListe = hesaplananListe;
+      let kayitlar;
+      try {
+        kayitlar = cizelgeGecmisKayitlariniOlustur(hesaplananListe, yil, ay);
+      } catch (error) {
+        alert(error.message);
+        return;
+      }
+      if (!confirm(`${ay}/${yil} çizelgesini geçmişe kaydetmek istiyor musunuz? Bu ayın mevcut nöbet ve görev sayıları bu çizelgeyle değiştirilir; tekrar kaydetmek sayıları artırmaz.`)) return;
+      const oncekiPersoneller = personelListesi;
+      personelListesi = personelListesi.map(p => ({
+        ...p,
+        yillikGecmis: {
+          ...(p.yillikGecmis || {}),
+          [yil]: { ...(p.yillikGecmis?.[yil] || {}), [ay]: kayitlar[String(p.id)] }
+        }
+      }));
+      const kayitImzasi = cozumGirdiImzasiOlustur();
+      kaydedilenListe._girdiImzasi = kayitImzasi;
+      try {
+        // Aynı yıl/ay anahtarına snapshot yazılır: yeniden kayıt idempotenttir.
+        await kaydetDonem(yil, ay, true);
+      } catch (error) {
+        if (cozumGirdiImzasiOlustur() === kayitImzasi) {
+          personelListesi = oncekiPersoneller;
+          kaydedilenListe._girdiImzasi = cozumGirdiImzasiOlustur();
+        }
+        alert('Geçmiş kaydedilemedi: ' + error.message);
+        return;
+      }
+      // Seçili ay geçmiş hedef hesabına dahil değildir; çözüm geçerliliği korunur.
+      ozetTablosuGuncelle();
+      alert('Çizelge bu dönemin geçmişine kaydedildi. Bulut kayıt durumunu üstteki senkronizasyon göstergesinden izleyebilirsiniz.');
     }
 
     // Eski backend ile liste oluştur
@@ -10664,7 +11462,7 @@
           gorevKisitlamalari.forEach(k => {
             if (Array.isArray(k.havuzIds) && k.havuzIds.length > 0) {
               const filteredIds = k.havuzIds.filter(id => String(id) !== String(k.personelId));
-              if (filteredIds.length > 0) {
+              if (filteredIds.length > 0 && !Object.hasOwn(gorevHavuzlari, k.gorevAdi)) {
                 // Görev bazlı havuza merge et (var olanları koru, yeni ekle)
                 const mevcutHavuz = gorevHavuzlari[k.gorevAdi] || [];
                 const birlesik = [...new Set([...mevcutHavuz.map(String), ...filteredIds.map(String)])];
@@ -10936,6 +11734,7 @@
       document.getElementById('inp-ay')?.addEventListener('change', donemDegisti);
       document.getElementById('inp-gunluk')?.addEventListener('change', () => hedefleriBayatIsaretle('Günlük görev sayısı değişti.'));
       document.getElementById('inp-aragun')?.addEventListener('change', () => hedefleriBayatIsaretle('Ara gün değeri değişti.'));
+      document.getElementById('inp-max-aragun')?.addEventListener('change', () => hedefleriBayatIsaretle('Maksimum ara gün değeri değişti.'));
       GUN_TIPLERI.forEach(tip => {
         document.getElementById(`saat-${tip}`)?.addEventListener('change', () => hedefleriBayatIsaretle('Saat değeri değişti.'));
       });

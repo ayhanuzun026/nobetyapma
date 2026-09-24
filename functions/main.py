@@ -27,6 +27,7 @@ from planlayici import (
     kilitli_hucre_atamalari,
     ortak_plan_uret,
     plan_hash_bayat_mi,
+    plan_girdi_hash,
 )
 from parsers import (
     build_gun_tipleri,
@@ -239,6 +240,9 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             gorev_kota_overrides=gorev_kota_overrides,
             kaynak="nobet_dagit_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
+            kisitlama_istisnalari=kisitlama_istisnalari,
+            birlikte_istisnalari=birlikte_istisnalari,
+            aragun_istisnalari=aragun_istisnalari,
             kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
             resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
         )
@@ -403,6 +407,9 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
         kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
         birlikte_istisnalari = parse_birlikte_istisnalari(data, personeller)
         aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
+        kilitli_hedefler = frontend_kilitli_hedefleri_topla(
+            personeller, data.get("kilitliHedefler")
+        )
 
         sonuc = kapasite_hesapla(
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
@@ -413,6 +420,7 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
             gorevler=gorevler, kurallar=kurallar,
             gorev_havuzlari=gorev_havuzlari,
             kisitlama_istisnalari=kisitlama_istisnalari,
+            kilitli_hedefler=kilitli_hedefler,
             kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
             max_sure_saniye=min(20, _solver_suresi(data, 10, upper_bound=20)),
         )
@@ -451,6 +459,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
 
         try:
             gun_sayisi = _safe_int(data.get("gunSayisi", 31), 31)
+            slot_sayisi = _safe_int(data.get("slotSayisi", len(data.get("gorevler") or [])), 0)
             gun_tipleri_raw = data.get("gunTipleri", {})
             gun_tipleri = {int(k): v for k, v in gun_tipleri_raw.items()}
             ara_gun = _safe_int(data.get("araGun", 2), 2)
@@ -460,14 +469,15 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
         if gun_sayisi < 1 or gun_sayisi > 31:
             return _json_response({"error": f"Geçersiz gün sayısı: {gun_sayisi}"}, status=400)
         try:
-            _validate_input_sizes(data, len(data.get("gorevler") or []))
+            _validate_input_sizes(data, max(slot_sayisi, len(data.get("gorevler") or [])))
         except ValueError as ve:
             return _json_response({"error": str(ve), "error_type": "GirdiCokBuyuk"}, status=400)
 
         saat_degerleri = data.get("saatDegerleri", None)
         resmi_tatiller = data.get("resmiTatiller", [])
 
-        personeller = parse_solver_personeller_hedef(data)
+        gorevler = parse_solver_gorevler_nobet_coz(data, slot_sayisi)
+        personeller = parse_solver_personeller_coz(data, gorevler)
 
         duplicate_ids = _find_duplicate_personel_ids(personeller)
         if duplicate_ids:
@@ -477,7 +487,6 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             personeller, data.get("kilitliHedefler")
         )
 
-        gorevler = parse_solver_gorevler(data)
         kurallar = parse_kurallar(data, personeller)
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari = parse_gorev_kisitlamalari(data, personeller)
@@ -486,6 +495,10 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
         except ValueError as ve:
             return _json_response({"error": str(ve), "error_type": "ValueError"}, status=400)
+
+        kisitlama_istisnalari = parse_kisitlama_istisnalari(data, personeller, gorevler)
+        birlikte_istisnalari = parse_birlikte_istisnalari(data, personeller)
+        aragun_istisnalari = parse_aragun_istisnalari(data, personeller)
 
         planlama = ortak_plan_uret(
             gun_sayisi=gun_sayisi,
@@ -501,6 +514,9 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             kilitli_hedefler=kilitli_hedefler,
             kaynak="nobet_hedef_hesapla_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
+            kisitlama_istisnalari=kisitlama_istisnalari,
+            birlikte_istisnalari=birlikte_istisnalari,
+            aragun_istisnalari=aragun_istisnalari,
             kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
             resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
         )
@@ -514,7 +530,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             "istatistikler": sonuc.istatistikler, "mesaj": sonuc.mesaj,
             "hedefTanisi": (sonuc.istatistikler or {}).get("hedef_tanisi", {}),
             "planKontrati": plan_kontrati.to_dict() if plan_kontrati else None,
-            "planHash": plan_kontrati.plan_hash if plan_kontrati else None,
+            "planHash": plan_girdi_hash(data) if plan_kontrati else None,
         }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_hedef_hesapla", data, cikti, sure_ms,
@@ -624,6 +640,18 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 eklenen += 1
             logger.info("nobet_coz kismi yeniden cozum: %d kilitli hucre sabitlendi", eklenen)
 
+        # Bayatlığı yeniden optimizasyonun değişebilen sonucuyla karşılaştırma.
+        # Aynı girdiler hedef/çözüm endpoint'lerinde aynı imzayı üretir.
+        gonderilen_plan_hash = data.get("planHash")
+        guncel_plan_hash = plan_girdi_hash(data)
+        if plan_hash_bayat_mi(gonderilen_plan_hash, guncel_plan_hash):
+            return _json_response({
+                "error": "Plan girdileri değişti. Hedefleri yeniden hesaplayın.",
+                "error_type": "PlanBayat",
+                "gonderilenPlanHash": gonderilen_plan_hash,
+                "guncelPlanHash": guncel_plan_hash,
+            }, status=409)
+
         # Ortak planlayici: preview ve final ayni plani kullansin
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari_dict = parse_gorev_kisitlamalari(data, personeller)
@@ -647,6 +675,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 kilitli_hedefler=kilitli_hedefler,
                 gorev_kota_overrides=gorev_kota_overrides,
                 gorev_havuzlari=gorev_havuzlari,
+                kisitlama_istisnalari=kisitlama_istisnalari,
+                birlikte_istisnalari=birlikte_istisnalari,
+                aragun_istisnalari=aragun_istisnalari,
                 kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
                 resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
             )
@@ -679,26 +710,12 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             return _json_response({
                 "error": mesaj,
                 "hedefTanisi": tani,
+                "istatistikler": (
+                    hesap_sonuc.istatistikler
+                    if hesap_sonuc is not None else {}
+                ),
                 "error_type": "PlanBos"
             }, status=400)
-
-        # Bayat-plan (optimistik eszamanlilik) kontrolu: istemci onceki
-        # onizlemeden aldigi planHash'i gonderir. Arada girdi degistiyse
-        # yeniden uretilen plan_hash farkli olur -> pahali cozumden ONCE 409.
-        gonderilen_plan_hash = data.get("planHash")
-        guncel_plan_hash = plan_kontrati.plan_hash if plan_kontrati else None
-        if plan_hash_bayat_mi(gonderilen_plan_hash, guncel_plan_hash):
-            logger.info(
-                "nobet_coz bayat plan reddedildi: gonderilen=%s guncel=%s",
-                gonderilen_plan_hash, guncel_plan_hash,
-            )
-            return _json_response({
-                "error": "Plan bayat: gonderilen planHash guncel veriyle uyusmuyor. "
-                         "Onizlemeyi yenileyip tekrar deneyin.",
-                "error_type": "PlanBayat",
-                "gonderilenPlanHash": gonderilen_plan_hash,
-                "guncelPlanHash": guncel_plan_hash,
-            }, status=409)
 
         def _plan_yenileyici(yeni_ara_gun: int):
             return ortak_plan_uret(
@@ -716,6 +733,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 gorev_kota_overrides=gorev_kota_overrides,
                 kaynak=(plan_kontrati.kaynak if plan_kontrati else None),
                 gorev_havuzlari=gorev_havuzlari,
+                kisitlama_istisnalari=kisitlama_istisnalari,
+                birlikte_istisnalari=birlikte_istisnalari,
+                aragun_istisnalari=aragun_istisnalari,
                 kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
                 resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
             )
@@ -783,10 +803,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             "planKontrati": (
                 son_plan_kontrati or (plan_kontrati.to_dict() if plan_kontrati else None)
             ),
-            "planHash": (
-                (sonuc.istatistikler.get("plan", {}) or {}).get("plan_hash")
-                if isinstance(sonuc.istatistikler, dict) else None
-            ) or (plan_kontrati.plan_hash if plan_kontrati else None),
+            "planHash": guncel_plan_hash,
         }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_coz", data, cikti, sure_ms,
