@@ -2863,6 +2863,25 @@ def test_fizibilite_detaylari_insan_diline_cevrilir():
     assert d["grup_adlari"] == ["Ayhan", "Veli"], d
     assert "Ayhan" in d["aciklama"], d
 
+    # 8) AYRI_KURALI_CAKISMASI — hard ayrı çakışması artık gün-bazlı ön analizde
+    # kendi koduyla yakalanır (eski davranış generic'e düşüyordu).
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=2,
+        personeller=[P(1, "Ayhan"), P(2, "Veli")],
+        slot_sayisi=2, ara_gun=0,
+        ayri_kurallar=[SolverKural(tur="ayri", kisiler=[1, 2], politika="kullanici_onayli")],
+    )
+    assert s["neden"]["kod"] == "AYRI_KURALI_CAKISMASI", s
+    assert s["durum"] == "INFEASIBLE", s
+    # Soft ayrı fizibiliteyi bozmaz.
+    s2 = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=2,
+        personeller=[P(1, "Ayhan"), P(2, "Veli")],
+        slot_sayisi=2, ara_gun=0,
+        ayri_kurallar=[SolverKural(tur="ayri", kisiler=[1, 2], politika="soft")],
+    )
+    assert s2["durum"] == "FEASIBLE", s2
+
 
 if __name__ == "__main__":
     tests = [name for name in globals() if name.startswith("test_")]

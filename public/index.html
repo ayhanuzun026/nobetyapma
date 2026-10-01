@@ -1522,7 +1522,7 @@
     let aktifCozumIstekImzasi = null;
     let gunTipiDegisimKayitlari = [];
     let mazeretDegisti = false; // Step 4'te mazeret değiştiğinde true olur, hedef hesaplanınca false
-    let hedeflerBayat = true;
+    let hedeflerImzasi = null; // Hedef hesabı başarılıyken cozumGirdiImzasiOlustur() değeri yazılır; bayatlık türetilir
     let hazirlikKapasiteSonucu = null;
     let hazirlikKismiCozumOnayi = null;
     let bekleyenHazirlikKarari = null;
@@ -1584,8 +1584,9 @@
     function isWEGun(tip) { return WE_TIPLERI.includes(tip); }
     function isWDGun(tip) { return WD_TIPLERI.includes(tip); }
 
+    // Girdi değişti: bayatlık artık imzadan türediği için burada yalnız
+    // hazırlık/plan durumu temizlenir (imza zaten güncel girdiyi yansıtır).
     function hedefleriBayatIsaretle(neden = '') {
-      hedeflerBayat = true;
       hazirlikBekleyenKarariBitir('stale');
       hazirlikKapasiteSonucu = null;
       hazirlikKismiCozumOnayi = null;
@@ -1970,6 +1971,15 @@
         hesaplananListe._girdiImzasi &&
         hesaplananListe._girdiImzasi === cozumGirdiImzasiOlustur()
       );
+    }
+
+    // Hedeflerin bayat olup olmadığı elle tutulan bir bayrakla değil, girdi
+    // imzasıyla türetilir: hedefler hesaplanırken imza kaydedilir, okunduğunda
+    // güncel imzayla karşılaştırılır. Yeni bir girdi alanı eklendiğinde
+    // imza kapsamına girmezse bayatlık da kapsam dışı kalır (unutulma riski
+    // bayrak sayısıyla birlikte sıfırlanır).
+    function hedeflerBayatMi() {
+      return hedeflerImzasi !== cozumGirdiImzasiOlustur();
     }
 
     function cozumuGecersizKil(neden = 'Çözümü etkileyen veriler değişti.') {
@@ -4882,7 +4892,7 @@
           // Tabloyu güncelle
           hedefTablosuGuncelle();
           ozelGorevSectionGuncelle();
-          hedeflerBayat = false;
+          hedeflerImzasi = cozumGirdiImzasiOlustur();
           mazeretDegisti = false;
           kaydetDebounced();
 
@@ -4892,12 +4902,12 @@
           }
           return true;
         }
-        hedeflerBayat = true;
+        // Başarısız sonuç: imza yazılmaz, bayatlık kendiliğinden sürer.
         return false;
       } catch (error) {
         console.error('OR-Tools hedef hesaplama hatası:', error);
         sonHedefHatasi = error;
-        hedeflerBayat = true;
+        // Hata durumu: imza yazılmaz, bayatlık kendiliğinden sürer.
         throw error;
       }
     }
@@ -8565,7 +8575,7 @@
         _girdiImzasi: cozumGirdiImzasiOlustur(),
         _hedefModeliHatasi: true
       };
-      hedeflerBayat = true;
+      // Hedef modeli başarısız: imza yazılmaz, bayatlık korunur.
       aktifPlanKontrati = null;
       aktifPlanHash = null;
       cozumuGecersizKil(`Hedef/plan modeli durumu ${durum}`);
@@ -9255,7 +9265,7 @@
           return { ...result, action: 'continue' };
         }
 
-        hedeflerBayat = true;
+        // Fizibilite dışı: hazırlık planı geçersiz, hedefler bayat (imzadan türetilir).
         aktifPlanKontrati = null;
         aktifPlanHash = null;
         cozumuGecersizKil(`Hazırlık kapasite durumu ${durum}`);
@@ -9504,9 +9514,9 @@
 
       try {
         const kismiOnayli = hazirlikKismiCozumOnayiGecerliMi();
-        if (!hazirlikKapasiteSonucu) {
-          hedeflerBayat = true;
-        } else if (String(hazirlikKapasiteSonucu.durum).toUpperCase() !== 'FEASIBLE' && !kismiOnayli) {
+        if (hazirlikKapasiteSonucu
+            && String(hazirlikKapasiteSonucu.durum).toUpperCase() !== 'FEASIBLE'
+            && !kismiOnayli) {
           const durum = String(hazirlikKapasiteSonucu.durum || 'UNKNOWN').toUpperCase();
           goStep(5);
           hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
@@ -9518,14 +9528,15 @@
           return;
         }
 
-        // Hedefler hesaplanmış mı kontrol et
+        // Hedefler hesaplanmış mı kontrol et (bayatlık imzadan türetilir)
+        const hedeflerBayatDegeri = hedeflerBayatMi();
         const hedefBosKisi = personelListesi.filter(p => {
           const toplam = GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0);
           return toplam === 0;
         }).length;
 
-        if (hedeflerBayat || hedefBosKisi > personelListesi.length / 2) {
-          console.log(hedeflerBayat
+        if (hedeflerBayatDegeri || hedefBosKisi > personelListesi.length / 2) {
+          console.log(hedeflerBayatDegeri
             ? '[LOCK] Hedef girdileri değişti, hedefler yeniden hesaplanıyor...'
             : '[LOCK] Hedefler boş, önce hesaplanıyor...');
           // Lock kontrolü - zaten çalışıyorsa bekle
@@ -9539,7 +9550,7 @@
             }
             if (hedefHesaplamaAktif) {
               throw new Error('Hedef hesaplama 30 saniye içinde tamamlanmadı; çözüm başlatılmadı.');
-            } else if (hedeflerBayat) {
+            } else if (hedeflerBayatMi()) {
               throw new Error('Hedef hesaplama tamamlanamadı; bayat hedeflerle çözüm başlatılmadı.');
             }
           } else {
@@ -11710,7 +11721,7 @@
       devirListesi = [];
       selectedCells = [];
       mazeretDegisti = false;
-      hedeflerBayat = true;
+      hedeflerImzasi = null;
       aktifPlanKontrati = null;
       aktifPlanHash = null;
       document.getElementById('inp-yil').value = String(yil);
@@ -11778,7 +11789,7 @@
       const yil = parseInt(document.getElementById('inp-yil').value, 10);
       const ay = parseInt(document.getElementById('inp-ay').value, 10);
       veriYuklendi = false;
-      hedeflerBayat = true;
+      hedeflerImzasi = null;
       aktifPlanKontrati = null;
       aktifPlanHash = null;
 

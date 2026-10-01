@@ -947,11 +947,13 @@ def gun_bazli_fizibilite_kontrolu(
     birlikte_kurallar: Optional[List[SolverKural]] = None,
     birlikte_istisnalari: Optional[List[Dict]] = None,
     aragun_istisnalari: Optional[List[Dict]] = None,
+    ayri_kurallar: Optional[List[SolverKural]] = None,
     max_sure_saniye: int = 5,
 ) -> Dict:
     """Temel kişi-gün kısıtları için kesin CP-SAT fizibilite denetimi."""
     manuel_atamalar = list(manuel_atamalar or [])
     birlikte_kurallar = list(birlikte_kurallar or [])
+    ayri_kurallar = list(ayri_kurallar or [])
     birlikte_istisnalari = list(birlikte_istisnalari or [])
     aragun_istisnalari = list(aragun_istisnalari or [])
     ara_gun = max(0, int(ara_gun or 0))
@@ -1210,6 +1212,27 @@ def gun_bazli_fizibilite_kontrolu(
 
     from ortools.sat.python import cp_model as cp
 
+    # Hard "ayrı" grupları: aynı gruptaki iki kişi aynı gün ikisine birden
+    # yazılamaz. Çözücü bu kuralı gün düzeyinde ikili yasak olarak modeller
+    # (ortools_solver H5_AYRI_TUTMA); ön analiz de aynı biçimi kullanır, böylece
+    # ayrı kuralından doğan çakışma generic kod yerine adıyla yakalanır.
+    # Soft politikalı gruplar kasıtlı olarak dışarıda: onlar tercihtir, fizibiliteyi
+    # bozmazlar.
+    hard_ayri_gruplar: List[List[int]] = []
+    for kural in ayri_kurallar:
+        if getattr(kural, 'tur', None) != 'ayri':
+            continue
+        politika = str(getattr(kural, 'politika', 'kullanici_onayli') or 'kullanici_onayli').strip().lower()
+        if politika == 'soft' and not bool(getattr(kural, 'asla_gevsetme', False)):
+            continue
+        grup = []
+        for raw_pid in getattr(kural, 'kisiler', []) or []:
+            pid = find_matching_id(raw_pid, pids)
+            if pid is not None and pid not in grup:
+                grup.append(pid)
+        if len(grup) >= 2:
+            hard_ayri_gruplar.append(grup)
+
     model = cp.CpModel()
     kisi_gun = {
         (pid, gun): model.NewBoolVar(f'kap_kisi_gun_{pid}_{gun}')
@@ -1261,6 +1284,14 @@ def gun_bazli_fizibilite_kontrolu(
                     model.Add(
                         kisi_gun[referans_id, gun] == kisi_gun[diger_id, gun]
                     ).OnlyEnforceIf(varsayim('HARD_BIRLIKTE'))
+
+    for grup in hard_ayri_gruplar:
+        for idx, referans_id in enumerate(grup):
+            for diger_id in grup[idx + 1:]:
+                for gun in gunler:
+                    model.Add(
+                        kisi_gun[referans_id, gun] + kisi_gun[diger_id, gun] <= 1
+                    ).OnlyEnforceIf(varsayim('HARD_AYRI'))
 
     def ara_gun_pencere_aciklari() -> List[Dict]:
         if ara_gun <= 0:
@@ -1346,6 +1377,10 @@ def gun_bazli_fizibilite_kontrolu(
             'HARD_BIRLIKTE_CAKISMASI',
             'Hard birlikte kuralı diğer günlük kısıtlarla çakışıyor.',
         ),
+        'HARD_AYRI': (
+            'AYRI_KURALI_CAKISMASI',
+            'Hard ayrı kuralı diğer günlük kısıtlarla çakışıyor.',
+        ),
     }
     if pencere_aciklari:
         ilk_acik = pencere_aciklari[0]
@@ -1373,6 +1408,8 @@ def gun_bazli_fizibilite_kontrolu(
         oneriler.append('ara gün değerini azaltın')
     if 'HARD_BIRLIKTE' in core_gruplari:
         oneriler.append('birlikte kuralını veya grup üyelerinin ortak müsaitliğini gözden geçirin')
+    if 'HARD_AYRI' in core_gruplari:
+        oneriler.append('ayrı kuralındaki kişileri ve günleri gözden geçirin (kuralı soft yapın veya gruptakilerin müsait günlerini artırın)')
     if not oneriler:
         oneriler.append('günlük slot sayısını ve personel uygunluğunu gözden geçirin')
 
@@ -1432,6 +1469,7 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
     manuel_atamalar = list(manuel_atamalar or [])
     tum_kurallar = list(kurallar if kurallar is not None else (birlikte_kurallar or []))
     birlikte_kurallari = [kural for kural in tum_kurallar if kural.tur == 'birlikte']
+    ayri_kurallari = [kural for kural in tum_kurallar if kural.tur == 'ayri']
     birlikte_istisnalari = list(birlikte_istisnalari or [])
     aragun_istisnalari = list(aragun_istisnalari or [])
     gorev_havuzlari = dict(gorev_havuzlari or {})
@@ -1473,6 +1511,7 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
             birlikte_kurallar=birlikte_kurallari,
             birlikte_istisnalari=birlikte_istisnalari,
             aragun_istisnalari=aragun_istisnalari,
+            ayri_kurallar=ayri_kurallari,
             max_sure_saniye=1,
         )
     else:

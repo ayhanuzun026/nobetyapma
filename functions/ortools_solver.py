@@ -29,6 +29,22 @@ import threading
 _cp_model_lock = threading.Lock()
 _cp_model_module = None
 
+_plan_defaults_module = None
+
+
+def _plan_defaults():
+    """planlayici.DEFAULT_PLAN_UYGULAMA — tembel (döngüsel import'tan kaçınır).
+
+    Solver'daki plan-okuma yedekleri bu sözlükle hizalıdır; iki ayrı yerde
+    aynı sayı yazılmaz. Yeni bir plan alanı eklendiğinde yedeği buradan gelir.
+    """
+    global _plan_defaults_module
+    if _plan_defaults_module is None:
+        from planlayici import DEFAULT_PLAN_UYGULAMA as _defaults
+        _plan_defaults_module = dict(_defaults)
+    return _plan_defaults_module
+
+
 def _get_cp_model():
     global _cp_model_module
     if _cp_model_module is None:
@@ -270,24 +286,31 @@ class NobetSolver:
     def _plan_aktif_mi(self) -> bool:
         if not isinstance(self.plan_kontrati, dict) or not self.plan_kontrati:
             return False
-        return bool(self.plan_uygulama.get("yetkili", True))
+        return bool(self.plan_uygulama.get("yetkili", _plan_defaults()["yetkili"]))
 
     def _plan_penalty_multiplier(self) -> int:
         if not self._plan_aktif_mi():
             return 1
         try:
-            return max(1, int(self.plan_uygulama.get("plan_sadakat_agirlik_carpani", 1)))
+            return max(1, int(self.plan_uygulama.get(
+                "plan_sadakat_agirlik_carpani",
+                _plan_defaults()["plan_sadakat_agirlik_carpani"],
+            )))
         except (TypeError, ValueError):
             return 1
 
     def _plan_toplam_hard_mi(self) -> bool:
-        return self._plan_aktif_mi() and bool(self.plan_uygulama.get("toplam_hard", True))
+        return self._plan_aktif_mi() and bool(self.plan_uygulama.get(
+            "toplam_hard", _plan_defaults()["toplam_hard"],
+        ))
 
     def _plan_gun_tipi_toleransi(self) -> int:
         if not self._plan_aktif_mi():
             return 0
         try:
-            return max(0, int(self.plan_uygulama.get("gun_tipi_toleransi", 0)))
+            return max(0, int(self.plan_uygulama.get(
+                "gun_tipi_toleransi", _plan_defaults()["gun_tipi_toleransi"],
+            )))
         except (TypeError, ValueError):
             return 0
 
@@ -295,7 +318,9 @@ class NobetSolver:
         if not self._plan_aktif_mi():
             return 0
         try:
-            return max(0, int(self.plan_uygulama.get("gorev_kota_toleransi", 0)))
+            return max(0, int(self.plan_uygulama.get(
+                "gorev_kota_toleransi", _plan_defaults()["gorev_kota_toleransi"],
+            )))
         except (TypeError, ValueError):
             return 0
 
@@ -303,24 +328,33 @@ class NobetSolver:
         if not self._plan_aktif_mi():
             return False
         gun_iskeleti = self.plan_kontrati.get("gun_iskeleti", {}) if isinstance(self.plan_kontrati, dict) else {}
-        return bool(self.plan_uygulama.get("gun_iskeleti_kullan", False) and gun_iskeleti.get("aktif"))
+        return bool(self.plan_uygulama.get(
+            "gun_iskeleti_kullan", _plan_defaults()["gun_iskeleti_kullan"],
+        ) and gun_iskeleti.get("aktif"))
 
     def _gun_iskeleti_toleransi(self) -> int:
         if not self._gun_iskeleti_aktif_mi():
             return 999999
         try:
-            return max(0, int(self.plan_uygulama.get("gun_iskeleti_toleransi", 0)))
+            return max(0, int(self.plan_uygulama.get(
+                "gun_iskeleti_toleransi", _plan_defaults()["gun_iskeleti_toleransi"],
+            )))
         except (TypeError, ValueError):
             return 0
 
     def _gun_iskeleti_hard_mi(self) -> bool:
-        return self._gun_iskeleti_aktif_mi() and bool(self.plan_uygulama.get("gun_iskeleti_hard", False))
+        return self._gun_iskeleti_aktif_mi() and bool(self.plan_uygulama.get(
+            "gun_iskeleti_hard", _plan_defaults()["gun_iskeleti_hard"],
+        ))
 
     def _gun_iskeleti_agirligi(self) -> int:
         if not self._gun_iskeleti_aktif_mi():
             return 0
         try:
-            return max(1, int(self.plan_uygulama.get("gun_iskeleti_sadakat_agirligi", 2500)))
+            return max(1, int(self.plan_uygulama.get(
+                "gun_iskeleti_sadakat_agirligi",
+                _plan_defaults()["gun_iskeleti_sadakat_agirligi"],
+            )))
         except (TypeError, ValueError):
             return 2500
 
