@@ -580,3 +580,37 @@ test('kurum profili (112) selection persists and is sent to both endpoints', () 
   const coz = [...html.matchAll(/kurumProfili:\s*getKurumProfili\(\)/g)];
   assert.ok(coz.length >= 2, 'kurumProfili hem hedef hem coz payloadinda olmali');
 });
+
+test('infeasibility details render the human-readable sentence, not raw IDs', () => {
+  // Saf yardimci: backend'in urettigi neden.detay.aciklama cumlesini cikarir.
+  const metin = evaluateFunctions(
+    ['hazirlikNedenAciklamasi'],
+    'hazirlikNedenAciklamasi'
+  );
+  assert.equal(
+    metin({ detay: { aciklama: 'Ayhan için 17. gün manuel atama var.' } }),
+    'Ayhan için 17. gün manuel atama var.'
+  );
+  // Aciklama yoksa isimli alanlardan cumle kurar; ham ID'ye dusmez.
+  assert.match(
+    metin({ detay: { personel_ad: 'Veli', gun: 3 } }),
+    /Veli/
+  );
+  assert.match(
+    metin({ detay: { mazeretli_adlar: ['Ayhan', 'Veli'], gun: 5 } }),
+    /Ayhan, Veli/
+  );
+  assert.match(
+    metin({ detay: { grup_adlari: ['Ayhan', 'Can'] } }),
+    /Ayhan, Can/
+  );
+  // Hicbir insan-dili alani yoksa bos doner (jenerik mesaj devrede kalir).
+  assert.equal(metin({ detay: { slot_idx: 2 } }), '');
+  assert.equal(metin({}), '');
+  assert.equal(metin(null), '');
+
+  // Panel bu cumleyi neden nesnesinden turetip escape ederek basar.
+  const renderer = functionSource('hazirlikKapasiteSonucuGoster');
+  assert.match(renderer, /const nedenAciklamasi = hazirlikNedenAciklamasi\(neden\)/);
+  assert.match(renderer, /\$\{escapeHtml\(nedenAciklamasi\)\}/);
+});

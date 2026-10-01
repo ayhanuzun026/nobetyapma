@@ -8613,6 +8613,33 @@
       }
     }
 
+    function hazirlikNedenAciklamasi(neden) {
+      const detay = neden && typeof neden === 'object' ? neden.detay : null;
+      if (!detay || typeof detay !== 'object') return '';
+      if (detay.aciklama) return String(detay.aciklama);
+      const adListesi = (deger) => (Array.isArray(deger)
+        ? deger.filter(x => x !== null && x !== undefined && x !== '').map(String)
+        : []);
+      const gun = Number.parseInt(detay.gun, 10);
+      const gunMetni = Number.isFinite(gun) ? `${gun}. gün` : '';
+      const mazeretli = adListesi(detay.mazeretli_adlar);
+      if (mazeretli.length) {
+        return `${gunMetni ? `${gunMetni}: ` : ''}mazeretli/izinli olanlar: ${mazeretli.join(', ')}.`;
+      }
+      const grup = adListesi(detay.grup_adlari);
+      if (grup.length) {
+        return `${gunMetni ? `${gunMetni}: ` : ''}birlikte çalışması zorunlu grup: ${grup.join(', ')}.`;
+      }
+      const cokKisi = adListesi(detay.personel_adlari);
+      if (cokKisi.length) {
+        return `${gunMetni ? `${gunMetni}: ` : ''}${cokKisi.join(', ')} aynı göreve atanmış.`;
+      }
+      if (detay.personel_ad) {
+        return `${String(detay.personel_ad)}${gunMetni ? ` — ${gunMetni}` : ''} kaynaklı çakışma.`;
+      }
+      return '';
+    }
+
     function hazirlikDizi(value) {
       return Array.isArray(value) ? value : [];
     }
@@ -8792,6 +8819,7 @@
         || kismiCozum?.status || 'UNKNOWN'
       ).toUpperCase();
       const optimumKanitlandi = hazirlikKismiOptimumKanitlandi(kismiCozum);
+      const nedenAciklamasi = hazirlikNedenAciklamasi(neden);
       const doldurulan = hazirlikIlkSayi(kismiCozum?.doldurulan_slot, kismiCozum?.dolu_slot);
       const toplam = hazirlikIlkSayi(kismiCozum?.toplam_slot, fizibilite?.toplam_slot);
       const bos = hazirlikIlkSayi(
@@ -8874,6 +8902,7 @@
             <div>
               <div style="font-size:17px; font-weight:800; color:${renk};">${escapeHtml(baslik)}</div>
               <div style="font-size:12px; margin-top:5px;">${escapeHtml(neden.mesaj || fizibilite.mesaj || varsayilanMesaj)}</div>
+              ${nedenAciklamasi ? `<div style="font-size:12px; margin-top:6px; padding:8px; background:#fff; border-radius:6px; font-weight:600;">${escapeHtml(nedenAciklamasi)}</div>` : ''}
               ${fizibilite.oneri ? `<div style="font-size:12px; margin-top:6px;"><strong>Öneri:</strong> ${escapeHtml(fizibilite.oneri)}</div>` : ''}
             </div>
             <span class="badge ${uygun ? 'badge-ok' : bilinmiyor ? 'badge-warn' : 'badge-bad'}" style="font-size:13px; padding:6px 10px;">${escapeHtml(durum)}</span>

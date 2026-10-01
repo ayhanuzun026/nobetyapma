@@ -2772,6 +2772,98 @@ def test_izin_yerlesim_112():
     assert gunler == [10], gunler
 
 
+
+def test_fizibilite_detaylari_insan_diline_cevrilir():
+    """Her INFEASIBLE dali ham ID yerine personel adi + aciklama cumlesi dondurur."""
+    def P(pid, ad, **kw):
+        return SolverPersonel(id=pid, ad=ad, **kw)
+
+    # 1) PERSONEL_YETERSIZ
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=1, personeller=[P(1, "Ayhan")], slot_sayisi=3,
+    )
+    assert s["neden"]["kod"] == "PERSONEL_YETERSIZ", s
+    assert "aciklama" in s["neden"]["detay"], s
+    assert "3" in s["neden"]["detay"]["aciklama"]
+
+    # 2) MANUEL_KISI_GUN_CAKISMASI
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=2, personeller=[P(1, "Ayhan"), P(2, "Veli")], slot_sayisi=1,
+        manuel_atamalar=[
+            SolverAtama(personel_id=1, gun=1, slot_idx=0),
+            SolverAtama(personel_id=1, gun=1, slot_idx=1),
+        ],
+    )
+    assert s["neden"]["kod"] == "MANUEL_KISI_GUN_CAKISMASI", s
+    d = s["neden"]["detay"]
+    assert d["personel_ad"] == "Ayhan", d
+    assert "Ayhan" in d["aciklama"], d
+
+    # 3) MANUEL_SLOT_CAKISMASI
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=2, personeller=[P(1, "Ayhan"), P(2, "Veli")], slot_sayisi=1,
+        manuel_atamalar=[
+            SolverAtama(personel_id=1, gun=1, slot_idx=0),
+            SolverAtama(personel_id=2, gun=1, slot_idx=0),
+        ],
+    )
+    assert s["neden"]["kod"] == "MANUEL_SLOT_CAKISMASI", s
+    d = s["neden"]["detay"]
+    assert d["personel_adlari"] == ["Ayhan", "Veli"], d
+    assert "Ayhan" in d["aciklama"] and "Veli" in d["aciklama"], d
+
+    # 4) MANUEL_MAZERET_CAKISMASI
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=2, personeller=[P(1, "Ayhan", mazeret_gunleri={1}), P(2, "Veli")],
+        slot_sayisi=1, manuel_atamalar=[SolverAtama(personel_id=1, gun=1, slot_idx=0)],
+    )
+    assert s["neden"]["kod"] == "MANUEL_MAZERET_CAKISMASI", s
+    d = s["neden"]["detay"]
+    assert d["personel_ad"] == "Ayhan", d
+    assert "Ayhan" in d["aciklama"], d
+
+    # 5) MANUEL_ARA_GUN_CAKISMASI
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=4, personeller=[P(1, "Ayhan"), P(2, "Veli")], slot_sayisi=1, ara_gun=2,
+        manuel_atamalar=[
+            SolverAtama(personel_id=1, gun=1, slot_idx=0),
+            SolverAtama(personel_id=1, gun=2, slot_idx=0),
+        ],
+    )
+    assert s["neden"]["kod"] == "MANUEL_ARA_GUN_CAKISMASI", s
+    d = s["neden"]["detay"]
+    assert d["personel_ad"] == "Ayhan", d
+    assert "Ayhan" in d["aciklama"], d
+
+    # 6) GUNLUK_MAZERET_KAPASITESI
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=1,
+        personeller=[
+            P(1, "Ayhan", mazeret_gunleri={1}),
+            P(2, "Veli", mazeret_gunleri={1}),
+            P(3, "Can"),
+        ],
+        slot_sayisi=2,
+    )
+    assert s["neden"]["kod"] == "GUNLUK_MAZERET_KAPASITESI", s
+    d = s["neden"]["detay"]
+    assert "Ayhan" in d["mazeretli_adlar"] and "Veli" in d["mazeretli_adlar"], d
+    assert "Ayhan" in d["aciklama"], d
+
+    # 7) BIRLIKTE_GRUP_SLOT_CAKISMASI
+    s = gun_bazli_fizibilite_kontrolu(
+        gun_sayisi=1,
+        personeller=[P(1, "Ayhan"), P(2, "Veli"), P(3, "Can")],
+        slot_sayisi=1, ara_gun=0,
+        manuel_atamalar=[SolverAtama(personel_id=1, gun=1, slot_idx=0)],
+        birlikte_kurallar=[SolverKural(tur="birlikte", kisiler=[1, 2], politika="hard")],
+    )
+    assert s["neden"]["kod"] == "BIRLIKTE_GRUP_SLOT_CAKISMASI", s
+    d = s["neden"]["detay"]
+    assert d["grup_adlari"] == ["Ayhan", "Veli"], d
+    assert "Ayhan" in d["aciklama"], d
+
+
 if __name__ == "__main__":
     tests = [name for name in globals() if name.startswith("test_")]
     for name in sorted(tests):

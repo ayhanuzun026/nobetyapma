@@ -959,6 +959,13 @@ def gun_bazli_fizibilite_kontrolu(
     gunler = list(range(1, int(gun_sayisi or 0) + 1))
     personel_map = {p.id: p for p in personeller}
     pids = list(personel_map.keys())
+    pid_ad = {p.id: p.ad for p in personeller}
+
+    def _ad(pid: Any) -> str:
+        return str(pid_ad.get(pid) or f'ID:{pid}')
+
+    def _adlar(pid_listesi) -> List[str]:
+        return [_ad(pid) for pid in pid_listesi]
 
     birlikte_istisna_set = set()
     for raw in birlikte_istisnalari:
@@ -984,7 +991,14 @@ def gun_bazli_fizibilite_kontrolu(
             kod='PERSONEL_YETERSIZ',
             mesaj='Günlük görev sayısı mevcut personel sayısını aşıyor.',
             oneri='Slot sayısını azaltın veya personel ekleyin.',
-            detay={'slot_sayisi': slot_sayisi, 'personel_sayisi': len(pids)},
+            detay={
+                'aciklama': (
+                    f'Her gün {slot_sayisi} görev doldurulması gerekiyor, '
+                    f'ama kadroda toplam {len(pids)} personel var.'
+                ),
+                'slot_sayisi': slot_sayisi,
+                'personel_sayisi': len(pids),
+            },
         )
 
     manuel_gunler: Dict[int, Set[int]] = {pid: set() for pid in pids}
@@ -1006,12 +1020,22 @@ def gun_bazli_fizibilite_kontrolu(
 
     for (pid, gun), adet in manuel_sayilari.items():
         if adet > 1:
+            ad = _ad(pid)
             return _fizibilite_sonucu(
                 'INFEASIBLE',
                 kod='MANUEL_KISI_GUN_CAKISMASI',
                 mesaj='Aynı personele aynı gün birden fazla manuel görev atanmış.',
                 oneri='Personelin aynı gündeki fazla manuel atamasını kaldırın.',
-                detay={'personel_id': pid, 'gun': gun, 'atama_sayisi': adet},
+                detay={
+                    'aciklama': (
+                        f'{ad} için {gun}. güne {adet} ayrı manuel görev atanmış. '
+                        f'Bir kişi aynı gün yalnız bir nöbet tutabilir.'
+                    ),
+                    'personel_id': pid,
+                    'personel_ad': ad,
+                    'gun': gun,
+                    'atama_sayisi': adet,
+                },
             )
 
     for (gun, slot_idx), atanan_ids in manuel_slotlar.items():
@@ -1021,7 +1045,16 @@ def gun_bazli_fizibilite_kontrolu(
                 kod='MANUEL_SLOT_CAKISMASI',
                 mesaj='Aynı gün ve görev slotuna birden fazla manuel personel atanmış.',
                 oneri='Çakışan manuel atamalardan yalnız birini bırakın.',
-                detay={'gun': gun, 'slot_idx': slot_idx, 'personel_ids': atanan_ids},
+                detay={
+                    'aciklama': (
+                        f'{gun}. gün {slot_idx + 1}. göreve aynı anda '
+                        f'{", ".join(_adlar(atanan_ids))} atanmış. Bir slota tek kişi yazılabilir.'
+                    ),
+                    'gun': gun,
+                    'slot_idx': slot_idx,
+                    'personel_ids': atanan_ids,
+                    'personel_adlari': _adlar(atanan_ids),
+                },
             )
 
     for pid, manuel_set in manuel_gunler.items():
@@ -1033,7 +1066,15 @@ def gun_bazli_fizibilite_kontrolu(
                     kod='MANUEL_MAZERET_CAKISMASI',
                     mesaj='Manuel atama, onaylanmamış mazeret günüyle çakışıyor.',
                     oneri='Manuel atamayı kaldırın veya mazeret istisnasını onaylayın.',
-                    detay={'personel_id': pid, 'gun': gun},
+                    detay={
+                        'aciklama': (
+                            f'{_ad(pid)} için {gun}. güne manuel atama yapılmış, '
+                            f'ama o gün mazeretli/izinli. Mazeret istisnası da onaylanmamış.'
+                        ),
+                        'personel_id': pid,
+                        'personel_ad': _ad(pid),
+                        'gun': gun,
+                    },
                 )
         sirali = sorted(manuel_set)
         for idx, gun1 in enumerate(sirali):
@@ -1047,7 +1088,17 @@ def gun_bazli_fizibilite_kontrolu(
                     kod='MANUEL_ARA_GUN_CAKISMASI',
                     mesaj='Aynı personelin manuel atamaları ara gün kuralını ihlal ediyor.',
                     oneri='Manuel atamalardan birini taşıyın veya ara gün değerini azaltın.',
-                    detay={'personel_id': pid, 'gunler': [gun1, gun2], 'ara_gun': ara_gun},
+                    detay={
+                        'aciklama': (
+                            f'{_ad(pid)} için {gun1}. ve {gun2}. güne manuel atama var, '
+                            f'arada {gun2 - gun1 - 1} gün boşluk kalıyor; '
+                            f'ara gün kuralı en az {ara_gun} gün istiyor.'
+                        ),
+                        'personel_id': pid,
+                        'personel_ad': _ad(pid),
+                        'gunler': [gun1, gun2],
+                        'ara_gun': ara_gun,
+                    },
                 )
 
     def musait_mi(pid: int, gun: int) -> bool:
@@ -1059,12 +1110,27 @@ def gun_bazli_fizibilite_kontrolu(
     for gun in gunler:
         musait_ids = [pid for pid in pids if musait_mi(pid, gun)]
         if len(musait_ids) < slot_sayisi:
+            mazeretli_ids = [pid for pid in pids if pid not in set(musait_ids)]
+            mazeretli_adlar = _adlar(mazeretli_ids)
+            eksik = slot_sayisi - len(musait_ids)
             return _fizibilite_sonucu(
                 'INFEASIBLE',
                 kod='GUNLUK_MAZERET_KAPASITESI',
                 mesaj='Bir günde görevleri dolduracak kadar müsait personel yok.',
                 oneri='Bu gündeki mazeretleri gözden geçirin, personel ekleyin veya slot sayısını azaltın.',
-                detay={'gun': gun, 'gereken': slot_sayisi, 'musait': len(musait_ids)},
+                detay={
+                    'aciklama': (
+                        f'{gun}. gün {slot_sayisi} görev var, ama yalnız {len(musait_ids)} '
+                        f'personel müsait ({eksik} kişi eksik). O gün mazeretli/izinli olanlar: '
+                        f'{", ".join(mazeretli_adlar) if mazeretli_adlar else "yok"}.'
+                    ),
+                    'gun': gun,
+                    'gereken': slot_sayisi,
+                    'musait': len(musait_ids),
+                    'eksik': eksik,
+                    'mazeretli_adlar': mazeretli_adlar,
+                    'musait_adlar': _adlar(musait_ids),
+                },
             )
 
     hard_gruplar: List[Dict] = []
@@ -1103,12 +1169,21 @@ def gun_bazli_fizibilite_kontrolu(
                     )
                     diger_pid = pid2 if manuel_pid == pid1 else pid1
                     if manuel_pid is not None and not musait_mi(diger_pid, gun):
+                        manuel_ad = _ad(manuel_pid)
+                        diger_ad = _ad(diger_pid)
                         return _fizibilite_sonucu(
                             'INFEASIBLE',
                             kod='BIRLIKTE_MANUEL_MAZERET_CAKISMASI',
                             mesaj='Hard birlikte grubunda manuel atama ile mazeret çakışıyor.',
                             oneri='Manuel günü değiştirin, ortak mazereti kaldırın veya birlikte kuralını soft yapın.',
-                            detay={'gun': gun, 'manuel_personel_id': manuel_pid, 'musait_olmayan': diger_pid},
+                            detay={
+                                'aciklama': f'{manuel_ad} için {gun}. gün manuel atama var, ama birlikte olması gereken {diger_ad} o gün müsait değil (mazeret/izin).',
+                                'gun': gun,
+                                'manuel_personel_id': manuel_pid,
+                                'manuel_personel_ad': manuel_ad,
+                                'musait_olmayan_id': diger_pid,
+                                'musait_olmayan_ad': diger_ad
+                            },
                         )
             if (
                 not grup_bilgi['istisna_izinli']
@@ -1120,7 +1195,17 @@ def gun_bazli_fizibilite_kontrolu(
                     kod='BIRLIKTE_GRUP_SLOT_CAKISMASI',
                     mesaj='Manuel atamalı hard birlikte grubu günlük slot sayısından büyük.',
                     oneri='Birlikte grubunu küçültün, kuralı soft yapın veya slot sayısını artırın.',
-                    detay={'gun': gun, 'grup_boyutu': len(grup), 'slot_sayisi': slot_sayisi},
+                    detay={
+                        'aciklama': (
+                            f'{gun}. gün birlikte çalışması zorunlu grup '
+                            f'({", ".join(_adlar(grup))}) {len(grup)} kişi, '
+                            f'ama o gün yalnız {slot_sayisi} görev slotu var.'
+                        ),
+                        'gun': gun,
+                        'grup_boyutu': len(grup),
+                        'grup_adlari': _adlar(grup),
+                        'slot_sayisi': slot_sayisi,
+                    },
                 )
 
     from ortools.sat.python import cp_model as cp
