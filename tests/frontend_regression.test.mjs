@@ -299,6 +299,11 @@ test('preparation capacity awaits an explicit decision before target calculation
   assert.match(html, /Açık kullanıcı kararı olmadan hedef veya yeni çizelge üretimine geçilmez/);
 });
 
+test('task pools are sent as backup pools to every solver endpoint', () => {
+  const modes = [...html.matchAll(/gorevHavuzlariModu:\s*['"]YEDEK['"]/g)];
+  assert.ok(modes.length >= 3, 'hedef, kapasite ve çözüm istekleri YEDEK havuz modunu taşımalı');
+});
+
 test('capacity response normalization accepts nested and top-level partial contracts', () => {
   const normalize = evaluateFunctions(
     ['hazirlikKapasiteYanitiNormalizeEt'],
@@ -630,4 +635,25 @@ test('cross-task contention diagnosis reaches the rendered UI (no dead field)', 
   assert.match(kategoriler, /normalize\.teshis\?\.aday_kesisimi_aciklari/);
   assert.match(kategoriler, /ortak_butce_kapasitesi\?\.eksik/);
   assert.match(kategoriler, /çekişme: 'Görevler arası çekişme'/);
+});
+
+test('person-level zero-candidate profiles render as non-proof diagnosis clues', () => {
+  const renderer = functionSource('hazirlikKapasiteSonucuGoster');
+  assert.match(renderer, /adayProfilleri = hazirlikDizi\(/);
+  assert.match(renderer, /teshis\?\.feasibility_debug\?\.aday_profilleri/);
+  assert.match(renderer, /hazirlikAdayProfilMetni\(profil\)/);
+  assert.match(renderer, /INFEASIBLE/);
+  assert.match(renderer, /Tek ba.*kan.*değildir/);
+
+  const metin = evaluateFunctions(['hazirlikAdayProfilMetni'], 'hazirlikAdayProfilMetni');
+  assert.match(
+    metin({
+      personel_ad: 'Ayşe',
+      musait_gun_sayisi: 27,
+      aday_gun_sayisi: 0,
+      neden_sayilari: { 'kısıtlı görev': 2 },
+      rol_ornekleri: { AMATEM: ['görev havuzu'] }
+    }),
+    /Ayşe.*27 müsait gün.*0 aday gün.*görev havuzu/
+  );
 });

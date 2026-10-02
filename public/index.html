@@ -2222,15 +2222,46 @@
         });
       }
 
+      // Günlük slot sayısı azaltıldığında silinen rollerin eski
+      // kısıtlama/havuz anahtarlarını taşımak artık var olmayan role
+      // personel kilitler. Sadece mevcut solver rollerini koru.
+      // Solver görev rolü ``baseName``'i (ve ``#1`` gibi slot soneklerini)
+      // normalize eder; eski kayıtları aynı anahtarla karşılaştır.
+      const aktifRoller = new Set(gorevler
+        .map(g => normalizeGorevAdi(g.baseName || g.ad || ''))
+        .filter(Boolean));
+      gorevKisitlamalari = (gorevKisitlamalari || []).filter(k => {
+        const rol = normalizeGorevAdi(k.gorevAdi || '');
+        return aktifRoller.has(rol);
+      });
+      (kisitlamaIstisnalari || []).forEach(k => {
+        if (k.kisitliGorev && !aktifRoller.has(normalizeGorevAdi(k.kisitliGorev))) k.kisitliGorev = null;
+        if (k.istisnaGorev && !aktifRoller.has(normalizeGorevAdi(k.istisnaGorev))) k.istisnaGorev = null;
+      });
+      (personelListesi || []).forEach(p => {
+        p.yetkiliGorevler = normalizeYetkiliGorevler(p.yetkiliGorevler)
+          .filter(role => aktifRoller.has(normalizeGorevAdi(role)));
+      });
+      Object.keys(gorevHavuzlari || {}).forEach(role => {
+        if (!aktifRoller.has(normalizeGorevAdi(role))) delete gorevHavuzlari[role];
+      });
+
       if (gorevSayisiDegisti) hedefleriBayatIsaretle('Günlük görev sayısı değişti.');
       kaydetDebounced();
     }
 
     function gorevDegisti() {
+      const eskiGorevAdlari = gorevler.map(g => normalizeGorevAdi(g.baseName || g.ad || ''));
       document.querySelectorAll('.gorev-adi').forEach(inp => {
         const idx = parseInt(inp.dataset.idx);
         if (gorevler[idx]) {
           gorevler[idx].ad = inp.value || `Nöbet Yeri ${idx + 1}`;
+          // Tek slotluk kayıtlarda baseName eski adı taşıyabilir; ad
+          // değişikliğini solver rolüne de yansıt.
+          if (gorevler[idx].baseName
+              && String(gorevler[idx].baseName).trim() === eskiGorevAdlari[idx]) {
+            gorevler[idx].baseName = gorevler[idx].ad;
+          }
           // Ad değişince ozel durumunu güncelle (checkbox yoksa)
           const checkbox = document.querySelector(`.gorev-ozel[data-idx="${idx}"]`);
           if (!checkbox) {
@@ -2274,6 +2305,39 @@
         const idx = parseInt(inp.dataset.idx);
         if (gorevler[idx] && !gorevler[idx].kritik) {
           gorevler[idx].istisnaPolitikasi = inp.value || 'kullanici_onayli';
+        }
+      });
+
+      // Görev adı değişikliği kısıtlama/havuz/yetki kayıtlarını
+      // eski rolde bırakırsa backend bu kişiyi artık var olmayan role
+      // sabitler ve aday gün sayısı sıfırlanır. Aynı slot indeksindeki rol
+      // yeniden adlandırıldığında bağlı verileri birlikte taşı.
+      gorevler.forEach((g, idx) => {
+        const eskiRol = eskiGorevAdlari[idx];
+        const yeniRol = normalizeGorevAdi(g.baseName || g.ad || '');
+        if (!eskiRol || !yeniRol || eskiRol === yeniRol) return;
+
+        (gorevKisitlamalari || []).forEach(k => {
+          if (normalizeGorevAdi(k.gorevAdi || '') === eskiRol) k.gorevAdi = yeniRol;
+          if (normalizeGorevAdi(k.tasmaGorevi || '') === eskiRol) k.tasmaGorevi = yeniRol;
+        });
+        (kisitlamaIstisnalari || []).forEach(k => {
+          if (normalizeGorevAdi(k.kisitliGorev || '') === eskiRol) k.kisitliGorev = yeniRol;
+          if (normalizeGorevAdi(k.istisnaGorev || '') === eskiRol) k.istisnaGorev = yeniRol;
+        });
+        (manuelAtamalar || []).forEach(m => {
+          if (normalizeGorevAdi(m.gorevAdi || '') === eskiRol) m.gorevAdi = yeniRol;
+          if (normalizeGorevAdi(m.gorevBaseAdi || '') === eskiRol) m.gorevBaseAdi = yeniRol;
+        });
+        (personelListesi || []).forEach(p => {
+          p.yetkiliGorevler = normalizeYetkiliGorevler(p.yetkiliGorevler)
+            .map(role => normalizeGorevAdi(role) === eskiRol ? yeniRol : role);
+        });
+        if (Object.prototype.hasOwnProperty.call(gorevHavuzlari || {}, eskiRol)) {
+          const eskiHavuz = gorevHavuzlari[eskiRol] || [];
+          const yeniHavuz = gorevHavuzlari[yeniRol] || [];
+          gorevHavuzlari[yeniRol] = [...new Set([...yeniHavuz, ...eskiHavuz])];
+          delete gorevHavuzlari[eskiRol];
         }
       });
       hedefleriBayatIsaretle('Görev tanımı değişti.');
@@ -8666,6 +8730,28 @@
       return '';
     }
 
+    // Zero-candidate person profiles are diagnostic clues only; they do not
+    // prove global INFEASIBLE on their own. Keep rendering text escaped.
+    function hazirlikAdayProfilMetni(profil) {
+      const ad = String(profil?.personel_ad || profil?.personelAdi || profil?.personel_id || 'Personel');
+      const musait = profil?.musait_gun_sayisi ?? profil?.musaitGunSayisi;
+      const aday = profil?.aday_gun_sayisi ?? profil?.adayGunSayisi;
+      const musaitMetni = Number.isFinite(Number(musait)) ? `${Number(musait)} müsait gün` : 'müsait gün sayısı belirtilmedi';
+      const adayMetni = Number.isFinite(Number(aday)) ? `${Number(aday)} aday gün` : 'aday gün sayısı belirtilmedi';
+      const nedenler = Object.entries(profil?.neden_sayilari || profil?.nedenSayilari || {})
+        .filter(([, adet]) => Number(adet) > 0)
+        .map(([neden, adet]) => `${neden} (${adet})`)
+        .join(', ');
+      const roller = Object.entries(profil?.rol_ornekleri || profil?.rolOrnekleri || {})
+        .slice(0, 8)
+        .map(([rol, filtreler]) => `${rol}: ${Array.isArray(filtreler) ? filtreler.join(', ') : String(filtreler)}`)
+        .join(' | ');
+      const ayrinti = [nedenler && `filtreler: ${nedenler}`, roller && `roller: ${roller}`]
+        .filter(Boolean)
+        .join(' ; ');
+      return `${ad}: ${musaitMetni}, ${adayMetni}${ayrinti ? ` — ${ayrinti}` : ''}`;
+    }
+
     function hazirlikDizi(value) {
       return Array.isArray(value) ? value : [];
     }
@@ -8882,6 +8968,12 @@
       const kesisimAciklari = hazirlikDizi(teshis?.aday_kesisimi_aciklari);
       const ortakButce = teshis?.ortak_butce_kapasitesi && typeof teshis.ortak_butce_kapasitesi === 'object'
         ? teshis.ortak_butce_kapasitesi : null;
+      const adayProfilleri = hazirlikDizi(
+        teshis?.aday_profilleri
+        || teshis?.feasibility_debug?.aday_profilleri
+        || neden?.detay?.feasibility_debug?.aday_profilleri
+        || fizibilite?.solver?.feasibility_debug?.aday_profilleri
+      );
       const manuelCakismalar = hazirlikDizi(
         teshis?.manual_conflicts || neden?.detay?.manual_conflicts || fizibilite?.solver?.manual_conflicts
       );
@@ -8964,6 +9056,13 @@
             <div class="rule-box" style="background:#fff; margin-top:12px;">
               <strong>Engel kategorileri</strong>
               <div style="display:flex; gap:5px; flex-wrap:wrap; margin-top:7px;">${engeller.map(x => `<span class="badge badge-warn">${escapeHtml(x)}</span>`).join('')}</div>
+            </div>` : ''}
+
+          ${adayProfilleri.length ? `
+            <div class="rule-box" style="background:#fff7ed; margin-top:12px; border-left:4px solid #d97706;">
+              <strong>Kişi bazlı aday profilleri (${escapeHtml(adayProfilleri.length)})</strong>
+              <div class="help" style="margin-top:5px;">Bu bölüm tanı ipucudur: kişinin müsait günleri olsa bile tüm görev rollerinden elenmiş olabilir. Tek başına küresel INFEASIBLE kanıtı değildir.</div>
+              <div style="max-height:260px; overflow:auto; margin-top:7px;">${adayProfilleri.slice(0, 30).map(profil => `<div style="padding:7px 8px; margin:4px 0; border-left:3px solid #f59e0b; background:#fff;">${escapeHtml(hazirlikAdayProfilMetni(profil))}</div>`).join('')}</div>
             </div>` : ''}
 
           ${sorunKartlari.length ? `
@@ -9424,6 +9523,8 @@
         kurallar: kuralData,
         gorevKisitlamalari: gorevKisitData,
         gorevHavuzlari: gorevHavuzlari,
+        // Editör yedek havuzu tutar; backend bunu tam allow-list sanmamalı.
+        gorevHavuzlariModu: 'YEDEK',
         manuelAtamalar: manuelData,
         kisitlamaIstisnalari: (kisitlamaIstisnalari || []).map(ist => ({
           personelId: ist.personelId,
@@ -9827,6 +9928,7 @@
         manuelAtamalar: manuelAtamalarData,
         gorevKisitlamalari: gorevKisitlamalariData,
         gorevHavuzlari: gorevHavuzlari,
+        gorevHavuzlariModu: 'YEDEK',
         kisitlamaIstisnalari: kisitlamaIstisnalariData,
         birlikteIstisnalari: birlikteIstisnalariData,
         araGunIstisnalari: araGunIstisnalariData,
@@ -10250,6 +10352,7 @@
         manuelAtamalar: manuelAtamalarData,
         gorevKisitlamalari: gorevKisitlamalariData,
         gorevHavuzlari: gorevHavuzlari,
+        gorevHavuzlariModu: 'YEDEK',
         kisitlamaIstisnalari: kisitlamaIstisnalariData,
         resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };

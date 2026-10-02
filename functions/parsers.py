@@ -533,6 +533,28 @@ def parse_gorev_havuzlari(data: Dict, gorevler: List[SolverGorev],
                     allowed_ids.add(pid)
             gorev_havuzlari[role] = allowed_ids
 
+        # Frontend's pool editor is a *backup* pool: constrained principals
+        # are intentionally omitted from that list because they are already
+        # assigned to the role.  A present ``gorevHavuzlari`` object used to
+        # be interpreted as a complete allow-list, which silently excluded
+        # those principals in the final solver (and could leave an otherwise
+        # available person with zero candidate days).  Keep the strict
+        # allow-list contract for API callers, but opt into the UI contract
+        # explicitly with ``gorevHavuzlariModu: YEDEK``.
+        if str(data.get("gorevHavuzlariModu") or "").strip().upper() == "YEDEK":
+            for k_data in data.get("gorevKisitlamalari", []) or []:
+                if not isinstance(k_data, dict):
+                    continue
+                role = _normalize_gorev_adi(k_data.get("gorevAdi"))
+                if not role or role not in gorev_havuzlari:
+                    continue
+                pid = _resolve_personel_id(
+                    k_data.get("personelId"), personeller,
+                    require_existing=True, _cache=_cache,
+                )
+                if pid is not None:
+                    gorev_havuzlari[role].add(pid)
+
         return gorev_havuzlari
 
     # ESKİ FORMAT: gorevKisitlamalari içindeki havuzIds (geriye uyumluluk)

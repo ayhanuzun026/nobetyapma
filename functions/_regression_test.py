@@ -20,6 +20,7 @@ from parsers import (
     parse_manuel_atamalar,
     parse_solver_gorevler,
     parse_solver_gorevler_nobet_coz,
+    parse_solver_personeller_coz,
     parse_solver_personeller_hedef,
 )
 from planlayici import (
@@ -37,6 +38,43 @@ def _minimal_veri():
     gorevler = [SolverGorev(id=1, ad="Acil", slot_idx=0, base_name="Acil")]
     hedefler = {1: {"hedef_toplam": 1, "hedef_tipler": {"hici": 1}}}
     return gun_tipleri, personeller, gorevler, hedefler
+
+
+def test_feasibility_diagnostics_explain_zero_candidate_person():
+    """Müsait kişi tüm rollerde yetki filtresine takılıyorsa nedeni görünür olmalı."""
+    personel = SolverPersonel(id=1, ad="A", yetkili_gorevler={"BAŞKA"})
+    gorev = SolverGorev(id=1, ad="ACİL", slot_idx=0, base_name="ACİL")
+    solver = NobetSolver(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[personel],
+        gorevler=[gorev],
+        hedefler={1: {"hedef_toplam": 2}},
+        ara_gun=0,
+        max_sure_saniye=1,
+    )
+    debug = solver._build_feasibility_diagnostics()
+    profile = debug["aday_profilleri"][0]
+    assert profile["aday_gun_sayisi"] == 0
+    assert profile["musait_gun_sayisi"] == 2
+    assert profile["neden_sayilari"]["yetki listesi"] == 1
+
+
+def test_feasibility_common_budget_is_upper_bound_only():
+    personel = SolverPersonel(id=1, ad="A")
+    gorev = SolverGorev(id=1, ad="ACİL", slot_idx=0, base_name="ACİL")
+    solver = NobetSolver(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=[personel],
+        gorevler=[gorev],
+        hedefler={1: {"hedef_toplam": 2}},
+        ara_gun=0,
+        max_sure_saniye=1,
+    )
+    budget = solver._build_feasibility_diagnostics()["ortak_butce_kapasitesi"]
+    assert budget["kapasite_turu"] == "GEVSEK_UST_SINIR"
+    assert budget["tam_doluluk_kaniti"] is False
 
 
 def test_js_safe_ids():
@@ -236,6 +274,30 @@ def test_security_boolean_and_authoritative_pool_parsing():
     }, gorevler, personeller)
     assert havuzlar == {"AMATEM": set()}
 
+    # UI'daki havuz editörü yedek havuzdur; kısıtlı ana kişi backend'de
+    # etkin havuzun parçası olarak korunmalıdır.
+    yedek_havuz = parse_gorev_havuzlari({
+        "gorevHavuzlariModu": "YEDEK",
+        "gorevHavuzlari": {"AMATEM": []},
+        "gorevKisitlamalari": [{"personelId": 1, "gorevAdi": "AMATEM"}],
+    }, gorevler, personeller)
+    assert yedek_havuz == {"AMATEM": {1}}
+
+    # Sözleşme düzeltmesi yalnız parser çıktısında kalmamalı: ana kişi,
+    # yedek listesinde yer almasa bile tam modelde görevin adayı olmalı.
+    owner = SolverPersonel(id=1, ad="A", kisitli_gorev="AMATEM")
+    solver = NobetSolver(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[owner],
+        gorevler=gorevler,
+        gorev_havuzlari=yedek_havuz,
+        hedefler={1: {"hedef_toplam": 1}},
+        ara_gun=0,
+        max_sure_saniye=1,
+    )
+    assert solver._build_feasibility_diagnostics()["aday_profilleri"] == []
+
     try:
         parse_gorev_havuzlari(
             {"gorevHavuzlari": "gecersiz"}, gorevler, personeller
@@ -244,6 +306,53 @@ def test_security_boolean_and_authoritative_pool_parsing():
         pass
     else:
         raise AssertionError("Malformed explicit task pool must fail closed")
+
+
+def test_backup_pool_principal_survives_solver_h10_filter():
+    """YEDEK havuzunda kısıtlı ana kişi H10 ile yanlışlıkla elenmemeli."""
+    base = {
+        "gorevler": [{
+            "id": 1,
+            "ad": "R",
+            "baseName": "R",
+            "exclusive": False,
+            "kritik": False,
+        }],
+        "personeller": [{"id": 1, "ad": "Ana"}],
+        "gorevKisitlamalari": [{"personelId": 1, "gorevAdi": "R"}],
+        "gorevHavuzlari": {"R": []},
+    }
+    gorevler = parse_solver_gorevler(base)
+    personeller = parse_solver_personeller_coz(base, gorevler)
+
+    strict_solver = NobetSolver(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=personeller,
+        gorevler=gorevler,
+        hedefler={1: {"hedef_toplam": 1}},
+        ara_gun=0,
+        gorev_havuzlari=parse_gorev_havuzlari(base, gorevler, personeller),
+        max_sure_saniye=1,
+    )
+    strict_debug = strict_solver._build_feasibility_diagnostics()
+    assert strict_debug["slot_day_zero_candidate_count"] == 2
+    assert strict_debug["aday_profilleri"][0]["personel_id"] == 1
+
+    yedek = dict(base, gorevHavuzlariModu="YEDEK")
+    yedek_solver = NobetSolver(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=personeller,
+        gorevler=gorevler,
+        hedefler={1: {"hedef_toplam": 1}},
+        ara_gun=0,
+        gorev_havuzlari=parse_gorev_havuzlari(yedek, gorevler, personeller),
+        max_sure_saniye=1,
+    )
+    yedek_debug = yedek_solver._build_feasibility_diagnostics()
+    assert yedek_debug["slot_day_zero_candidate_count"] == 0
+    assert yedek_debug["aday_profilleri"] == []
 
 
 def test_historical_saturday_debt_changes_target():

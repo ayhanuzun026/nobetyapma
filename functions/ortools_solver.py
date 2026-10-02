@@ -1073,6 +1073,9 @@ class NobetSolver:
 
         aday_kesisimi_aciklari = self._aday_kesisimi_aciklari(slot_day_candidates, limit_preview)
         ortak_butce = self._ortak_butce_kapasitesi(slot_day_candidates)
+        # Sıfır kapasite sayısı tek başına yeterli değildir: müsait kişi de
+        # yetki/kısıtlama/havuz kesişiminde bütün görevlerden elenebilir.
+        aday_profilleri = self._aday_profilleri(slot_day_candidates, limit_preview)
 
         result = {
             "slot_day_zero_candidate_count": sum(
@@ -1087,9 +1090,95 @@ class NobetSolver:
             # ölçer. Mevcut kanallara dokunmaz.
             "aday_kesisimi_aciklari": aday_kesisimi_aciklari,
             "ortak_butce_kapasitesi": ortak_butce,
+            "aday_profilleri": aday_profilleri,
         }
         setattr(self, f"_feasibility_cache_{limit_preview}", result)
         return result
+
+    def _aday_profilleri(
+        self,
+        slot_day_candidates: Dict[Tuple[int, int], List[int]],
+        limit_preview: int,
+    ) -> List[Dict]:
+        """Kişi aday havuzunun neden boş kaldığını insan dilinde açıklar.
+
+        ``aday_gun_sayisi == 0`` mazeret yok anlamına gelmez: kişi takvimde
+        müsait olsa dahi bütün görev rolleri yetki/kısıtlama/havuz filtresinden
+        elenmiş olabilir.  Her kişi ve rol için aynı aday haritasına bakılır;
+        bu nedenle bu blok yalnızca açıklamadır ve model kısıtlarını değiştirmez.
+        """
+        roller = list(self.role_slots.keys())
+        exclusive_roller = self._exclusive_roles_without_pool()
+        aday_ids = {
+            pid for ids in slot_day_candidates.values() for pid in ids
+        }
+        profiles = []
+        for p in self.personel_listesi:
+            if p.id in aday_ids:
+                continue
+
+            musait_gun_sayisi = sum(
+                1 for gun in range(1, self.gun_sayisi + 1)
+                if gun not in p.mazeret_gunleri
+            )
+            neden_sayilari: Dict[str, int] = {}
+            rol_ornekleri: Dict[str, List[str]] = {}
+            yetkiler = self._yetkili_roller(p)
+            for role in roller:
+                nedenler = set()
+                slotlar = self.role_slots.get(role, [])
+                for gun in range(1, self.gun_sayisi + 1):
+                    if gun in p.mazeret_gunleri and not any(
+                        (p.id, gun, s) in self.manual_mazeret_override_slots for s in slotlar
+                    ):
+                        nedenler.add('mazeret/izin')
+                        continue
+                    if yetkiler and role not in yetkiler:
+                        nedenler.add('yetki listesi')
+                    allowed_exception_roles = self.kisitlama_istisna_map.get((p.id, gun), set())
+                    if (not yetkiler and p.kisitli_gorev and role != p.kisitli_gorev
+                            and role not in allowed_exception_roles
+                            and not (p.tasma_gorevi and role == p.tasma_gorevi)):
+                        nedenler.add('kısıtlı görev')
+                    if (role in exclusive_roller
+                            and role not in yetkiler
+                            and p.kisitli_gorev != role
+                            and p.tasma_gorevi != role):
+                        havuz = self.gorev_havuzlari.get(role)
+                        if havuz is None or p.id not in havuz:
+                            nedenler.add('exclusive/havuz')
+                    havuz = self.gorev_havuzlari.get(role)
+                    if havuz is not None and p.id not in havuz:
+                        nedenler.add('görev havuzu')
+                for neden in nedenler:
+                    neden_sayilari[neden] = neden_sayilari.get(neden, 0) + 1
+                if nedenler and len(rol_ornekleri) < 8:
+                    rol_ornekleri[role] = sorted(nedenler)
+
+            profiles.append({
+                'personel_id': p.id,
+                'personel_ad': p.ad,
+                'musait_gun_sayisi': musait_gun_sayisi,
+                'aday_gun_sayisi': 0,
+                'kisitli_gorev': p.kisitli_gorev,
+                'tasma_gorevi': p.tasma_gorevi,
+                'yetkili_gorevler': sorted(yetkiler),
+                'neden_sayilari': neden_sayilari,
+                'rol_ornekleri': rol_ornekleri,
+                'aciklama': (
+                    f'{p.ad}, ayın bütün günlerinde mazeretli/izinli; hiçbir görev için aday değil.'
+                    if musait_gun_sayisi == 0 else
+                    f'{p.ad} takvimde {musait_gun_sayisi} gün müsait, ancak görev '
+                    'kurallarının kesişimi nedeniyle hiçbir slota aday olamıyor. '
+                    + '; '.join(
+                        f'{role}: {", ".join(nedenler)}'
+                        for role, nedenler in rol_ornekleri.items()
+                    ) + '.'
+                ),
+            })
+            if len(profiles) >= max(1, int(limit_preview)):
+                break
+        return profiles
 
     def _ortak_butce_kapasitesi(self, slot_day_candidates: Dict[Tuple[int, int], List[int]]) -> Dict:
         """Görevler arası rekabeti aylık ortak bütçeyle ölçer.
@@ -1100,8 +1189,11 @@ class NobetSolver:
 
         Bu fonksiyon her personelin kapasitesini **bir kez**, ayda kaç slot
         adayı olabildiğine göre toplar ve toplam taleple karşılaştırır. Bu
-        güvenli bir üst sınırdır: gerçek kapasite bundan büyük olamaz, yani
-        ``eksik > 0`` yalnız üst sınır kıtlığıdır, imkânsızlık kanıtı değildir.
+        güvenli bir üst sınırdır: gerçek kapasite bundan büyük olamaz.
+        ``eksik > 0`` tam doluluğun imkânsız olduğunu gösterir; ``eksik == 0``
+        ise uygulanabilir bir çizelge bulunduğu veya kapasitenin yeterli olduğu
+        anlamına gelmez. Birlikte/ayrı kuralları ve günler arası rol paylaşımı
+        bu üst sınırı daha da düşürebilir.
         Amaç, mevcut görev-bağımsız sayımın kaçırdığı çapraz çekişmeyi
         görünür kılmaktır.
         """
@@ -1133,6 +1225,8 @@ class NobetSolver:
         return {
             "toplam_slot": toplam_slot,
             "toplam_kapasite": toplam_kapasite,
+            "kapasite_turu": "GEVSEK_UST_SINIR",
+            "tam_doluluk_kaniti": False,
             "eksik": eksik,
             "aciklama": (
                 f'Ay boyunca {toplam_slot} görev slotu doldurulmalı, ama '
@@ -1144,9 +1238,10 @@ class NobetSolver:
                 if eksik > 0 else
                 f'Ay boyunca {toplam_slot} slot için kişi başına ortalama '
                 f'{(round(toplam_slot / len(self.personel_listesi), 2) if self.personel_listesi else 0)} '
-                f'görev düşüyor; toplam kapasite ({toplam_kapasite}) bu talebi tek başına karşılıyor. '
-                f'Bu nedenle açıklık global kapasitede değil, görev havuzlarının '
-                f'öbelendiği belirli günlerde aranmalıdır.'
+                f'görev düşüyor; kişilerin bağımsız kapasitelerinin toplam üst sınırı '
+                f'{toplam_kapasite}. Bu sayının talebi aşması tam doluluğu kanıtlamaz; '
+                f'görev havuzları, birlikte/ayrı kuralları ve günler arası '
+                f'paylaşım yine çakışabilir.'
             ),
             "kisi_basina_ortalama_gerekli": (
                 round(toplam_slot / len(self.personel_listesi), 2)
