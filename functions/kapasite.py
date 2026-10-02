@@ -870,8 +870,12 @@ def _tam_doluluk_fizibilite_kontrolu(
     core_bilgisi: Dict = {}
     kalan = _kalan_tam_saniye(deadline)
     core_fn = getattr(solver, 'diagnose_tam_doluluk_with_unsat_core', None)
+    # Core raporu 1 saniyede yetmiyor ve boş dönüyor; bu modelde aynı
+    # geçiş 0.9 saniyede bitiyor. 5'e çıkarılır, kalan bütçeyi aşmaz.
+    # Sonraki what-if adayları kalan sürede çalışır.
     if callable(core_fn) and (deadline is None or kalan >= 1):
-        core_bilgisi = core_fn(max_sure_saniye=1) or {}
+        core_tavan = 5 if deadline is None else max(1, min(5, kalan))
+        core_bilgisi = core_fn(max_sure_saniye=core_tavan) or {}
 
     adaylar = _what_if_adaylari(
         ara_gun=ara_gun,
@@ -893,9 +897,15 @@ def _tam_doluluk_fizibilite_kontrolu(
     on_analiz_detay = dict(on_analiz_neden.get('detay') or {})
     pencereler = list(on_analiz_detay.get('ara_gun_pencere_aciklari') or [])
     rol_sorunlari = list(feasibility_debug.get('role_ara_gun_capacity_issues') or [])
+    # Görevler arası çekişme görev-bağımsız üst sınırın göremediği açıklardır;
+    # görev başına kapasite "yeterli" görünürken yine de slot boş kalır.
+    kesisim_aciklari = list(feasibility_debug.get('aday_kesisimi_aciklari') or [])
+    ortak_butce = dict(feasibility_debug.get('ortak_butce_kapasitesi') or {})
     teshis = {
         'pencereler': pencereler,
         'rol_sorunlari': rol_sorunlari,
+        'aday_kesisimi_aciklari': kesisim_aciklari,
+        'ortak_butce_kapasitesi': ortak_butce,
         'feasibility_debug': feasibility_debug,
         'unsat_core': list(core_bilgisi.get('core_groups') or []),
         'unsat_core_bilgisi': core_bilgisi,

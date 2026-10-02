@@ -8752,6 +8752,13 @@
       };
       hazirlikDizi(normalize.teshis?.engel_kategorileri).forEach(ekle);
       hazirlikDizi(normalize.teshis?.rol_sorunlari).forEach(x => ekle(x?.kategori || 'Görev yetkisi / görev havuzu'));
+      // Görevler arası çekişme: görev başına kapasite "yeterli" görünürken
+      // aynı kişilerin paylaşımı yüzünden slot boş kalır. Ayrı kategori,
+      // böylece kullanıcı "yetki/havuz" ile karıştırmaz.
+      hazirlikDizi(normalize.teshis?.aday_kesisimi_aciklari).forEach(x => ekle(x?.kategori || 'Görevler arası çekişme'));
+      if ((normalize.teshis?.ortak_butce_kapasitesi?.eksik || 0) > 0) {
+        ekle('Görevler arası çekişme');
+      }
       hazirlikDizi(normalize.teshis?.pencereler).forEach(x => ekle(x?.kategori || 'Ara gün / tarih penceresi'));
       hazirlikBosSlotDetaylari(normalize.kismiCozum).forEach(detay => {
         hazirlikDizi(detay?.engeller).forEach(ekle);
@@ -8766,6 +8773,7 @@
         havuz: 'Görev havuzu', gorev_havuzu: 'Görev havuzu',
         manuel: 'Manuel atama', manuel_atama: 'Manuel atama',
         ayri: 'Ayrı kuralı', birlikte: 'Birlikte kuralı',
+        cekisme: 'Görevler arası çekişme', çekişme: 'Görevler arası çekişme',
         hedef_dolu: 'Kişi hedefi / üst sınırı', max_nobet: 'Maksimum nöbet'
       };
       return [...kategoriler].map(kategori => kategoriEtiketleri[kategori] || kategori);
@@ -8871,6 +8879,9 @@
       const atamalar = hazirlikAtamalari(kismiCozum);
       const pencereler = hazirlikDizi(teshis?.pencereler || neden?.detay?.ara_gun_pencere_aciklari);
       const rolSorunlari = hazirlikDizi(teshis?.rol_sorunlari);
+      const kesisimAciklari = hazirlikDizi(teshis?.aday_kesisimi_aciklari);
+      const ortakButce = teshis?.ortak_butce_kapasitesi && typeof teshis.ortak_butce_kapasitesi === 'object'
+        ? teshis.ortak_butce_kapasitesi : null;
       const manuelCakismalar = hazirlikDizi(
         teshis?.manual_conflicts || neden?.detay?.manual_conflicts || fizibilite?.solver?.manual_conflicts
       );
@@ -8904,6 +8915,8 @@
         : 'Açık hedef kilidi yok. ') + planKapsamMetni;
 
       const sorunKartlari = [
+        ...(ortakButce?.aciklama ? [String(ortakButce.aciklama)] : []),
+        ...kesisimAciklari.map(x => hazirlikKayitMetni(x)),
         ...bosSlotlar.map(detay => hazirlikBosSlotMetni(detay)),
         ...manuelCakismalar.map(x => hazirlikKayitMetni(x)),
         ...rolSorunlari.map(x => hazirlikKayitMetni(x)),

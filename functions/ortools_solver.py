@@ -4,7 +4,8 @@ Gorev kotalari + Gun tipi kotalari dahil
 """
 
 from dataclasses import dataclass
-from typing import Any, List, Dict, Set
+from itertools import combinations
+from typing import Any, List, Dict, Set, Tuple
 import time
 import math
 
@@ -1070,15 +1071,209 @@ class NobetSolver:
                     "gunluk_aday_yetersiz_preview": role_daily_short[:10]
                 })
 
+        aday_kesisimi_aciklari = self._aday_kesisimi_aciklari(slot_day_candidates, limit_preview)
+        ortak_butce = self._ortak_butce_kapasitesi(slot_day_candidates)
+
         result = {
             "slot_day_zero_candidate_count": sum(
                 1 for (_, _), cands in slot_day_candidates.items() if len(cands) == 0
             ),
             "slot_day_zero_candidate_preview": zero_slot_days,
-            "role_ara_gun_capacity_issues": role_summaries[:limit_preview]
+            "role_ara_gun_capacity_issues": role_summaries[:limit_preview],
+            # Görev başına bağımsız üst sınır, aynı kişiyi her görev için
+            # tam kapasiteyle sayar. Yukarıdaki role_summaries bu yüzden
+            # yetersiz havuzlu görevleri bulamayabilir. Bu iki blok kişi başına
+            # TEK bir ortak bütçe üzerinden sayar ve görevler arası çekişmeyi
+            # ölçer. Mevcut kanallara dokunmaz.
+            "aday_kesisimi_aciklari": aday_kesisimi_aciklari,
+            "ortak_butce_kapasitesi": ortak_butce,
         }
         setattr(self, f"_feasibility_cache_{limit_preview}", result)
         return result
+
+    def _ortak_butce_kapasitesi(self, slot_day_candidates: Dict[Tuple[int, int], List[int]]) -> Dict:
+        """Görevler arası rekabeti aylık ortak bütçeyle ölçer.
+
+        ``role_ara_gun_capacity_issues`` her görev için her personelin
+        kapasitesini AYRI AYRI toplar. Bir kişi üç göreve de yetkiliyse bu
+        sayım üç kat fazla üretir. Oysa kişi bir güne yalnız bir slot alır.
+
+        Bu fonksiyon her personelin kapasitesini **bir kez**, ayda kaç slot
+        adayı olabildiğine göre toplar ve toplam taleple karşılaştırır. Bu
+        güvenli bir üst sınırdır: gerçek kapasite bundan büyük olamaz, yani
+        ``eksik > 0`` yalnız üst sınır kıtlığıdır, imkânsızlık kanıtı değildir.
+        Amaç, mevcut görev-bağımsız sayımın kaçırdığı çapraz çekişmeyi
+        görünür kılmaktır.
+        """
+        toplam_slot = self.gun_sayisi * self.slot_sayisi
+        talep_boyunca_aday_gunler: Dict[int, Set[int]] = {p.id: set() for p in self.personel_listesi}
+        for (s, gun), pids in slot_day_candidates.items():
+            for pid in pids:
+                gunler = talep_boyunca_aday_gunler.get(pid)
+                if gunler is not None:
+                    gunler.add(gun)
+
+        toplam_kapasite = 0
+        kisi_kapasiteleri = []
+        for p in self.personel_listesi:
+            uygun_gunler = sorted(talep_boyunca_aday_gunler.get(p.id, set()))
+            kapasite = self._max_assignable_with_ara_gun(uygun_gunler, personel_id=p.id)
+            toplam_kapasite += kapasite
+            kisi_kapasiteleri.append({
+                "personel_id": p.id,
+                "personel_ad": p.ad,
+                "aday_gun_sayisi": len(uygun_gunler),
+                "kapasite": kapasite,
+            })
+
+        # En kısıtlı kişiler, bütçe gerçekten kıtken hangi havuzun üzerinde
+        # olduğunu anlamak için en az kapasiteye sahip kişilerdir.
+        kisi_kapasiteleri.sort(key=lambda k: (k["kapasite"], k["aday_gun_sayisi"], str(k["personel_ad"])))
+        eksik = max(0, int(toplam_slot) - int(toplam_kapasite))
+        return {
+            "toplam_slot": toplam_slot,
+            "toplam_kapasite": toplam_kapasite,
+            "eksik": eksik,
+            "aciklama": (
+                f'Ay boyunca {toplam_slot} görev slotu doldurulmalı, ama '
+                f'{len(self.personel_listesi)} personelin tümü birleştirildiğinde '
+                f'ara gün kuralıyla en fazla {toplam_kapasite} slot tutulabiliyor '
+                f'({eksik} slot açıkta kalıyor). Görev başına ayrı ayrı bakıldığında '
+                f'her görev yetkili görünüyor; bu çekişme aynı kişilerin birden çok '
+                f'görev için aynı anda kullanılamamasından geliyor.'
+                if eksik > 0 else
+                f'Ay boyunca {toplam_slot} slot için kişi başına ortalama '
+                f'{(round(toplam_slot / len(self.personel_listesi), 2) if self.personel_listesi else 0)} '
+                f'görev düşüyor; toplam kapasite ({toplam_kapasite}) bu talebi tek başına karşılıyor. '
+                f'Bu nedenle açıklık global kapasitede değil, görev havuzlarının '
+                f'öbelendiği belirli günlerde aranmalıdır.'
+            ),
+            "kisi_basina_ortalama_gerekli": (
+                round(toplam_slot / len(self.personel_listesi), 2)
+                if self.personel_listesi else None
+            ),
+            "en_kisitli_kisiler": kisi_kapasiteleri[:10],
+        }
+
+    def _aday_kesisimi_aciklari(
+        self,
+        slot_day_candidates: Dict[Tuple[int, int], List[int]],
+        limit_preview: int,
+    ) -> List[Dict]:
+        """Görevler arası çekişmeyi ölçen Hall-tipi günlük aday kesişimi.
+
+        Her gün için slotların aday kümesi bir eşleme problemidir: bir kişi
+        günde yalnız bir slot alabilir. Hall teoremine göre o gün ancak her
+        slot alt kümesi için aday birleşimi en az alt küme boyutu kadarsa tam
+        doluluk mümkündür.
+
+        Görev başına bağımsız üst sınır (``role_ara_gun_capacity_issues``)
+        bu paylaşımı göremez: bir kişi iki göreve de yetkiliyse her biri için
+        tam kapasiteyle sayılır, oysa gerçekte günde yalnız birine girebilir.
+
+        Alt küme sayısı ``2 ** slot_sayisi`` ile sınırlıdır. Slot sayısı küçükken
+        (``_HALL_TAM_KONTROL_SINIRI`` altı) **tam** Hall denetimi yapılır:
+        raporlanan her çelişki gerçek bir ihlaldir. Daha büyük slot sayılarında
+        ``combinations`` patlaması önlenir ve boyutça küçük alt kümeler
+        (adayan aday sayısı dar olanlar) ile sınırlı bir **yine de sesli**
+        (false positive üretmeyen, yalnızca bazı ihlalleri kaçırabilen)
+        denetime geçilir. Seslilik burada kritiktir: raporlanan her açık
+        gerçek; eksik kalanlar yalnız raporlanmaz, yanlış raporlanmaz.
+        """
+        aciklar: List[Dict] = []
+        slot_listesi = list(range(self.slot_sayisi))
+        tam_kontrol = self.slot_sayisi <= self._HALL_TAM_KONTROL_SINIRI
+        for gun in range(1, self.gun_sayisi + 1):
+            aday_haritasi = {
+                s: set(slot_day_candidates.get((s, gun), []))
+                for s in slot_listesi
+            }
+
+            ihlaller = self._hall_ihlalleri(aday_haritasi, tam_kontrol)
+            for eksik, k, alt_kume, birlesim in ihlaller:
+                gorevler_metni = ', '.join(
+                    self._role_name_by_slot(s) for s in alt_kume
+                )
+                aciklar.append({
+                    "gun": gun,
+                    "kisitli_slot_sayisi": k,
+                    "toplam_slot": self.slot_sayisi,
+                    "aday_birlesimi": len(birlesim),
+                    "eksik": eksik,
+                    "tam_kontrol": tam_kontrol,
+                    "aciklama": (
+                        f'{gun}. gün {gorevler_metni} görevleri için '
+                        f'{len(birlesim)} müsait aday var ama {k} kişi '
+                        f'gerekli ({eksik} kişi eksik). Bu görevler '
+                        f'birbirinin havuzunu paylaşıyor: aynı kişi bir '
+                        f'güne yalnız bir görev alabildiği için bu slotlar '
+                        f'aynı anda doldurulamaz.'
+                    ),
+                    "slotlar": [
+                        {
+                            "slot_idx": s,
+                            "gorev": self._role_name_by_slot(s),
+                            "aday_sayisi": len(aday_haritasi[s]),
+                        }
+                        for s in alt_kume
+                    ],
+                })
+                if len(aciklar) >= limit_preview:
+                    break
+            if len(aciklar) >= limit_preview:
+                break
+        return aciklar
+
+    def _hall_ihlalleri(
+        self,
+        aday_haritasi: Dict[int, Set[int]],
+        tam_kontrol: bool,
+    ) -> List[Tuple[int, int, tuple, Set[int]]]:
+        """Bir gün için Hall ihlallerini döndürür: ``(eksik, k, alt_kume, birlesim)``.
+
+        ``tam_kontrol`` iken tüm alt kümeler gezilir. Slot sayısı
+        ``_HALL_TAM_KONTROL_SINIRI``'ı aşıyorsa ``combinations`` sayısal olarak
+        patlar (50 slot için 2**50); bu yüzden yalnız en dar ``slot_sayisi``
+        aday kümesine sahip ``slot_sayisi`` adet aday alt kümesi denenir. Bu
+        yine seslidir: bulunan ihlal gerçektir, sadece daha büyük bir alt
+        kümedeki ihlal kaçırılabilir.
+        """
+        slot_listesi = list(aday_haritasi.keys())
+        if not slot_listesi:
+            return []
+
+        if tam_kontrol:
+            ihlaller = []
+            for k in range(1, len(slot_listesi) + 1):
+                for alt_kume in combinations(slot_listesi, k):
+                    birlesim: Set[int] = set()
+                    for s in alt_kume:
+                        birlesim |= aday_haritasi[s]
+                    eksik = k - len(birlesim)
+                    if eksik > 0:
+                        ihlaller.append((eksik, alt_kume, birlesim))
+                if ihlaller:
+                    ihlaller.sort(key=lambda item: (-item[0], item[1]))
+                    eksik, alt_kume, birlesim = ihlaller[0]
+                    return [(eksik, len(alt_kume), alt_kume, birlesim)]
+            return []
+
+        # Yaklaşık yol: en dar slot aday kümelerinden başlayarak kümülatif
+        # birleştir. İlk eksiklik en anlamlı darboğazı verir.
+        sirali = sorted(slot_listesi, key=lambda s: (len(aday_haritasi[s]), s))
+        birlesim: Set[int] = set()
+        for k, s in enumerate(sirali, start=1):
+            birlesim |= aday_haritasi[s]
+            if len(birlesim) < k:
+                alt_kume = tuple(sirali[:k])
+                return [(k - len(birlesim), k, alt_kume, set(birlesim))]
+        return []
+
+    # Hall denetimi tam (tüm alt kümeler) ancak ``combinations`` sayısı
+    # ``2**slot_sayisi`` ile büyüdüğü için yalnız küçük slot sayılarında
+    # uygulanır. Bu sınırın üstünde yaklaşık (ama yine sesli) yol kullanılır.
+    # ``main.py`` MAX_SLOT_SAYISI=50 iken 2**50 alt küme sonsuza dek sürerdi.
+    _HALL_TAM_KONTROL_SINIRI = 10
 
     # Gün tipi -> insan diline uygun etiket
     _GUN_TIPI_ETIKET = {

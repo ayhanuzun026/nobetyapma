@@ -614,3 +614,20 @@ test('infeasibility details render the human-readable sentence, not raw IDs', ()
   assert.match(renderer, /const nedenAciklamasi = hazirlikNedenAciklamasi\(neden\)/);
   assert.match(renderer, /\$\{escapeHtml\(nedenAciklamasi\)\}/);
 });
+
+test('cross-task contention diagnosis reaches the rendered UI (no dead field)', () => {
+  // Backend yeni alanlar üretir: teshis.aday_kesisimi_aciklari ve
+  // teshis.ortak_butce_kapasitesi. Bunlar ekrana da basılmalı; aksi halde
+  // INFEASIBLE raporunda kullanıcı yine boş "rol_sorunlari: []" görür.
+  const renderer = functionSource('hazirlikKapasiteSonucuGoster');
+  assert.match(renderer, /const kesisimAciklari = hazirlikDizi\(teshis\?\.aday_kesisimi_aciklari\)/);
+  assert.match(renderer, /ortakButce = teshis\?\.ortak_butce_kapasitesi/);
+  // Her iki kaynak da "sorun kartları" listesine girmeli.
+  assert.match(renderer, /\.\.\.\(ortakButce\?\.aciklama \? \[String\(ortakButce\.aciklama\)\] : \[\]\)/);
+  assert.match(renderer, /\.\.\.kesisimAciklari\.map\(x => hazirlikKayitMetni\(x\)\)/);
+  // Engel kategorisi de görünmeli, yoksa metin ekrana hiç dökülmez.
+  const kategoriler = functionSource('hazirlikEngelKategorileri');
+  assert.match(kategoriler, /normalize\.teshis\?\.aday_kesisimi_aciklari/);
+  assert.match(kategoriler, /ortak_butce_kapasitesi\?\.eksik/);
+  assert.match(kategoriler, /çekişme: 'Görevler arası çekişme'/);
+});
