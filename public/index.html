@@ -925,11 +925,27 @@
       <div class="rule-box mt-3"
         style="background:linear-gradient(135deg, #eff6ff, #dbeafe); border:2px solid #93c5fd;">
         <h4>📋 Önceki Aydan Ayarları Çek</h4>
-        <div class="help mb-3">Personel, görevler, kurallar, kısıtlamalar ve havuzları önceki aydan taşır. Mazeretler,
+        <div class="help mb-3">Personel, görevler, kurallar, kısıtlamalar ve havuzları seçilen aydan taşır. Mazeretler,
           manuel atamalar ve tatiller sıfırlanır.</div>
         <div class="flex gap-2 flex-wrap items-center">
+          <input type="number" id="kaynak-yil" placeholder="Yıl" min="2000" max="2100"
+            style="width:90px; padding:8px; border:2px solid #e2e8f0; border-radius:8px;" title="Kaynak yıl">
+          <select id="kaynak-ay" style="padding:8px; border:2px solid #e2e8f0; border-radius:8px;" title="Kaynak ay">
+            <option value="1">Ocak</option>
+            <option value="2">Şubat</option>
+            <option value="3">Mart</option>
+            <option value="4">Nisan</option>
+            <option value="5">Mayıs</option>
+            <option value="6">Haziran</option>
+            <option value="7">Temmuz</option>
+            <option value="8">Ağustos</option>
+            <option value="9">Eylül</option>
+            <option value="10">Ekim</option>
+            <option value="11">Kasım</option>
+            <option value="12">Aralık</option>
+          </select>
           <button class="btn btn-sm" style="background:#3b82f6; color:#fff;" onclick="oncekiAydanCek()">
-            <i class="fa-solid fa-arrow-left"></i> Önceki Aydan Çek
+            <i class="fa-solid fa-arrow-left"></i> Seçilen Aydan Çek
           </button>
           <span id="onceki-ay-bilgi" class="help" style="margin-left:8px;"></span>
         </div>
@@ -12037,17 +12053,44 @@
     // ============================================
     async function oncekiAydanCek() {
       const uid = auth?.currentUser?.uid || 'LOCAL';
-      const { yil, ay } = getYilAy();
+      const { yil: aktifYil, ay: aktifAy } = getYilAy();
 
-      // Önceki ayı hesapla
-      let oncekiAy = ay - 1;
-      let oncekiYil = yil;
-      if (oncekiAy < 1) {
-        oncekiAy = 12;
-        oncekiYil = yil - 1;
+      // Kaynak ay seçimi: alanlar boşsa bir önceki ay varsayılanı.
+      const yilGirdi = parseInt(document.getElementById('kaynak-yil')?.value, 10);
+      const ayGirdi = parseInt(document.getElementById('kaynak-ay')?.value, 10);
+      let oncekiYil = Number.isFinite(yilGirdi) ? yilGirdi : aktifYil;
+      let oncekiAy = Number.isFinite(ayGirdi) ? ayGirdi : 0;
+
+      if (!Number.isFinite(ayGirdi) || !ayGirdi) {
+        oncekiAy = aktifAy - 1;
+        if (oncekiAy < 1) {
+          oncekiAy = 12;
+          oncekiYil = aktifYil - 1;
+        }
+      }
+      if (oncekiAy < 1 || oncekiAy > 12) {
+        alert('Geçerli bir ay seçin (1-12).');
+        return;
+      }
+      if (oncekiYil === aktifYil && oncekiAy === aktifAy) {
+        alert('Kaynak ay olarak aktif ayın kendisini seçemezsiniz. Önceki ya da farklı bir ay seçin.');
+        return;
       }
 
-      const ayAdlari = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+        // Kaynak alan varsayılanını aktif - 1 aya getir (ilk açılışta kolaylık).
+        try {
+          const varsayilanAy = (() => {
+            let m = aktifAy - 1, y = aktifYil;
+            if (m < 1) { m = 12; y -= 1; }
+            return { y, m };
+          })();
+          const kayY = document.getElementById('kaynak-yil');
+          const kayA = document.getElementById('kaynak-ay');
+          if (kayY && !kayY.value) kayY.value = String(varsayilanAy.y);
+          if (kayA && !kayA.value) kayA.value = String(varsayilanAy.m);
+        } catch (_) {}
+
+        const ayAdlari = ['', 'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
         'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'];
 
       // Önceki ayın verisini ara (ay bazlı key, yoksa eski genel key)
@@ -12088,9 +12131,9 @@
           }
           updateSyncStatus('synced');
         } catch (e) {
-          console.warn('Firestore önceki ay okuma hatası:', e);
+          console.warn('Firestore kaynak ay okuma hatası:', e);
           updateSyncStatus('error');
-          alert('Önceki ayın güncel bulut kaydı okunamadı. Eski yerel veriyi kopyalamamak için işlem durduruldu.');
+          alert('Seçilen ayın güncel bulut kaydı okunamadı. Eski yerel veriyi kopyalamamak için işlem durduruldu.');
           return;
         }
       }
