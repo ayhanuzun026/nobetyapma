@@ -441,7 +441,9 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
             saat_degerleri=saat_degerleri,
             kilitli_hedefler=kilitli_hedefler,
             gorev_kota_overrides=gorev_kota_overrides,
-            kaynak="nobet_kapasite_ortak_plan",
+            # Hedef endpoint'iyle aynı kaynak etiketi: kontrat hash'i ve
+            # raporlanan plan kimliği hazırlık/final arasında birebir olsun.
+            kaynak="nobet_hedef_hesapla_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
             kisitlama_istisnalari=kisitlama_istisnalari,
             birlikte_istisnalari=birlikte_istisnalari,
