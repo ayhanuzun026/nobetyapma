@@ -74,6 +74,9 @@ def plan_girdi_hash(data: Dict) -> str:
         'birlikte_istisnalari': parse_birlikte_istisnalari(data, personeller),
         'aragun_istisnalari': parse_aragun_istisnalari(data, personeller),
         'kilitli_hedefler': frontend_kilitli_hedefleri_topla(personeller, data.get('kilitliHedefler')),
+        # Otomatik personel kotaları hash'e girmez; yalnız explicit override'lar
+        # önizleme/final planın girdisi sayılır.
+        'gorev_kota_overrides': data.get('gorevKotaOverrides') or {},
         'tamir_politikasi': data.get('tamirPolitikasi') or {},
         'resmi_tatiller': data.get('resmiTatiller') or [],
         'gecmis_politikasi': data.get('gecmisDonemPolitikasi'),
@@ -144,20 +147,38 @@ def frontend_kilitli_hedefleri_topla(
     return kilitli_hedefler
 
 
-def frontend_gorev_kota_override_topla(personeller: List[SolverPersonel]) -> Dict[int, Dict[str, int]]:
+def frontend_gorev_kota_override_topla(
+    personeller: List[SolverPersonel],
+    raw_overrides: Optional[Dict] = None,
+) -> Dict[int, Dict[str, int]]:
+    """Açıkça kullanıcı tarafından gönderilen kişi-görev kotalarını al.
+
+    ``SolverPersonel.gorev_kotalari`` hedef hesaplamasının otomatik çıktısını
+    de taşıyabilir. Bu alanı varsayılan olarak override kabul etmek, otomatik
+    kotayı hard plan kısıtına çevirip final çizelgesini gereksiz yere bozuyordu.
+    Override kanalı artık payload'da ayrı olan ``gorevKotaOverrides`` alanıdır.
+    Eski çağrılar için yalnızca açıkça verilen sözlüğü işleriz.
+    """
     overrides: Dict[int, Dict[str, int]] = {}
-    for p in personeller:
-        raw = getattr(p, "gorev_kotalari", None)
-        if not isinstance(raw, dict):
+    if not isinstance(raw_overrides, dict):
+        return overrides
+
+    personel_ids = {normalize_id(p.id) for p in personeller}
+    for raw_pid, raw in raw_overrides.items():
+        try:
+            pid = normalize_id(raw_pid)
+        except (TypeError, ValueError):
+            continue
+        if pid not in personel_ids or not isinstance(raw, dict):
             continue
         normalized = {}
         for gorev_adi, kota in raw.items():
             try:
-                normalized[str(gorev_adi)] = int(kota)
+                normalized[str(gorev_adi)] = max(0, int(kota))
             except (TypeError, ValueError):
                 continue
         if normalized:
-            overrides[normalize_id(p.id)] = normalized
+            overrides[pid] = normalized
     return overrides
 
 
@@ -407,7 +428,12 @@ def plan_kontrati_olustur(
         })
 
         if pid in gorev_kota_overrides:
-            hedef["gorev_kotalari"] = dict(gorev_kota_overrides[pid])
+            # Override map is sparse (the UI sends only edited cells). Merge it
+            # over the generated quotas instead of deleting the other roles.
+            hedef["gorev_kotalari"] = {
+                **dict(hedef.get("gorev_kotalari", {}) or {}),
+                **dict(gorev_kota_overrides[pid]),
+            }
 
         kilitli = pid in kilitli_hedefler
         if kilitli:
@@ -522,6 +548,11 @@ def ortak_plan_uret(
             kaynak = "backend_ortak_plan"
 
     plan_personeller = deepcopy(personeller)
+    # Incoming ``gorev_kotalari`` may be a previous automatic plan snapshot.
+    # It is presentation/state, not a hard input; explicit edits arrive via
+    # ``gorev_kota_overrides`` and are merged into the fresh plan below.
+    for p in plan_personeller:
+        p.gorev_kotalari = {}
 
     hesaplayici = HedefHesaplayici(
         gun_sayisi=gun_sayisi,

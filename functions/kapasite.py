@@ -157,6 +157,9 @@ def _kapasite_solver_olustur(
     kilitli_hedefler: Dict[Any, Dict[str, int]],
     kurum_profili: str,
     max_sure_saniye: int,
+    hedefler: Optional[Dict[Any, Dict]] = None,
+    plan_kontrati: Optional[Dict] = None,
+    max_ara_gun: int = 0,
 ):
     from ortools_solver import NobetSolver
 
@@ -171,15 +174,17 @@ def _kapasite_solver_olustur(
         birlikte_istisnalari=birlikte_istisnalari,
         aragun_istisnalari=aragun_istisnalari,
         manuel_atamalar=manuel_atamalar,
-        hedefler=_kapasite_hedefleri(
+        hedefler=(hedefler if isinstance(hedefler, dict) else _kapasite_hedefleri(
             gun_sayisi,
             personeller,
             kilitli_hedefler=kilitli_hedefler,
-        ),
+        )),
+        plan_kontrati=plan_kontrati or {},
         ara_gun=ara_gun,
         max_sure_saniye=max(1, int(max_sure_saniye or 1)),
         leksikografik=False,
         kurum_profili=kurum_profili,
+        max_ara_gun=max_ara_gun,
     )
 
 
@@ -610,8 +615,11 @@ def _tam_doluluk_fizibilite_kontrolu(
     birlikte_istisnalari: List[Dict],
     aragun_istisnalari: List[Dict],
     kilitli_hedefler: Dict[Any, Dict[str, int]],
+    hedefler: Optional[Dict[Any, Dict]],
+    plan_kontrati: Optional[Dict],
     kurum_profili: str,
     max_sure_saniye: int,
+    max_ara_gun: int = 0,
     gun_bazli_on_analiz: Optional[Dict] = None,
     deadline: Optional[float] = None,
 ) -> Dict:
@@ -630,6 +638,9 @@ def _tam_doluluk_fizibilite_kontrolu(
         birlikte_istisnalari=birlikte_istisnalari,
         aragun_istisnalari=aragun_istisnalari,
         kilitli_hedefler=kilitli_hedefler,
+        hedefler=hedefler,
+        plan_kontrati=plan_kontrati,
+        max_ara_gun=max_ara_gun,
         manuel_atamalar=manuel_atamalar,
         ara_gun=ara_gun,
         max_sure_saniye=tam_sure,
@@ -877,7 +888,12 @@ def _tam_doluluk_fizibilite_kontrolu(
         core_tavan = 5 if deadline is None else max(1, min(5, kalan))
         core_bilgisi = core_fn(max_sure_saniye=core_tavan) or {}
 
-    adaylar = _what_if_adaylari(
+    # Exact ortak plan kontratı kullanılırken karşı-olgusal adaylar aynı
+    # hedef/kota sözleşmesiyle doğrulanamaz: mazeret, havuz veya ara-gün
+    # değişikliği planı yeniden üretmeyi gerektirir. Eski gevşek kapasite
+    # modunda adaylar gösterilmeye devam eder; exact hazırlıkta yalnızca
+    # sözleşmenin kendi kanıtı raporlanır.
+    adaylar = [] if plan_kontrati else _what_if_adaylari(
         ara_gun=ara_gun,
         personeller=personeller,
         gorevler=gorevler,
@@ -1448,8 +1464,11 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
                      gorev_havuzlari: Optional[Dict[str, Set[int]]] = None,
                      kisitlama_istisnalari: Optional[List[Dict]] = None,
                      kilitli_hedefler: Optional[Dict[Any, Dict[str, int]]] = None,
+                     hedefler: Optional[Dict[Any, Dict]] = None,
+                     plan_kontrati: Optional[Dict] = None,
                      kurum_profili: str = 'genel',
-                     max_sure_saniye: int = 10) -> Dict:
+                     max_sure_saniye: int = 10,
+                     max_ara_gun: int = 0) -> Dict:
     analiz_baslangici = time.monotonic()
     toplam_butce = max(1, int(max_sure_saniye or 10))
     deadline = analiz_baslangici + toplam_butce
@@ -1546,8 +1565,11 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
         birlikte_istisnalari=birlikte_istisnalari,
         aragun_istisnalari=aragun_istisnalari,
         kilitli_hedefler=kilitli_hedefler,
+        hedefler=hedefler,
+        plan_kontrati=plan_kontrati,
         kurum_profili=kurum_profili,
         max_sure_saniye=max_sure_saniye,
+        max_ara_gun=max_ara_gun,
         gun_bazli_on_analiz=gun_bazli_fizibilite,
         deadline=deadline,
     )
@@ -1573,7 +1595,9 @@ def kapasite_hesapla(gun_sayisi: int, gun_tipleri: Dict[int, str],
         'kilitli_hedef_sayisi': len(kilitli_hedefler),
         # Otomatik hedef/adalet planı bu endpoint'ten sonra üretildiği için
         # fiziksel fizibilite hükmünün parçası değildir; bu açıkça raporlanır.
-        'otomatik_plan_hedefleri': 'HENUZ_URETILMEDI',
+        'otomatik_plan_hedefleri': 'KULLANILDI' if hedefler and plan_kontrati else 'HENUZ_URETILMEDI',
+        'plan_hash': (plan_kontrati or {}).get('plan_hash') if isinstance(plan_kontrati, dict) else None,
+        'plan_kontrati': 'DAHIL' if plan_kontrati else 'YOK',
     }
     fizibilite['kapsam'] = kapsam
 

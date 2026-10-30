@@ -1977,6 +1977,46 @@ def test_kapasite_kilitli_hedef_what_ifler_tarafindan_sessizce_gevsetilmez():
     )
 
 
+def test_kapasite_plan_kontrati_final_hedeflerini_fizibiliteye_katar():
+    """Hazırlık modeli final plan kontratını yok sayıp fiziksel FEASIBLE diyemez."""
+    hedefler = {
+        1: {
+            "hedef_toplam": 0,
+            "hedef_tipler": {"hici": 0, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0},
+            "gorev_kotalari": {"R": 0},
+        }
+    }
+    plan_kontrati = {
+        "plan_hash": "regresyon-plan",
+        "kaynak": "regresyon",
+        "olusturulan_ara_gun": 0,
+        "hedefler": hedefler,
+        "uygulama": {
+            "yetkili": True,
+            "toplam_hard": True,
+            "gun_tipi_toleransi": 0,
+            "gorev_kota_toleransi": 0,
+        },
+        "gun_iskeleti": {"aktif": False},
+    }
+    sonuc = kapasite_hesapla(
+        gun_sayisi=1,
+        gun_tipleri={1: "hici"},
+        personeller=[SolverPersonel(id=1, ad="A")],
+        slot_sayisi=1,
+        gorevler=[SolverGorev(id=1, ad="R", slot_idx=0, base_name="R")],
+        ara_gun=0,
+        hedefler=hedefler,
+        plan_kontrati=plan_kontrati,
+        max_sure_saniye=8,
+    )
+
+    assert sonuc["durum"] == "INFEASIBLE", sonuc
+    assert sonuc["kapsam"]["otomatik_plan_hedefleri"] == "KULLANILDI"
+    assert sonuc["kapsam"]["plan_kontrati"] == "DAHIL"
+    assert sonuc["kapsam"]["plan_hash"] == "regresyon-plan"
+
+
 def test_kapasite_gecersiz_slot_ve_ara_gun_degerlerini_reddeder():
     for slot_sayisi, ara_gun in [(0, 0), (1, -1)]:
         try:

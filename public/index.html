@@ -1519,6 +1519,9 @@
     let gorevKisitlamalari = []; // { personelId, gorevAdi, exclusive?, gunTipiDagilimi?: {hici,prs,cum,cmt,pzr} | null }
     let gorevHavuzlari = {}; // { gorevAdi: [personelId1, personelId2, ...] } — görev bazlı yedek havuz
     let gorevKapasiteAyar = {}; // { gorevAdi: { toplam: X, hici: X, prs: X, cum: X, cmt: X, pzr: X } }
+    // Yalnızca kullanıcının elle düzenlediği kişi-görev kotaları.
+    // Otomatik dağıtılan p.gorevKotalari backend'e override olarak gönderilmez.
+    let gorevKotaOverrides = {}; // { personelId: { gorevAdi: kota } }
     let kisitlamaIstisnalari = []; // { personelId, kisitliGorev, istisnaGorev, gun, onayTarihi }
     let birlikteIstisnalari = [];  // { personelId, gun, slotIdx, gorevAdi, onayTarihi }
     let araGunIstisnalari = [];    // { personelId, gun1, gun2, onayTarihi }
@@ -1976,6 +1979,7 @@
         birlikteIstisnalari,
         araGunIstisnalari,
         kilitliHedefler,
+        gorevKotaOverrides,
         kisitlamaExclusive,
         gorevKapasiteAyar
       });
@@ -2058,6 +2062,7 @@
 
       // Özel görev kapasite ayarlarını temizle
       gorevKapasiteAyar = {};
+      gorevKotaOverrides = {};
 
       // Devir listesini temizle
       devirListesi = [];
@@ -2806,9 +2811,9 @@
     // ============================================
 
     function normalizeAd(ad) {
-      return String(ad || '').trim().toLowerCase().replace(/\s+/g, ' ')
-        .replace(/İ/g, 'i').replace(/I/g, 'ı').replace(/Ğ/g, 'ğ').replace(/Ü/g, 'ü')
-        .replace(/Ş/g, 'ş').replace(/Ö/g, 'ö').replace(/Ç/g, 'ç');
+      return String(ad || '').normalize('NFKC').trim().toLocaleLowerCase('tr-TR')
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\u0131/g, 'i')
+        .replace(/\s+/g, ' ');
     }
 
     async function gecmisExcelYukle(input) {
@@ -4291,6 +4296,7 @@
           const worksheet = workbook.worksheets[0];
 
           let yuklenen = 0;
+          const eslesmeyenAdlar = new Set();
           let nobetler = []; // 08:00-08:00 olan hücreler için
 
           // Satırları tara (2'den başla, 1 header)
@@ -4300,19 +4306,22 @@
             const adCell = row.getCell(1);
             const ad = adCell.value ? String(adCell.value).trim() : '';
             if (!ad) return;
+            const adNorm = normalizeAd(ad);
+            if (/^\d+(?:[./-]\d+)*$/.test(adNorm) || adNorm.length < 3) return;
 
             // ✅ YENİ EKLENEN FİLTRE: Gereksiz satırları atla
             const gecersizKelimeler = ['TOPLAM', 'GENEL', 'SAYI', 'SORUMLU', 'DEPO', 'UYANDIRMA', 'ÜCRETSİZ', 'RAPOR'];
-            if (gecersizKelimeler.some(k => ad.toUpperCase().includes(k))) {
+            if (gecersizKelimeler.some(k => adNorm.includes(normalizeAd(k))) ||
+              ['sira', 'personel', 'mesai saati', 'dokuman kodu'].some(k => adNorm.includes(normalizeAd(k)))) {
               return; // Bu satırı işlemeyip pas geç
             }
 
             const personel = personelListesi.find(p =>
-              p.ad && p.ad.toLowerCase().trim() === ad.toLowerCase()
+              p.ad && normalizeAd(p.ad) === adNorm
             );
 
             if (!personel) {
-              console.warn(`Personel bulunamadı: ${ad}`);
+              eslesmeyenAdlar.add(ad);
               return;
             }
 
@@ -4396,6 +4405,11 @@
               }
             }
           });
+
+          if (eslesmeyenAdlar.size > 0) {
+            console.warn(`[MAZERET] ${eslesmeyenAdlar.size} satir personel listesiyle eslesmedi:`,
+              [...eslesmeyenAdlar].slice(0, 20));
+          }
 
           input.value = '';
           mazeretGridOlustur();
@@ -4865,6 +4879,30 @@
             window.ortoolsIstatistikler = result.istatistikler;
           }
 
+          const hedefAdaletDegerleri = result.hedefler.map(h => ({
+            toplam: Number(h.hedef_toplam ?? 0),
+            wd: Number(h.hedef_wd ?? 0),
+            we: Number(h.hedef_we ?? 0)
+          }));
+          const aralik = alan => {
+            const degerler = hedefAdaletDegerleri.map(x => x[alan]);
+            return degerler.length ? {
+              min: Math.min(...degerler),
+              max: Math.max(...degerler),
+              fark: Math.max(...degerler) - Math.min(...degerler)
+            } : { min: 0, max: 0, fark: 0 };
+          };
+          const hedefAdaletOzeti = {
+            toplam: aralik('toplam'),
+            haftaIci: aralik('wd'),
+            haftaSonu: aralik('we')
+          };
+          window.ortoolsIstatistikler = {
+            ...(window.ortoolsIstatistikler || {}),
+            hedef_adalet_ozeti: hedefAdaletOzeti
+          };
+          console.log('[HEDEF][ADALET] Hedef araliklari:', hedefAdaletOzeti);
+
           // OR-Tools sonuçlarını personel hedeflerine uygula
           let eslesmeyen = 0;
           const eslestirilenIds = new Set(); // Duplicate ID kontrolü için
@@ -4902,8 +4940,12 @@
             const pid = String(p.id);
             if (kilitliHedefler.hasOwnProperty(pid)) {
               p.hedef = { ...kilitliHedefler[pid] };
-              if (h.gorev_kotalari && Object.keys(h.gorev_kotalari).length > 0) {
-                p.gorevKotalari = { ...h.gorev_kotalari };
+              if ((h.gorev_kotalari && Object.keys(h.gorev_kotalari).length > 0)
+                || (gorevKotaOverrides[pid] && Object.keys(gorevKotaOverrides[pid]).length > 0)) {
+                p.gorevKotalari = {
+                  ...h.gorev_kotalari,
+                  ...(gorevKotaOverrides[pid] || {})
+                };
                 backendKotaPersonelIds.add(pid);
               }
               console.log(`[KILIT] ${p.ad} kilitli - hedef korundu:`, p.hedef);
@@ -4938,8 +4980,12 @@
             }
 
             // Görev kotalarını kaydet
-            if (h.gorev_kotalari && Object.keys(h.gorev_kotalari).length > 0) {
-              p.gorevKotalari = { ...h.gorev_kotalari };
+            if ((h.gorev_kotalari && Object.keys(h.gorev_kotalari).length > 0)
+              || (gorevKotaOverrides[pid] && Object.keys(gorevKotaOverrides[pid]).length > 0)) {
+              p.gorevKotalari = {
+                ...h.gorev_kotalari,
+                ...(gorevKotaOverrides[pid] || {})
+              };
               backendKotaPersonelIds.add(String(p.id));
             }
           });
@@ -4996,6 +5042,24 @@
     // gerçek nedeni kaybetmesin diye saklanır (eskiden jenerik metne dönüşüyordu).
     let sonHedefHatasi = null;
     let hedefHesaplamaAktif = false; // Çoklu istek önleme
+    // Aynı hedef hesabını başlatan ikinci UI akışı, uzun süren hazırlık/ hedef
+    // isteği boyunca kısa polling yerine bu Promise'i bekler.
+    let hedefHesaplamaBekleme = null;
+    let hedefHesaplamaBeklemeCoz = null;
+
+    function hedefHesaplamaKilidiAc() {
+      hedefHesaplamaAktif = true;
+      hedefHesaplamaBekleme = new Promise(resolve => {
+        hedefHesaplamaBeklemeCoz = resolve;
+      });
+    }
+
+    function hedefHesaplamaKilidiKapat() {
+      hedefHesaplamaAktif = false;
+      if (hedefHesaplamaBeklemeCoz) hedefHesaplamaBeklemeCoz();
+      hedefHesaplamaBeklemeCoz = null;
+      hedefHesaplamaBekleme = null;
+    }
 
     // Hedef hesaplama hatasını kullanıcıya anlaşılır biçimde gösterir.
     // Backend tanı üretmişse başlık + detay + somut öneriler listelenir;
@@ -5020,11 +5084,11 @@
       // Çoklu istek önleme
       if (hedefHesaplamaAktif) {
         console.log('Hedef hesaplama zaten çalışıyor, bekleniyor...');
-        return;
+        return hedefHesaplamaBekleme ? await hedefHesaplamaBekleme : undefined;
       }
 
       try {
-        hedefHesaplamaAktif = true;
+        hedefHesaplamaKilidiAc();
 
         // Personel listesi boşsa uyar
         if (!personelListesi || personelListesi.length === 0) {
@@ -5049,7 +5113,7 @@
         console.error('Hedef hesaplama hatası:', error);
         if (!error?.hazirlikKullaniciIptali) hedefHatasiniGoster(error);
       } finally {
-        hedefHesaplamaAktif = false;
+        hedefHesaplamaKilidiKapat();
       }
     }
 
@@ -6074,6 +6138,13 @@
     // Özel görev kotalarını dengeli dağıt
     function ozelGorevKotalariniDagit(ozelGorevler, gunSayisi) {
       if (ozelGorevler.length === 0) return;
+      const hedefToplamlariHazir = personelListesi.some(p =>
+        GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0) > 0
+      );
+      if (!hedefToplamlariHazir) {
+        console.warn('[KOTA] Hedefler henuz hesaplanmadi; otomatik kota dagitimi ertelendi.');
+        return;
+      }
       console.group('[KOTA DAĞITIM] Başladı');
 
       const { yil, ay } = getYilAy();
@@ -7708,7 +7779,20 @@
         console.warn('[LOCK] Kota dağıtımı zaten çalışıyor, atlanıyor...');
         return;
       }
+      if (hedefHesaplamaAktif) {
+        console.warn('[LOCK] Hedef hesaplama surerken kota dagitimi baslatilmadi.');
+        return;
+      }
+      const hedefVar = personelListesi.some(p =>
+        GUN_TIPLERI.reduce((s, t) => s + (p.hedef?.[t] || 0), 0) > 0
+      );
+      if (!hedefVar) {
+        console.warn('[KOTA] Hedefler hazir olmadan yeniden dagitim yapilamaz.');
+        return;
+      }
       kotaDagitimAktif = true;
+      // Yeniden dağıtım otomatik kotayı baştan üretir; eski elle kilitleri bırak.
+      gorevKotaOverrides = {};
 
       // Butonu devre dışı bırak
       const btn = document.querySelector('[onclick="ozelGorevKotalariniYenidenDagit()"]');
@@ -7769,6 +7853,8 @@
 
       if (!p.gorevKotalari) p.gorevKotalari = {};
       p.gorevKotalari[gorevAdi] = yeniDeger;
+      if (!gorevKotaOverrides[String(p.id)]) gorevKotaOverrides[String(p.id)] = {};
+      gorevKotaOverrides[String(p.id)][gorevAdi] = yeniDeger;
       planHedefiniGecersizKil('Kişi görev kotası değişti.');
 
       // Personel satırındaki "Toplam Hedef" badge'ini güncelle
@@ -9001,7 +9087,9 @@
         ? 'Otomatik hedef/plan modeli çalıştı ancak sonuç üretemedi; bu hata fiziksel kapasite kanıtı sayılmaz.'
         : planKapsami === 'KULLANICI_TARAFINDAN_DEGISTIRILDI_FINAL_MODELE_AKTARILACAK'
           ? 'Kullanıcı görev kotası değişikliği final tam modele aktarılacak; önceki plan kontratı geçersizleştirildi.'
-          : 'Otomatik plan hedefleri bu analizden sonra üretilir.';
+          : planKapsami === 'KULLANILDI'
+            ? 'Otomatik hedefler ve plan kontratı final modeliyle aynı tam görev-slotu kontrolünde kullanıldı.'
+            : 'Otomatik hedef/plan kontratı bu analizde kullanılmadı.';
       const kapsamMetni = (kapsam?.kilitli_hedefler === 'DAHIL'
         ? `${Number(kapsam?.kilitli_hedef_sayisi) || 0} açık hedef kilidi tam görev-slotu modeline hard olarak dahil edildi. `
         : 'Açık hedef kilidi yok. ') + planKapsamMetni;
@@ -9360,7 +9448,9 @@
         const response = await authFetch(BACKEND_URL_KAPASITE, {
           method: 'POST',
           body: JSON.stringify(requestData),
-          timeoutMs: 60000
+          // Backend kapasite endpoint'i cold-start ve tam model kontrolünde
+          // 120 saniyeye kadar sürebilir; 60s istemci kesmesi UNKNOWN üretir.
+          timeoutMs: 150000
         });
         const result = await response.json();
         if (!response.ok) {
@@ -9525,6 +9615,7 @@
         gorevHavuzlari: gorevHavuzlari,
         // Editör yedek havuzu tutar; backend bunu tam allow-list sanmamalı.
         gorevHavuzlariModu: 'YEDEK',
+        gorevKotaOverrides,
         manuelAtamalar: manuelData,
         kisitlamaIstisnalari: (kisitlamaIstisnalari || []).map(ist => ({
           personelId: ist.personelId,
@@ -9672,21 +9763,16 @@
           // Lock kontrolü - zaten çalışıyorsa bekle
           if (hedefHesaplamaAktif) {
             console.warn('[LOCK] Hedef hesaplama zaten çalışıyor, listeOlustur bekliyor...');
-            // Mevcut hesaplama bitene kadar bekle
-            let beklemeSayaci = 0;
-            while (hedefHesaplamaAktif && beklemeSayaci < 60) {
-              await new Promise(r => setTimeout(r, 500));
-              beklemeSayaci++;
-            }
-            if (hedefHesaplamaAktif) {
-              throw new Error('Hedef hesaplama 30 saniye içinde tamamlanmadı; çözüm başlatılmadı.');
-            } else if (hedeflerBayatMi()) {
+            // Hazırlık + hedef çağrısı 30 saniyeyi aşabilir; sabit polling
+            // yerine aynı hesaplamanın tamamlanmasını bekle.
+            if (hedefHesaplamaBekleme) await hedefHesaplamaBekleme;
+            if (hedeflerBayatMi()) {
               throw new Error('Hedef hesaplama tamamlanamadı; bayat hedeflerle çözüm başlatılmadı.');
             }
           } else {
             // OR-Tools aktifse OR-Tools ile hesapla
             if (ortoolsAktif) {
-              hedefHesaplamaAktif = true;
+              hedefHesaplamaKilidiAc();
               try {
                 const basarili = await hedefleriHesaplaOrtoolsAsync();
                 if (basarili === 'partial_adopted') {
@@ -9698,7 +9784,7 @@
                   throw new Error('OR-Tools hedef hesaplama başarısız. Yerel fallback kapalı.');
                 }
               } finally {
-                hedefHesaplamaAktif = false;
+                hedefHesaplamaKilidiKapat();
               }
             } else {
               throw new Error('Yerel hedef hesaplama kapalı. OR-Tools aktif olmalı.');
@@ -9805,6 +9891,11 @@
     async function listeOlusturOrtools(yil, ay, gunSayisi, araGun, gunluk) {
       solverSorunRaporu = null;
       solverTeshisGuncelle();
+      // This function can be called recursively after the user accepts the
+      // ara-gün fallback.  Refresh the request signature here so the
+      // resulting schedule is stamped with the fallback input (for example
+      // araGun=1), rather than the outer araGun=2 signature.
+      aktifCozumIstekImzasi = cozumGirdiImzasiOlustur();
       const ozelGorevler = getOzelGorevler();
       const saatDegerleri = Object.fromEntries(
         GUN_TIPLERI.map(tip => [tip, getSaatDeger(tip)])
@@ -9929,6 +10020,7 @@
         gorevKisitlamalari: gorevKisitlamalariData,
         gorevHavuzlari: gorevHavuzlari,
         gorevHavuzlariModu: 'YEDEK',
+        gorevKotaOverrides,
         kisitlamaIstisnalari: kisitlamaIstisnalariData,
         birlikteIstisnalari: birlikteIstisnalariData,
         araGunIstisnalari: araGunIstisnalariData,
@@ -10006,6 +10098,27 @@
           if (cevap) {
             console.log('Ara gün 1 ile tekrar deneniyor...');
             // Ara gün 1 ile tekrar dene
+            // Ara gun plan hash'inin parcasidir. Eski (araGun=2) hash ile
+            // yeniden istek yapmak 409 PlanBayat uretir.
+            const araGunInput = document.getElementById('inp-aragun');
+            if (araGunInput) araGunInput.value = '1';
+            hedefleriBayatIsaretle('Ara gun 1\'e dusuruldu; hedef plani yenileniyor.');
+            // Fallback hedef hesabı da aynı işlem kilidini kullanmalı; aksi
+            // halde kullanıcı hedef ekranını açarsa iki kapasite/plan isteği
+            // paralel çalışıp yeni hash'i birbirinin üstüne yazabilir.
+            if (hedefHesaplamaAktif && hedefHesaplamaBekleme) {
+              await hedefHesaplamaBekleme;
+            }
+            hedefHesaplamaKilidiAc();
+            let yeniHedef;
+            try {
+              yeniHedef = await hedefleriHesaplaOrtoolsAsync();
+            } finally {
+              hedefHesaplamaKilidiKapat();
+            }
+            if (!yeniHedef || yeniHedef === 'partial_adopted') {
+              throw new Error('Ara gun 1 icin hedef plani yenilenemedi.');
+            }
             return await listeOlusturOrtools(yil, ay, gunSayisi, 1, gunluk);
           }
         }
@@ -10353,6 +10466,7 @@
         gorevKisitlamalari: gorevKisitlamalariData,
         gorevHavuzlari: gorevHavuzlari,
         gorevHavuzlariModu: 'YEDEK',
+        gorevKotaOverrides,
         kisitlamaIstisnalari: kisitlamaIstisnalariData,
         resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };
@@ -11732,6 +11846,7 @@
         kilitliHedefler,
         kisitlamaExclusive,
         gorevKapasiteAyar,
+        gorevKotaOverrides,
         devirListesi,
         sonucSnapshot: cizelgeSonucSnapshotOlustur(),
         ayarlar: {
@@ -12056,6 +12171,7 @@
           araGunIstisnalari = data.araGunIstisnalari || [];
           kilitliHedefler = data.kilitliHedefler || {};
           gorevKapasiteAyar = data.gorevKapasiteAyar || {};
+          gorevKotaOverrides = data.gorevKotaOverrides || {};
           devirListesi = data.devirListesi || [];
 
           // Checkbox'ı güncelle
@@ -12300,6 +12416,7 @@
         gorevHavuzlari = data.gorevHavuzlari || {};
         kisitlamaExclusive = data.kisitlamaExclusive || false;
         gorevKapasiteAyar = data.gorevKapasiteAyar || {};
+        gorevKotaOverrides = data.gorevKotaOverrides || {};
 
         // AYA ÖZGÜ VERİLER — sıfırla
         resmiTatiller = [];

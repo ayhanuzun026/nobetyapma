@@ -223,8 +223,10 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
         kilitli_hedefler = frontend_kilitli_hedefleri_topla(
             personeller, data.get("kilitliHedefler")
         )
-        gorev_kota_overrides = frontend_gorev_kota_override_topla(personeller)
-
+        gorev_kota_overrides = frontend_gorev_kota_override_topla(
+            personeller, data.get("gorevKotaOverrides")
+        )
+        kurum_profili = parse_kurum_profili(data.get("kurumProfili"))
         planlama = ortak_plan_uret(
             gun_sayisi=gun_sayisi,
             gun_tipleri=gun_tipleri,
@@ -243,7 +245,7 @@ def nobet_dagit(req: https_fn.Request) -> https_fn.Response:
             kisitlama_istisnalari=kisitlama_istisnalari,
             birlikte_istisnalari=birlikte_istisnalari,
             aragun_istisnalari=aragun_istisnalari,
-            kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+            kurum_profili=kurum_profili,
             resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
         )
         hedefler = planlama.get("hedefler_map", {})
@@ -387,6 +389,7 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
             return _json_response({"error": str(ve), "error_type": "GirdiCokBuyuk"}, status=400)
 
         resmi_tatiller = data.get("resmiTatiller", [])
+        saat_degerleri = data.get("saatDegerleri", None)
 
         gun_sayisi = get_days_in_month(yil, ay)
         gun_tipleri = build_gun_tipleri(yil, ay, gun_sayisi, resmi_tatiller)
@@ -400,6 +403,8 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
 
         manuel_atamalar = parse_manuel_atamalar(data, personeller, gorevler, gun_sayisi)
         kurallar = parse_kurallar(data, personeller)
+        birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
+        gorev_kisitlamalari = parse_gorev_kisitlamalari(data, personeller)
         try:
             gorev_havuzlari = parse_gorev_havuzlari(data, gorevler, personeller)
         except ValueError as ve:
@@ -410,6 +415,59 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
         kilitli_hedefler = frontend_kilitli_hedefleri_topla(
             personeller, data.get("kilitliHedefler")
         )
+        gorev_kota_overrides = frontend_gorev_kota_override_topla(
+            personeller, data.get("gorevKotaOverrides")
+        )
+        kurum_profili = parse_kurum_profili(data.get("kurumProfili"))
+        max_ara_gun = _safe_int(data.get("maxAraGun", 0), 0)
+        if kurum_profili == "112" and max_ara_gun <= 0:
+            max_ara_gun = 5
+
+        # Hazırlık, finalden ayrı bir "yalnız fiziksel kapasite" modeli
+        # çalıştırmamalı. Önce finalle aynı ortak plan kontratını üretiriz;
+        # kapasite kontrolü bu hedefler ve plan kısıtlarıyla tam slot modelini
+        # sınar. Böylece hazırlık FEASIBLE deyip finalin INFEASIBLE olma riski
+        # ortadan kalkar.
+        planlama = ortak_plan_uret(
+            gun_sayisi=gun_sayisi,
+            gun_tipleri=gun_tipleri,
+            personeller=personeller,
+            gorevler=gorevler,
+            birlikte_kurallar=birlikte_kurallar,
+            kurallar=kurallar,
+            gorev_kisitlamalari=gorev_kisitlamalari,
+            manuel_atamalar=manuel_atamalar,
+            ara_gun=ara_gun,
+            saat_degerleri=saat_degerleri,
+            kilitli_hedefler=kilitli_hedefler,
+            gorev_kota_overrides=gorev_kota_overrides,
+            kaynak="nobet_kapasite_ortak_plan",
+            gorev_havuzlari=gorev_havuzlari,
+            kisitlama_istisnalari=kisitlama_istisnalari,
+            birlikte_istisnalari=birlikte_istisnalari,
+            aragun_istisnalari=aragun_istisnalari,
+            kurum_profili=kurum_profili,
+            resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
+        )
+        plan_kontrati = planlama.get("plan_kontrati")
+        hedefler = planlama.get("hedefler_map") or {}
+        if not planlama.get("basarili") or not hedefler or not plan_kontrati:
+            hedef_sonuc = planlama.get("hedef_sonuc")
+            istatistikler = getattr(hedef_sonuc, "istatistikler", None) or {}
+            cikti = {
+                "basari": False,
+                "durum": "UNKNOWN",
+                "uygulanabilir": None,
+                "tam_doluluk_mumkun": None,
+                "mesaj": planlama.get("mesaj") or "Ortak hedef/plan modeli sonuç üretemedi.",
+                "hedefTanisi": istatistikler.get("hedef_tanisi", {}),
+                "istatistikler": istatistikler,
+                "kapsam": {"otomatik_plan_hedefleri": "HEDEF_MODELI_BASARISIZ", "plan_kontrati": "YOK"},
+            }
+            sure_ms = int((time.time() - t0) * 1000)
+            log_session("nobet_kapasite", data, cikti, sure_ms,
+                        frontend_loglar=data.get("frontendLoglar"))
+            return _json_response(cikti)
 
         sonuc = kapasite_hesapla(
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
@@ -421,11 +479,21 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
             gorev_havuzlari=gorev_havuzlari,
             kisitlama_istisnalari=kisitlama_istisnalari,
             kilitli_hedefler=kilitli_hedefler,
-            kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+            hedefler=hedefler,
+            plan_kontrati=plan_kontrati.to_dict() if hasattr(plan_kontrati, "to_dict") else plan_kontrati,
+            kurum_profili=kurum_profili,
             max_sure_saniye=min(20, _solver_suresi(data, 10, upper_bound=20)),
+            max_ara_gun=max_ara_gun,
         )
 
-        cikti = {"basari": True, **sonuc}
+        cikti = {
+            "basari": sonuc.get("durum") == "FEASIBLE",
+            **sonuc,
+            "planHash": plan_kontrati.plan_hash if hasattr(plan_kontrati, "plan_hash") else plan_kontrati.get("plan_hash"),
+            "planKontrati": plan_kontrati.to_dict() if hasattr(plan_kontrati, "to_dict") else plan_kontrati,
+            "hedefler": planlama.get("hedef_sonuc").hedefler if planlama.get("hedef_sonuc") else [],
+            "gorevKotalari": planlama.get("hedef_sonuc").gorev_kotalari if planlama.get("hedef_sonuc") else {},
+        }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_kapasite", data, cikti, sure_ms,
                     frontend_loglar=data.get("frontendLoglar"))
@@ -486,6 +554,9 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
         kilitli_hedefler = frontend_kilitli_hedefleri_topla(
             personeller, data.get("kilitliHedefler")
         )
+        gorev_kota_overrides = frontend_gorev_kota_override_topla(
+            personeller, data.get("gorevKotaOverrides")
+        )
 
         kurallar = parse_kurallar(data, personeller)
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
@@ -512,6 +583,7 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             ara_gun=ara_gun,
             saat_degerleri=saat_degerleri,
             kilitli_hedefler=kilitli_hedefler,
+            gorev_kota_overrides=gorev_kota_overrides,
             kaynak="nobet_hedef_hesapla_ortak_plan",
             gorev_havuzlari=gorev_havuzlari,
             kisitlama_istisnalari=kisitlama_istisnalari,
@@ -658,7 +730,9 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
         kilitli_hedefler = frontend_kilitli_hedefleri_topla(
             personeller, data.get("kilitliHedefler")
         )
-        gorev_kota_overrides = frontend_gorev_kota_override_topla(personeller)
+        gorev_kota_overrides = frontend_gorev_kota_override_topla(
+            personeller, data.get("gorevKotaOverrides")
+        )
 
         try:
             planlama = ortak_plan_uret(
