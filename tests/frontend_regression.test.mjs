@@ -286,12 +286,12 @@ test('backend requests have abortable timeouts', () => {
 test('preparation capacity awaits an explicit decision before target calculation', () => {
   assert.match(html, /async function hazirlikKapasiteKontrolEt\(requestData\)/);
   assert.match(html, /authFetch\(BACKEND_URL_KAPASITE/);
-  const targetStart = html.indexOf('async function hedefHesaplaOrtools()');
-  const targetEnd = html.indexOf('async function listeOlustur()', targetStart);
-  const targetBody = html.slice(targetStart, targetEnd);
-  const capacityCheck = targetBody.indexOf('await hazirlikKapasiteKontrolEt(requestData)');
-  const targetRequest = targetBody.indexOf('authFetch(BACKEND_URL_HEDEF');
-  assert.ok(capacityCheck >= 0 && targetRequest > capacityCheck);
+  const finalStart = html.indexOf('async function listeOlusturOrtools(');
+  const finalEnd = html.indexOf('async function listeOlusturEskiBackend(', finalStart);
+  const finalBody = html.slice(finalStart, finalEnd);
+  const capacityCheck = finalBody.indexOf('await hazirlikKapasiteKontrolEt(requestData)');
+  const finalRequest = finalBody.indexOf('authFetch(BACKEND_URL_ORTOOLS');
+  assert.ok(capacityCheck >= 0 && finalRequest > capacityCheck);
   assert.match(html, /const eylem = await kararPromise/);
   assert.match(html, /hazirlikKullaniciKarariBekle\(girdiImzasi\)/);
   assert.match(html, /if \(eylem === 'retry'\) continue/);
@@ -374,14 +374,13 @@ test('conscious partial adoption uses full-model assignments and skips target AP
   assert.match(adoption, /Kalite\/adalet optimizasyonu çalıştırılmadı/);
   assert.doesNotMatch(adoption, /authFetch/);
 
-  const targetBody = html.slice(
-    html.indexOf('async function hedefHesaplaOrtools()'),
-    html.indexOf('async function listeOlustur()', html.indexOf('async function hedefHesaplaOrtools()'))
-  );
-  const adoptedCheck = targetBody.indexOf("kapasiteKarari?.action === 'partial_adopted'");
-  const targetRequest = targetBody.indexOf('authFetch(BACKEND_URL_HEDEF');
-  assert.ok(adoptedCheck >= 0 && targetRequest > adoptedCheck);
-  assert.match(targetBody.slice(adoptedCheck, targetRequest), /return\s*\{/);
+  const finalStart = html.indexOf('async function listeOlusturOrtools(');
+  const finalEnd = html.indexOf('async function listeOlusturEskiBackend(', finalStart);
+  const finalBody = html.slice(finalStart, finalEnd);
+  const adoptedCheck = finalBody.indexOf("kapasiteKarari?.action === 'partial_adopted'");
+  const finalRequest = finalBody.indexOf('authFetch(BACKEND_URL_ORTOOLS');
+  assert.ok(adoptedCheck >= 0 && finalRequest > adoptedCheck);
+  assert.match(finalBody.slice(adoptedCheck, finalRequest), /return\s*;/);
 });
 
 test('partial assignment contract rejects unknown, duplicate, and count-mismatched records', () => {
