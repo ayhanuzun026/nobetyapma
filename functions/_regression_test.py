@@ -18,6 +18,7 @@ from parsers import (
     parse_gorev_havuzlari,
     parse_kurum_profili,
     parse_manuel_atamalar,
+    parse_kurallar,
     parse_solver_gorevler,
     parse_solver_gorevler_nobet_coz,
     parse_solver_personeller_coz,
@@ -88,6 +89,20 @@ def test_js_safe_ids():
     assert 0 <= large_int <= JS_MAX_SAFE_INTEGER
     assert normalize_id("1000000000000000000000000000000") == large_int
     assert normalize_id("abc") == text_id
+
+
+def test_together_rule_without_policy_is_soft_but_explicit_hard_is_preserved():
+    """Eski arayüz kayıtları birlikte kuralını günlük hard eşitliğe çevirmemeli."""
+    personeller = [SolverPersonel(id=1, ad="A"), SolverPersonel(id=2, ad="B")]
+    kurallar = parse_kurallar({
+        "kurallar": [
+            {"tur": "birlikte", "p1": 1, "p2": 2},
+            {"tur": "birlikte", "p1": 1, "p2": 2, "politika": "hard"},
+        ]
+    }, personeller)
+    assert [k.politika for k in kurallar] == ["soft", "hard"]
+    assert kurallar[0].asla_gevsetme is False
+    assert kurallar[1].asla_gevsetme is True
 
 
 def test_preview_and_final_plan_input_hash_ignores_generated_targets():

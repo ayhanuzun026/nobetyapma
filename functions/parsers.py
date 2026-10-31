@@ -378,7 +378,18 @@ def parse_kurallar(data: Dict, personeller) -> List[SolverKural]:
                     kisiler.append(pid)
 
         if len(kisiler) >= 2:
-            politika = str(k_data.get("politika") or "kullanici_onayli").strip().lower()
+            # Arayüzde oluşturulan eski "birlikte" kayıtlarında politika alanı
+            # yoktu. Bu kayıtları doğrudan günlük eşitlik hard kısıtı saymak,
+            # Excel/VBA'daki anlamdan farklı olarak grubun her gün aynı anda
+            # çalışmasını zorunlu kılar ve hedef gün tipi kotalarıyla kolayca
+            # çözümsüzlük üretir. Politika açıkça verilmediyse birlikte kuralı
+            # bir tercih (soft) kabul edilir; kullanıcının açıkça `hard` veya
+            # `aslaGevsetme` seçtiği kayıtlar aynı şekilde korunur.
+            politika_raw = k_data.get("politika")
+            if not str(politika_raw or "").strip() and tur == "birlikte" and not parse_bool(k_data.get("aslaGevsetme"), False):
+                politika = "soft"
+            else:
+                politika = str(politika_raw or "kullanici_onayli").strip().lower()
             if politika not in {"hard", "kullanici_onayli", "soft"}:
                 politika = "kullanici_onayli"
             kurallar.append(SolverKural(

@@ -1240,7 +1240,7 @@
             title="Tüm personelin mazeretlerini, yıllık izinlerini ve nöbet izinlerini sıfırlar">
             <i class="fa-solid fa-trash-can"></i> Tümünü Temizle
           </button>
-          <input type="file" id="mazeret-excel" hidden accept=".xlsx,.xls" onchange="mazeretExcelYukle(this)">
+          <input type="file" id="mazeret-excel" hidden accept=".xlsx,.xls,.xlsm" onchange="mazeretExcelYukle(this)">
         </div>
       </div>
       <div class="help mb-3" style="background:#f0fdf4; padding:10px; border-radius:8px; border:1px solid #bbf7d0;">
@@ -3775,7 +3775,11 @@
         const p3 = document.getElementById('birlikte-p3').value;
         const secilen = [p1, p2, p3].filter(v => v);
         if (secilen.length < 2) return alert('En az 2 kişi seçiniz');
-        kurallar.push({ tur: 'birlikte', kisiler: [...new Set(secilen)] });
+        // Birlikte yazılacaklar Excel/VBA'da bir tercih ve aynı görev ailesinde
+        // eşleştirme kuralıdır; grubun ayın her gününde aynı anda çalışmasını
+        // zorlayan hard kısıt değildir. Mutlak eşitlik isteniyorsa kayıt daha
+        // sonra açıkça `hard` politika ile işaretlenebilir.
+        kurallar.push({ tur: 'birlikte', kisiler: [...new Set(secilen)], politika: 'soft' });
       }
       hedefleriBayatIsaretle('Personel kuralı eklendi.');
       kuralListesiGuncelle();
@@ -4245,6 +4249,17 @@
       };
     }
 
+    function normalizeLoadedKural(kural) {
+      if (!kural || typeof kural !== 'object') return kural;
+      // Eski arayüz kayıtlarında birlikte kuralının politika alanı yoktu.
+      // Excel/VBA ile uyumlu varsayılan, birlikte çalışmayı tercih etmektir;
+      // günlük eşitlik ancak açıkça hard seçilmişse uygulanır.
+      if (kural.tur === 'birlikte' && !Object.prototype.hasOwnProperty.call(kural, 'politika') && !kural.aslaGevsetme) {
+        return { ...kural, politika: 'soft' };
+      }
+      return kural;
+    }
+
     function gorevKisitlamaListesiGuncelle() {
       const container = document.getElementById('gorev-kisitlama-liste');
       if (!container) return;
@@ -4441,18 +4456,122 @@
 
           const workbook = new ExcelJS.Workbook();
           await workbook.xlsx.load(e.target.result);
-          const worksheet = workbook.worksheets[0];
+
+          const excelCellText = (value) => {
+            if (value && typeof value === 'object') {
+              if (Array.isArray(value.richText)) return value.richText.map(part => part?.text || '').join('');
+              if (value.text != null) return String(value.text);
+              if (value.result != null) return String(value.result);
+            }
+            return value == null ? '' : String(value);
+          };
+
+          // Çalışma Listesi dosyalarında ilk sayfa genellikle yıllık nöbet
+          // çetelemesidir. Mazeret kaynağı ise "Çalışma Listesi" sayfasıdır
+          // (A=Sıra, B=Personel, C:AF=1..31 günleri). Eski kod ilk sayfayı
+          // ve A sütununu seçtiği için bu dosyada hiç kimse doğru okunmuyordu.
+          const normSheet = (s) => normalizeAd(String(s || ''));
+          let worksheet = workbook.worksheets.find(ws => {
+            const n = normSheet(ws.name);
+            return n.includes('calisma listesi') || n.includes('çalisma listesi');
+          });
+          if (!worksheet) {
+            // Sayfa adı farklıysa başlık satırından güvenli biçimde seç.
+            worksheet = workbook.worksheets.find(ws => {
+              const maxRows = Math.min(ws.rowCount || 0, 15);
+              const maxCols = Math.min(ws.columnCount || 0, 40);
+              for (let r = 1; r <= maxRows; r++) {
+                let hasPersonel = false;
+                let hasDayOneTwo = false;
+                for (let c = 1; c <= maxCols; c++) {
+                  const v = ws.getRow(r).getCell(c).value;
+                  const t = normalizeAd(excelCellText(v));
+                  if (t === 'personel' || t.includes('ad soyad')) hasPersonel = true;
+                  if (excelCellText(v).trim() === '1' &&
+                    excelCellText(ws.getRow(r).getCell(c + 1).value).trim() === '2') {
+                    hasDayOneTwo = true;
+                  }
+                }
+                if (hasPersonel && hasDayOneTwo) return true;
+              }
+              return false;
+            });
+          }
+          if (!worksheet) worksheet = workbook.worksheets[0];
+          if (!worksheet) { alert('Excel dosyasında sayfa bulunamadı.'); return; }
+
+          // İsim sütununu ve gün başlık satırını tespit et. Standart şablon
+          // B4=Personel, C4=1 düzenini destekler; eski A1 düzeni de korunur.
+          let nameCol = 1;
+          let dayStartCol = 2;
+          let headerRow = 1;
+          let headerFound = false;
+          const maxRows = Math.min(worksheet.rowCount || 0, 20);
+          const maxCols = Math.min(worksheet.columnCount || 0, 80);
+          for (let r = 1; r <= maxRows; r++) {
+            let personelCol = null;
+            let firstDayCol = null;
+            for (let c = 1; c <= maxCols; c++) {
+              const v = worksheet.getRow(r).getCell(c).value;
+              const t = normalizeAd(excelCellText(v));
+              if (t === 'personel' || t.includes('ad soyad')) personelCol = c;
+              if (excelCellText(v).trim() === '1' &&
+                excelCellText(worksheet.getRow(r).getCell(c + 1).value).trim() === '2') {
+                firstDayCol = c;
+              }
+            }
+            if (personelCol && firstDayCol) {
+              nameCol = personelCol;
+              dayStartCol = firstDayCol;
+              headerRow = r;
+              headerFound = true;
+              break;
+            }
+          }
+          // Eski şablonlarda başlıklar sayısal gün yerine serbest metin olabilir.
+          // Yalnız ilk veri satırında mevcut personel adını doğrulayabiliyorsak
+          // A=personel, B=1. gün düzenine güvenli geri dönüş yap.
+          if (!headerFound) {
+            for (let r = 1; r <= Math.min(maxRows, 6); r++) {
+              const adayAd = excelCellText(worksheet.getRow(r).getCell(1).value).trim();
+              if (adayAd && personelListesi.some(p => p.ad && normalizeAd(p.ad) === normalizeAd(adayAd))) {
+                nameCol = 1;
+                dayStartCol = 2;
+                headerRow = Math.max(0, r - 1);
+                headerFound = true;
+                break;
+              }
+            }
+          }
+          if (!headerFound) {
+            const sayfalar = workbook.worksheets.map(ws => ws.name).join(', ');
+            console.warn('[MAZERET] Personel/gün başlıkları bulunamadı; içe aktarma durduruldu.', {
+              sayfa: worksheet.name, sayfalar
+            });
+            alert('Excel dosyasında Personel ve gün (1, 2, 3...) başlıkları bulunamadı. ' +
+              'Çalışma Listesi sayfasını içeren dosyayı seçin.');
+            input.value = '';
+            return;
+          }
+
+          console.info('[MAZERET] Excel kaynağı seçildi:', {
+            sayfa: worksheet.name,
+            baslikSatiri: headerRow,
+            isimSutunu: nameCol,
+            gunBaslangicSutunu: dayStartCol,
+            gunSayisi
+          });
 
           let yuklenen = 0;
           const eslesmeyenAdlar = new Set();
           let nobetler = []; // 08:00-08:00 olan hücreler için
 
-          // Satırları tara (2'den başla, 1 header)
+          // Satırları tara (tespit edilen başlıktan sonraki veri satırları)
           worksheet.eachRow((row, rowNumber) => {
-            if (rowNumber === 1) return; // Header atla
+            if (rowNumber <= headerRow) return; // başlık satırlarını atla
 
-            const adCell = row.getCell(1);
-            const ad = adCell.value ? String(adCell.value).trim() : '';
+            const adCell = row.getCell(nameCol);
+            const ad = excelCellText(adCell.value).trim();
             if (!ad) return;
             const adNorm = normalizeAd(ad);
             if (/^\d+(?:[./-]\d+)*$/.test(adNorm) || adNorm.length < 3) return;
@@ -4473,18 +4592,14 @@
               return;
             }
 
-            // Sütunları tara (2'den başla, 1 ad sütunu)
-            for (let col = 2; col <= gunSayisi + 1; col++) {
+            // Gün sütunlarını tara (Çalışma Listesi'nde C sütunundan başlar)
+            for (let gun = 1; gun <= gunSayisi; gun++) {
+              const col = dayStartCol + gun - 1;
               const cell = row.getCell(col);
-              const gun = col - 1; // Sütun 2 = Gün 1
-
-              if (gun > gunSayisi) break;
 
               // Hücre değeri
               let valStr = '';
-              if (cell.value) {
-                valStr = String(cell.value).toUpperCase().trim();
-              }
+              valStr = excelCellText(cell.value).toUpperCase().trim();
 
               // Hücre arka plan rengi kontrol
               let bgColor = '';
@@ -4558,6 +4673,13 @@
             console.warn(`[MAZERET] ${eslesmeyenAdlar.size} satir personel listesiyle eslesmedi:`,
               [...eslesmeyenAdlar].slice(0, 20));
           }
+          console.info('[MAZERET] Excel içe aktarma özeti:', {
+            sayfa: worksheet.name,
+            eslesenPersonel: personelListesi.length - eslesmeyenAdlar.size,
+            eslesmeyenSatir: eslesmeyenAdlar.size,
+            yuklenen,
+            nobetKaydi: nobetler.length
+          });
 
           input.value = '';
           mazeretGridOlustur();
@@ -12392,7 +12514,7 @@
           const data = JSON.parse(saved);
           personelListesi = (data.personelListesi || []).map(normalizeLoadedPersonel);
           resmiTatiller = data.resmiTatiller || [];
-          kurallar = data.kurallar || [];
+          kurallar = (data.kurallar || []).map(normalizeLoadedKural);
           gorevler = (data.gorevler || []).map(normalizeLoadedGorev);
           manuelAtamalar = data.manuelAtamalar || [];
           gorevKisitlamalari = (data.gorevKisitlamalari || []).map(normalizeLoadedGorevKisitlamasi);
@@ -12657,7 +12779,7 @@
 
         gorevler = (data.gorevler || []).map(normalizeLoadedGorev);
 
-        kurallar = data.kurallar || [];
+        kurallar = (data.kurallar || []).map(normalizeLoadedKural);
 
         gorevKisitlamalari = (data.gorevKisitlamalari || []).map(normalizeLoadedGorevKisitlamasi);
 
