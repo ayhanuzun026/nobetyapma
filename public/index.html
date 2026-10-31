@@ -1267,8 +1267,8 @@
             <i class="fa-solid fa-calculator"></i> Yeniden Hesapla
           </button>
           <button class="btn btn-sm" style="background:#059669; color:#fff;" onclick="hedefleriHesapla()"
-            title="Hazırlık analizini tekrar çalıştır">
-            <i class="fa-solid fa-magnifying-glass-chart"></i> Hazırlık Analizi
+            title="Hedefleri hızlıca yeniden hesaplatır">
+            <i class="fa-solid fa-bullseye"></i> Hedefleri Görüntüle
           </button>
           <button class="btn btn-warning btn-sm" onclick="verileriSifirla()"
             title="Tüm hesaplamaları ve cache'i temizle">
@@ -7573,7 +7573,14 @@
 
       const kaydet = () => {
         const yeniDeger = parseInt(input.value) || 0;
-        personelListesi[idx].hedef[tip] = yeniDeger;
+        const p = personelListesi[idx];
+        p.hedef[tip] = yeniDeger;
+        // Elle düzenlenen hedef, yeniden hesaplamada kaybolmaması için
+        // kullanıcının açık hedef kilidi olarak saklanır. Aksi halde hedef
+        // isteği p.hedef alanını göndermediğinden backend yeni CP-SAT hedefi
+        // seçer ve hücredeki değer sessizce geri yazılır.
+        kilitliHedefler[String(p.id)] = { ...p.hedef };
+        hedefleriBayatIsaretle('Hedef hücresi elle düzenlendi.');
         hedefTablosuGuncelle();
         ozelGorevSectionGuncelle(); // Toplam Hedef badge'ini güncelle
         kaydetDebounced();
@@ -9444,7 +9451,7 @@
     async function hazirlikKapasiteKontrolEt(requestData) {
       const girdiImzasi = cozumGirdiImzasiOlustur();
       while (true) {
-        console.log('[HEDEF] Tam görev-slotu hazırlık kapasitesi kontrol ediliyor...');
+        console.log('[KAPASITE] Tam görev-slotu hazırlık kapasitesi kontrol ediliyor...');
         const response = await authFetch(BACKEND_URL_KAPASITE, {
           method: 'POST',
           body: JSON.stringify(requestData),
@@ -9476,7 +9483,7 @@
         };
         hazirlikKismiCozumOnayi = null;
         const durum = normalize.durum;
-        console.log(`[HEDEF] Hazırlık kapasite sonucu: ${durum}`);
+        console.log(`[KAPASITE] Hazırlık kapasite sonucu: ${durum}`);
 
         if (durum === 'FEASIBLE') {
           hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
@@ -9499,6 +9506,10 @@
     // OR-Tools ile hedef hesapla
     async function hedefHesaplaOrtools() {
       const istekImzasi = cozumGirdiImzasiOlustur();
+      // Hedef yeniden üretildiğinde önceki tam-kapasite kanıtı bu yeni
+      // snapshot'a ait olmayabilir. Kapasiteyi final adımında yeniden doğrula.
+      hazirlikKapasiteSonucu = null;
+      hazirlikKismiCozumOnayi = null;
       const { yil, ay } = getYilAy();
       const gunSayisi = getGunSayisi(yil, ay);
       const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
@@ -9647,15 +9658,9 @@
 
       console.log(`[HEDEF] OR-Tools hedef isteği: ${personelData.length} personel, ${gunSayisi} gün, ${gorevData.length} görev, ${kuralData.length} kural`);
 
-      const kapasiteKarari = await hazirlikKapasiteKontrolEt(requestData);
-      if (kapasiteKarari?.action === 'partial_adopted') {
-        return {
-          basari: true,
-          kismiCozumBenimsendi: true,
-          mesaj: 'Tam modelin geçerli kısmi çizelgesi kullanıcı onayıyla benimsendi.'
-        };
-      }
-
+      // Hedef önizlemesi yalnız hedef modelini çalıştırır. Tam görev-slotu
+      // kapasite kanıtı daha sonra liste oluşturma adımında yapılır; böylece
+      // hedef ekranı uzun kapasite/what-if ve kullanıcı kararını beklemez.
       const response = await authFetch(BACKEND_URL_HEDEF, {
         method: 'POST',
         body: JSON.stringify(requestData),
@@ -9667,6 +9672,7 @@
       }
 
       const result = await response.json();
+
       console.log(`[HEDEF] OR-Tools hedef sonucu: basari=${result.basari}, ${result.hedefler?.length || 0} hedef, mesaj=${result.mesaj || 'yok'}`);
       if (istekImzasi !== cozumGirdiImzasiOlustur()) {
         throw hazirlikSessizIptalHatasi('stale');
@@ -10028,6 +10034,11 @@
         gecmisDonemPolitikasi: GECMIS_DONEM_POLITIKASI,
         tamirPolitikasi: { ...VARSAYILAN_TAMIR_POLITIKASI },
         planHash: aktifPlanHash,
+        // Hedef/kapasite ön izlemesinin doğrulanmış snapshot'ı final solver'a
+        // taşınır; böylece ortak plan ikinci kez CP-SAT ile seçilmez.
+        // Backend bu snapshot'ı doğrular; yoksa eski yeniden hesaplama yoluna
+        // geri döner.
+        planKontrati: aktifPlanKontrati || null,
         kurumProfili: getKurumProfili(),
         maxAraGun: parseInt(document.getElementById('inp-max-aragun')?.value) || 0,
         kisitlamaExclusive: kisitlamaExclusive,
@@ -10039,6 +10050,22 @@
         `${requestData.slotSayisi} slot/gün, araGün: ${requestData.araGun}, ` +
         `manuel=${requestData.manuelAtamalar?.length || 0}, istisna=${requestData.kisitlamaIstisnalari?.length || 0}`
       );
+
+      // Hedef önizlemesinden sonra tam görev-slotu kapasitesini doğrula.
+      // Aynı plan snapshot'ı requestData içinde taşındığı için kapasite
+      // endpoint'i hedefi yeniden üretmeden bu sözleşmeyi tüketebilir.
+      const planImzasi = cozumGirdiImzasiOlustur();
+      const kapasiteHazir = hazirlikKapasiteSonucu
+        && hazirlikKapasiteSonucu._girdiImzasi === planImzasi
+        && String(hazirlikKapasiteSonucu.durum || '').toUpperCase() === 'FEASIBLE';
+      if (!kapasiteHazir) {
+        const kapasiteKarari = await hazirlikKapasiteKontrolEt(requestData);
+        if (kapasiteKarari?.action === 'partial_adopted') {
+          atananlar = hesaplananListe?.atanan || atananlar;
+          onizlemeGuncelle();
+          return;
+        }
+      }
 
       const response = await authFetch(BACKEND_URL_ORTOOLS, {
         method: 'POST',
@@ -10071,7 +10098,7 @@
       }
       solverDetayLogla(result, requestData);
 
-      if (!response.ok || result.error) {
+      if ((response && !response.ok) || result.error) {
         const hata = new Error(result.error || 'OR-Tools backend hatası');
         if (result.error_type === 'PlanBos') {
           hata.hedefTanisi = result.hedefTanisi || result.istatistikler?.hedef_tanisi || null;

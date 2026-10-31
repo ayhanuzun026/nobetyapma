@@ -29,6 +29,184 @@ from solver_models import (
 from utils import GUN_TIPLERI, normalize_id
 
 
+def _hedef_hizli_on_kontrolu(
+    gun_sayisi: int,
+    gun_tipleri: Dict[int, str],
+    personeller: List[SolverPersonel],
+    gorevler: List[SolverGorev],
+    manuel_atamalar: Optional[List[SolverAtama]] = None,
+) -> Optional[HedefSonuc]:
+    """Hedef CP-SAT modelinden önce kesin, ucuz kapasite çelişkilerini bulur.
+
+    Bu kontrol yalnızca gerekli koşulları kullanır; yani ``aday sayısı < slot``
+    gibi bir çelişki görürse model kesinlikle çözümsüzdür. Uygun aday sayısı
+    yeterliyse ``None`` döner ve tam hedef modeli çalışır. Böylece özellikle
+    bütün Cuma günleri mazeretli olan senaryolar, 7--30 saniyelik adalet
+    aramasına girmeden açık bir tanı ile sonlanır.
+    """
+    try:
+        gun_sayisi = int(gun_sayisi)
+    except (TypeError, ValueError):
+        return None
+    if gun_sayisi <= 0 or not personeller or not gorevler:
+        return None
+
+    slot_sayisi = len(gorevler)
+    gun_tipleri = gun_tipleri or {}
+    onayli_mazeretler = set()
+    for atama in manuel_atamalar or []:
+        if not getattr(atama, "mazeret_onayli", False):
+            continue
+        try:
+            onayli_mazeretler.add((normalize_id(atama.personel_id), int(atama.gun)))
+        except (TypeError, ValueError):
+            continue
+
+    def uygun_mu(personel, gun: int) -> bool:
+        pid = normalize_id(personel.id)
+        return gun not in (getattr(personel, "mazeret_gunleri", set()) or set()) \
+            or (pid, gun) in onayli_mazeretler
+
+    # Aynı gün her slot için farklı kişi gerekir. Bir günün aday sayısı
+    # slot sayısından azsa, görev/havuz ayrıntılarına bakmadan çözüm yoktur.
+    gun_aciklari = []
+    for gun in range(1, gun_sayisi + 1):
+        adaylar = [p for p in personeller if uygun_mu(p, gun)]
+        if len(adaylar) < slot_sayisi:
+            gun_aciklari.append({
+                "gun": gun,
+                "gun_tipi": gun_tipleri.get(gun, "hici"),
+                "slot_ihtiyaci": slot_sayisi,
+                "uygun_personel": len(adaylar),
+                "eksik": slot_sayisi - len(adaylar),
+                "personeller": [p.ad for p in adaylar],
+            })
+
+    if gun_aciklari:
+        ilk = gun_aciklari[0]
+        tip = ilk["gun_tipi"]
+        tip_adi = {
+            "hici": "hafta içi", "prs": "perşembe", "cum": "cuma",
+            "cmt": "cumartesi", "pzr": "pazar",
+        }.get(tip, tip)
+        tani = {
+            "neden": "gun_bazli_kapasite",
+            "baslik": f"{ilk['gun']}. gün ({tip_adi}) için yeterli uygun personel yok",
+            "detay": (
+                f"Bu gün {slot_sayisi} farklı kişi gerekiyor; yalnızca "
+                f"{ilk['uygun_personel']} kişi uygun. {ilk['eksik']} slot kesin olarak boş kalır."
+            ),
+            "oneriler": [
+                "Bu günün mazeret/izin kayıtlarını gözden geçirin.",
+                "Günlük görev/slot sayısını azaltın veya ek personel ekleyin.",
+            ],
+            "debug": {"gun_aciklari": gun_aciklari[:20], "kaynak": "hizli_on_kontrol"},
+        }
+        cuma_aciklari = [a for a in gun_aciklari if a.get("gun_tipi") == "cum"]
+        if tip == "cum" or cuma_aciklari:
+            tani["esdeger_gun_notu"] = {
+                "kaynak_tip": "cum",
+                "aday_tipler": ["pzr"],
+                "saat_esit": True,
+                "otomatik_uygulanabilir": False,
+                "gunler": [a.get("gun") for a in cuma_aciklari],
+                "mesaj": (
+                    "Cuma günlerinde aday açığı var. Pazar da 16 saatlik eşdeğer "
+                    "sınıftadır; ancak kişi, hedef ve ara-gün uygunluğu yeniden "
+                    "doğrulanmadan otomatik Cuma→Pazar takası yapılmaz."
+                ),
+            }
+            tani["oneriler"].append(tani["esdeger_gun_notu"]["mesaj"])
+        stats = {
+            "status": "INFEASIBLE",
+            "solver_status": "PRECHECK_INFEASIBLE",
+            "karar_durumu": "INFEASIBLE",
+            "on_kontrol": {
+                "durum": "INFEASIBLE",
+                "kod": "GUN_BAZLI_MAZERET_KAPASITESI",
+                "gun_aciklari": gun_aciklari[:20],
+            },
+            "hedef_tanisi": tani,
+        }
+        return HedefSonuc(
+            False, [], [], {}, stats,
+            tani["baslik"] + ". " + tani["detay"] + " Öneriler: " + " ".join(tani["oneriler"]),
+        )
+
+    # Gün tipi toplam aday arzı da gerekli bir koşuldur. Örneğin her Cuma
+    # gününde en az slot kadar kişi bulunsa bile toplam Cuma aday sayısı talebi
+    # karşılamıyorsa hedef modeli çözümsüzdür.
+    tip_aciklari = []
+    for tip in GUN_TIPLERI:
+        tip_gunleri = [g for g in range(1, gun_sayisi + 1) if gun_tipleri.get(g) == tip]
+        ihtiyac = len(tip_gunleri) * slot_sayisi
+        if ihtiyac <= 0:
+            continue
+        arz = sum(1 for p in personeller for g in tip_gunleri if uygun_mu(p, g))
+        if arz < ihtiyac:
+            tip_aciklari.append({
+                "gun_tipi": tip,
+                "gun_sayisi": len(tip_gunleri),
+                "slot_ihtiyaci": ihtiyac,
+                "uygunluk_arzi": arz,
+                "eksik": ihtiyac - arz,
+            })
+
+    if tip_aciklari:
+        ilk = tip_aciklari[0]
+        tip_adi = {
+            "hici": "hafta içi", "prs": "perşembe", "cum": "cuma",
+            "cmt": "cumartesi", "pzr": "pazar",
+        }.get(ilk["gun_tipi"], ilk["gun_tipi"])
+        tani = {
+            "neden": "gun_tipi_kapasitesi",
+            "baslik": f"{tip_adi.capitalize()} günlerinde yeterli aday arzı yok",
+            "detay": (
+                f"{ilk['gun_sayisi']} gün ve {slot_sayisi} slot için "
+                f"{ilk['slot_ihtiyaci']} nöbet gerekiyor; toplam uygunluk arzı "
+                f"{ilk['uygunluk_arzi']}. {ilk['eksik']} nöbetlik açık kesin."
+            ),
+            "oneriler": [
+                f"{tip_adi.capitalize()} günlerindeki mazeret/izin kayıtlarını gözden geçirin.",
+                "İlgili gün tipi için slot sayısını azaltın veya uygun personel ekleyin.",
+            ],
+            "debug": {"tip_aciklari": tip_aciklari, "kaynak": "hizli_on_kontrol"},
+        }
+        # Cuma ve Pazar aynı 16 saatlik sınıftadır; ancak bu yalnızca
+        # kullanıcı onaylı bir öneridir. Takvimde Cuma'yı sessizce Pazar'a
+        # çevirmek, gerçek gün ve mazeret kaydını bozacağından otomatikleşmez.
+        if ilk["gun_tipi"] == "cum":
+            tani["esdeger_gun_notu"] = {
+                "kaynak_tip": "cum",
+                "aday_tipler": ["pzr"],
+                "saat_esit": True,
+                "otomatik_uygulanabilir": False,
+                "mesaj": (
+                    "Cuma arzı yetersiz. Aynı 16 saat sınıfındaki Pazar günleri "
+                    "için kişi/hedef/ara-gün uygunluğu yeniden doğrulanarak "
+                    "kullanıcı onaylı bir öneri üretilebilir; otomatik takas yapılmadı."
+                ),
+            }
+            tani["oneriler"].append(tani["esdeger_gun_notu"]["mesaj"])
+        stats = {
+            "status": "INFEASIBLE",
+            "solver_status": "PRECHECK_INFEASIBLE",
+            "karar_durumu": "INFEASIBLE",
+            "on_kontrol": {
+                "durum": "INFEASIBLE",
+                "kod": "GUN_TIPI_MAZERET_KAPASITESI",
+                "tip_aciklari": tip_aciklari,
+            },
+            "hedef_tanisi": tani,
+        }
+        return HedefSonuc(
+            False, [], [], {}, stats,
+            tani["baslik"] + ". " + tani["detay"] + " Öneriler: " + " ".join(tani["oneriler"]),
+        )
+
+    return None
+
+
 def plan_girdi_hash(data: Dict) -> str:
     """Önizleme ve çözümün ortak girdilerini özetler; solver çıktısını değil.
 
@@ -398,6 +576,90 @@ def plan_hash_bayat_mi(gonderilen_hash, guncel_hash) -> bool:
     return str(gonderilen_hash) != str(guncel_hash)
 
 
+def plan_kontrati_snapshot_hazirla(
+    snapshot: Optional[Dict],
+    personeller: List[SolverPersonel],
+    ara_gun: int,
+) -> Optional[Dict]:
+    """İstemciden gelen hedef/plan snapshot'ını final solver için normalize eder.
+
+    Hedef önizlemesi ile final çizelgesi arasında hedeflerin yeniden seçilmesini
+    önlemek için yalnızca yapısal olarak tam bir kontrat kabul edilir. Snapshot
+    girdi hash'iyle (``planHash``) çağıran katmanda doğrulanır; burada ise kişi
+    kimlikleri, hedef tipleri ve planın ``ara_gun`` değeri kontrol edilir.
+    Geçersiz veya eksik snapshot ``None`` döner; çağıran katman eski yeniden
+    hesaplama yolunu koruyabilir ya da kullanıcıya açık hata verebilir.
+    """
+    if not isinstance(snapshot, dict):
+        return None
+    raw_hedefler = snapshot.get("hedefler")
+    if not isinstance(raw_hedefler, dict) or not raw_hedefler:
+        return None
+    try:
+        plan_ara_gun = int(snapshot.get("olusturulan_ara_gun"))
+    except (TypeError, ValueError):
+        return None
+    if plan_ara_gun != int(ara_gun):
+        return None
+
+    personel_ids = {normalize_id(p.id) for p in (personeller or [])}
+    normalized = {}
+    for raw_pid, raw_hedef in raw_hedefler.items():
+        pid = normalize_id(raw_pid)
+        if pid is None or pid not in personel_ids or not isinstance(raw_hedef, dict):
+            return None
+        tipler = _normalize_tip_hedefleri(raw_hedef.get("hedef_tipler"))
+        # Hedef tipleri negatif olamaz. Sadece toplamı kontrol etmek, örneğin
+        # hici=-1 ve prs=2 gibi birbirini dengeleyen bozuk snapshot'ları kabul
+        # edip solver'a anlamsız sınırlar taşırdı.
+        if any(value < 0 for value in tipler.values()):
+            return None
+        try:
+            toplam = int(raw_hedef.get("hedef_toplam", sum(tipler.values())) or 0)
+        except (TypeError, ValueError):
+            return None
+        if toplam < 0 or toplam != sum(tipler.values()):
+            return None
+        raw_kotalar = raw_hedef.get("gorev_kotalari", {}) or {}
+        if not isinstance(raw_kotalar, dict):
+            return None
+        kotalar = {}
+        for gorev, kota in raw_kotalar.items():
+            try:
+                kota_int = int(kota)
+            except (TypeError, ValueError):
+                return None
+            if kota_int < 0:
+                return None
+            kotalar[str(gorev)] = kota_int
+        normalized[pid] = {
+            "hedef_toplam": toplam,
+            "hedef_tipler": tipler,
+            "gorev_kotalari": kotalar,
+            "ad": raw_hedef.get("ad", ""),
+        }
+
+    # Eksik personel hedefleri final modelinde sessizce sıfıra düşer; bu,
+    # snapshot'ın yanlış ayla/ekiple kullanılmasını gizler.
+    if set(normalized) != personel_ids:
+        return None
+
+    prepared = deepcopy(snapshot)
+    prepared["hedefler"] = normalized
+    # Kontratın içerik hash'i backend tarafından üretilir. İstemcinin hedef
+    # map'ini değiştirmesi, girdi planHash'i aynı kaldığı için bayatlık
+    # kontrolünden kaçabilir; burada kontrat hash'ini de doğrula.
+    gelen_kontrat_hash = snapshot.get("plan_hash") or snapshot.get("planHash")
+    if gelen_kontrat_hash:
+        try:
+            beklenen_hash = plan_kontrati_hash_yenile(prepared).get("plan_hash")
+        except Exception:
+            return None
+        if str(gelen_kontrat_hash) != str(beklenen_hash):
+            return None
+    return prepared
+
+
 def plan_kontrati_olustur(
     hedef_sonuc: HedefSonuc,
     personeller: List[SolverPersonel],
@@ -553,6 +815,25 @@ def ortak_plan_uret(
     # ``gorev_kota_overrides`` and are merged into the fresh plan below.
     for p in plan_personeller:
         p.gorev_kotalari = {}
+
+    # CP-SAT hedef/adalet modeline girmeden önce gerekli kapasite koşullarını
+    # ucuzca denetle. Bu özellikle tüm Cuma günlerinin mazeretli olduğu
+    # senaryoda uzun arama yerine açık bir ``INFEASIBLE`` tanısı üretir.
+    hizli_on_kontrol = _hedef_hizli_on_kontrolu(
+        gun_sayisi=gun_sayisi,
+        gun_tipleri=gun_tipleri,
+        personeller=plan_personeller,
+        gorevler=gorevler,
+        manuel_atamalar=manuel_atamalar,
+    )
+    if hizli_on_kontrol is not None:
+        return {
+            "basarili": False,
+            "mesaj": hizli_on_kontrol.mesaj,
+            "hedef_sonuc": hizli_on_kontrol,
+            "plan_kontrati": None,
+            "hedefler_map": {},
+        }
 
     hesaplayici = HedefHesaplayici(
         gun_sayisi=gun_sayisi,

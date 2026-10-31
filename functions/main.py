@@ -28,6 +28,7 @@ from planlayici import (
     ortak_plan_uret,
     plan_hash_bayat_mi,
     plan_girdi_hash,
+    plan_kontrati_snapshot_hazirla,
 )
 from parsers import (
     build_gun_tipleri,
@@ -423,48 +424,96 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
         if kurum_profili == "112" and max_ara_gun <= 0:
             max_ara_gun = 5
 
-        # Hazırlık, finalden ayrı bir "yalnız fiziksel kapasite" modeli
-        # çalıştırmamalı. Önce finalle aynı ortak plan kontratını üretiriz;
-        # kapasite kontrolü bu hedefler ve plan kısıtlarıyla tam slot modelini
-        # sınar. Böylece hazırlık FEASIBLE deyip finalin INFEASIBLE olma riski
-        # ortadan kalkar.
-        planlama = ortak_plan_uret(
-            gun_sayisi=gun_sayisi,
-            gun_tipleri=gun_tipleri,
-            personeller=personeller,
-            gorevler=gorevler,
-            birlikte_kurallar=birlikte_kurallar,
-            kurallar=kurallar,
-            gorev_kisitlamalari=gorev_kisitlamalari,
-            manuel_atamalar=manuel_atamalar,
-            ara_gun=ara_gun,
-            saat_degerleri=saat_degerleri,
-            kilitli_hedefler=kilitli_hedefler,
-            gorev_kota_overrides=gorev_kota_overrides,
-            # Hedef endpoint'iyle aynı kaynak etiketi: kontrat hash'i ve
-            # raporlanan plan kimliği hazırlık/final arasında birebir olsun.
-            kaynak="nobet_hedef_hesapla_ortak_plan",
-            gorev_havuzlari=gorev_havuzlari,
-            kisitlama_istisnalari=kisitlama_istisnalari,
-            birlikte_istisnalari=birlikte_istisnalari,
-            aragun_istisnalari=aragun_istisnalari,
-            kurum_profili=kurum_profili,
-            resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
+        # Hedef önizlemesiyle birlikte geçerli bir plan snapshot'ı geldiyse
+        # burada hedef CP-SAT'ini yeniden çalıştırma. Aynı snapshot'ı tam
+        # görev-slotu kapasite modeline aktar; böylece hedef düğmesine basmak
+        # için kapasite beklemek ve hedefleri iki kez üretmek gerekmez.
+        gelen_snapshot = data.get("planKontrati") or data.get("planSnapshot")
+        gelen_plan_hash = data.get("planHash")
+        guncel_plan_hash = plan_girdi_hash(data)
+        if plan_hash_bayat_mi(gelen_plan_hash, guncel_plan_hash):
+            return _json_response({
+                "error": "Plan girdileri değişti. Hedefleri yeniden hesaplayın.",
+                "error_type": "PlanBayat",
+                "gonderilenPlanHash": gelen_plan_hash,
+                "guncelPlanHash": guncel_plan_hash,
+            }, status=409)
+
+        plan_snapshot = plan_kontrati_snapshot_hazirla(
+            gelen_snapshot, personeller, ara_gun
         )
+        if gelen_snapshot is not None and plan_snapshot is None:
+            return _json_response({
+                "error": "Gönderilen plan kontratı güncel girdilerle doğrulanamadı. Hedefleri yeniden hesaplayın.",
+                "error_type": "PlanSnapshotGecersiz",
+            }, status=409)
+
+        if plan_snapshot is not None:
+            planlama = {
+                "basarili": True,
+                "mesaj": "Gönderilen plan kontratı kullanıldı",
+                "hedef_sonuc": None,
+                "plan_kontrati": plan_snapshot,
+                "hedefler_map": plan_snapshot.get("hedefler") or {},
+            }
+        else:
+            # Eski istemciler için geriye uyumlu yol: snapshot yoksa ortak plan
+            # bir kez üretilir ve kapasite modeline aktarılır.
+            planlama = ortak_plan_uret(
+                gun_sayisi=gun_sayisi,
+                gun_tipleri=gun_tipleri,
+                personeller=personeller,
+                gorevler=gorevler,
+                birlikte_kurallar=birlikte_kurallar,
+                kurallar=kurallar,
+                gorev_kisitlamalari=gorev_kisitlamalari,
+                manuel_atamalar=manuel_atamalar,
+                ara_gun=ara_gun,
+                saat_degerleri=saat_degerleri,
+                kilitli_hedefler=kilitli_hedefler,
+                gorev_kota_overrides=gorev_kota_overrides,
+                kaynak="nobet_hedef_hesapla_ortak_plan",
+                gorev_havuzlari=gorev_havuzlari,
+                kisitlama_istisnalari=kisitlama_istisnalari,
+                birlikte_istisnalari=birlikte_istisnalari,
+                aragun_istisnalari=aragun_istisnalari,
+                kurum_profili=kurum_profili,
+                resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
+            )
         plan_kontrati = planlama.get("plan_kontrati")
         hedefler = planlama.get("hedefler_map") or {}
         if not planlama.get("basarili") or not hedefler or not plan_kontrati:
             hedef_sonuc = planlama.get("hedef_sonuc")
             istatistikler = getattr(hedef_sonuc, "istatistikler", None) or {}
+            # Ortak plan hedef modeli çözemediğinde kapasite sonucu fiziksel
+            # kapasite katmanına aitmiş gibi ``UNKNOWN`` döndürülmemeli. Hedef
+            # modeli kesin INFEASIBLE kanıtladıysa bu bilgi korunur; CP-SAT
+            # süre içinde karar veremediyse UNKNOWN olarak kalır. Böylece
+            # arayüz hangi aşamada durduğunu ve kararın kesinlik düzeyini
+            # ayırt edebilir.
+            ham_durum = str(
+                istatistikler.get("karar_durumu")
+                or istatistikler.get("status")
+                or "UNKNOWN"
+            ).strip().upper()
+            if ham_durum not in {"INFEASIBLE", "UNKNOWN"}:
+                ham_durum = "UNKNOWN"
+            karar_durumu = ham_durum
             cikti = {
                 "basari": False,
-                "durum": "UNKNOWN",
-                "uygulanabilir": None,
+                "durum": karar_durumu,
+                "karar_durumu": karar_durumu,
+                "asama": "HEDEF",
+                "uygulanabilir": False if karar_durumu == "INFEASIBLE" else None,
                 "tam_doluluk_mumkun": None,
                 "mesaj": planlama.get("mesaj") or "Ortak hedef/plan modeli sonuç üretemedi.",
                 "hedefTanisi": istatistikler.get("hedef_tanisi", {}),
                 "istatistikler": istatistikler,
-                "kapsam": {"otomatik_plan_hedefleri": "HEDEF_MODELI_BASARISIZ", "plan_kontrati": "YOK"},
+                "kapsam": {
+                    "asama": "HEDEF",
+                    "otomatik_plan_hedefleri": "HEDEF_MODELI_BASARISIZ",
+                    "plan_kontrati": "YOK",
+                },
             }
             sure_ms = int((time.time() - t0) * 1000)
             log_session("nobet_kapasite", data, cikti, sure_ms,
@@ -491,10 +540,42 @@ def nobet_kapasite(req: https_fn.Request) -> https_fn.Response:
         cikti = {
             "basari": sonuc.get("durum") == "FEASIBLE",
             **sonuc,
-            "planHash": plan_kontrati.plan_hash if hasattr(plan_kontrati, "plan_hash") else plan_kontrati.get("plan_hash"),
+            "asama": "KAPASITE",
+            "karar_durumu": str(sonuc.get("durum") or "UNKNOWN").upper(),
+            # ``planHash`` is the input snapshot hash consumed by
+            # ``nobet_coz`` for stale-plan detection.  The contract's
+            # content hash remains available as ``planKontrati.plan_hash``;
+            # returning that different hash here makes a capacity-approved
+            # plan fail the final 409 check even when no input changed.
+            "planHash": guncel_plan_hash,
             "planKontrati": plan_kontrati.to_dict() if hasattr(plan_kontrati, "to_dict") else plan_kontrati,
-            "hedefler": planlama.get("hedef_sonuc").hedefler if planlama.get("hedef_sonuc") else [],
-            "gorevKotalari": planlama.get("hedef_sonuc").gorev_kotalari if planlama.get("hedef_sonuc") else {},
+            "hedefler": (
+                planlama.get("hedef_sonuc").hedefler
+                if planlama.get("hedef_sonuc") else [
+                    {
+                        "id": pid,
+                        "ad": hedef.get("ad", ""),
+                        "hedef_toplam": hedef.get("hedef_toplam", 0),
+                        **{
+                            f"hedef_{tip}": (hedef.get("hedef_tipler") or {}).get(tip, 0)
+                            for tip in ("hici", "prs", "cum", "cmt", "pzr")
+                        },
+                        "hedef_tipler": dict(hedef.get("hedef_tipler") or {}),
+                        "gorev_kotalari": dict(hedef.get("gorev_kotalari") or {}),
+                        "hedef_we": sum((hedef.get("hedef_tipler") or {}).get(tip, 0) for tip in ("cum", "cmt", "pzr")),
+                        "hedef_wd": sum((hedef.get("hedef_tipler") or {}).get(tip, 0) for tip in ("hici", "prs")),
+                    }
+                    for pid, hedef in sorted(hedefler.items(), key=lambda item: str(item[0]))
+                ]
+            ),
+            "gorevKotalari": (
+                planlama.get("hedef_sonuc").gorev_kotalari
+                if planlama.get("hedef_sonuc") else {
+                    str(pid): dict(hedef.get("gorev_kotalari") or {})
+                    for pid, hedef in hedefler.items()
+                    if hedef.get("gorev_kotalari")
+                }
+            ),
         }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_kapasite", data, cikti, sure_ms,
@@ -605,6 +686,17 @@ def nobet_hedef_hesapla(req: https_fn.Request) -> https_fn.Response:
             "hedefTanisi": (sonuc.istatistikler or {}).get("hedef_tanisi", {}),
             "planKontrati": plan_kontrati.to_dict() if plan_kontrati else None,
             "planHash": plan_girdi_hash(data) if plan_kontrati else None,
+            "asama": "HEDEF",
+            "durum": (
+                "FEASIBLE" if sonuc.basarili else
+                str((sonuc.istatistikler or {}).get("karar_durumu")
+                    or (sonuc.istatistikler or {}).get("status") or "UNKNOWN").upper()
+            ),
+            "karar_durumu": (
+                "FEASIBLE" if sonuc.basarili else
+                str((sonuc.istatistikler or {}).get("karar_durumu")
+                    or (sonuc.istatistikler or {}).get("status") or "UNKNOWN").upper()
+            ),
         }
         sure_ms = int((time.time() - t0) * 1000)
         log_session("nobet_hedef_hesapla", data, cikti, sure_ms,
@@ -726,6 +818,19 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 "guncelPlanHash": guncel_plan_hash,
             }, status=409)
 
+        # Hedef önizlemesinin ürettiği kontrat gönderildiyse final solver aynı
+        # hedef/kota snapshot'ını tüketir. Böylece CP-SAT'in eşdeğer hedefler
+        # arasından farklı bir dağılım seçmesi finalde yeni hedef üretmez.
+        gelen_snapshot = data.get("planKontrati") or data.get("planSnapshot")
+        plan_snapshot = plan_kontrati_snapshot_hazirla(
+            gelen_snapshot, personeller, ara_gun
+        )
+        if gelen_snapshot is not None and plan_snapshot is None:
+            return _json_response({
+                "error": "Gönderilen plan kontratı güncel girdilerle doğrulanamadı. Hedefleri yeniden hesaplayın.",
+                "error_type": "PlanSnapshotGecersiz",
+            }, status=409)
+
         # Ortak planlayici: preview ve final ayni plani kullansin
         birlikte_kurallar = [k for k in kurallar if k.tur == 'birlikte']
         gorev_kisitlamalari_dict = parse_gorev_kisitlamalari(data, personeller)
@@ -736,41 +841,55 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             personeller, data.get("gorevKotaOverrides")
         )
 
-        try:
-            planlama = ortak_plan_uret(
-                gun_sayisi=gun_sayisi,
-                gun_tipleri=gun_tipleri,
-                personeller=personeller,
-                gorevler=gorevler,
-                birlikte_kurallar=birlikte_kurallar,
-                kurallar=kurallar,
-                gorev_kisitlamalari=gorev_kisitlamalari_dict,
-                manuel_atamalar=manuel_atamalar,
-                ara_gun=ara_gun,
-                saat_degerleri=saat_degerleri,
-                kilitli_hedefler=kilitli_hedefler,
-                gorev_kota_overrides=gorev_kota_overrides,
-                gorev_havuzlari=gorev_havuzlari,
-                kisitlama_istisnalari=kisitlama_istisnalari,
-                birlikte_istisnalari=birlikte_istisnalari,
-                aragun_istisnalari=aragun_istisnalari,
-                kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
-                resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
-            )
-        except Exception as hedef_err:
-            logger.exception("Ortak planlama basarisiz: %s", hedef_err)
-            sure_ms = int((time.time() - t0) * 1000)
-            log_session("nobet_coz", data, None, sure_ms, hata=hedef_err,
-                        frontend_loglar=data.get("frontendLoglar"))
-            return _json_response({
-                "error": f"Planlama sirasinda hata olustu: {str(hedef_err)[:200]}",
-                "error_type": "PlanlamaHatasi"
-            }, status=500)
+        if plan_snapshot is not None:
+            planlama = {
+                "basarili": True,
+                "mesaj": "Gönderilen plan kontratı kullanıldı",
+                "hedef_sonuc": None,
+                "plan_kontrati": plan_snapshot,
+                "hedefler_map": plan_snapshot["hedefler"],
+            }
+        else:
+            try:
+                planlama = ortak_plan_uret(
+                    gun_sayisi=gun_sayisi,
+                    gun_tipleri=gun_tipleri,
+                    personeller=personeller,
+                    gorevler=gorevler,
+                    birlikte_kurallar=birlikte_kurallar,
+                    kurallar=kurallar,
+                    gorev_kisitlamalari=gorev_kisitlamalari_dict,
+                    manuel_atamalar=manuel_atamalar,
+                    ara_gun=ara_gun,
+                    saat_degerleri=saat_degerleri,
+                    kilitli_hedefler=kilitli_hedefler,
+                    gorev_kota_overrides=gorev_kota_overrides,
+                    gorev_havuzlari=gorev_havuzlari,
+                    kisitlama_istisnalari=kisitlama_istisnalari,
+                    birlikte_istisnalari=birlikte_istisnalari,
+                    aragun_istisnalari=aragun_istisnalari,
+                    kurum_profili=parse_kurum_profili(data.get("kurumProfili")),
+                    resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
+                )
+            except Exception as hedef_err:
+                logger.exception("Ortak planlama basarisiz: %s", hedef_err)
+                sure_ms = int((time.time() - t0) * 1000)
+                log_session("nobet_coz", data, None, sure_ms, hata=hedef_err,
+                            frontend_loglar=data.get("frontendLoglar"))
+                return _json_response({
+                    "error": f"Planlama sirasinda hata olustu: {str(hedef_err)[:200]}",
+                    "error_type": "PlanlamaHatasi"
+                }, status=500)
 
         hesap_sonuc = planlama.get("hedef_sonuc")
         plan_kontrati = planlama.get("plan_kontrati")
         hedefler = planlama.get("hedefler_map", {})
-        if not hesap_sonuc or not hedefler:
+        plan_solver_dict = (
+            plan_kontrati.to_dict()
+            if hasattr(plan_kontrati, "to_dict")
+            else plan_kontrati
+        )
+        if not hedefler or not plan_kontrati:
             # Hedef modeli cozulemedi. Insan dili tani (hedef_teshis) uretilmisse
             # onu don — "Planlama sonucu bos" jenerik metni kullaniciya hicbir
             # sey anlatmiyordu.
@@ -790,6 +909,13 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                     hesap_sonuc.istatistikler
                     if hesap_sonuc is not None else {}
                 ),
+                "asama": "HEDEF",
+                "durum": str(
+                    ((hesap_sonuc.istatistikler if hesap_sonuc is not None else {}) or {}).get(
+                        "karar_durumu",
+                        ((hesap_sonuc.istatistikler if hesap_sonuc is not None else {}) or {}).get("status", "UNKNOWN")
+                    )
+                ).upper(),
                 "error_type": "PlanBos"
             }, status=400)
 
@@ -807,7 +933,11 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 saat_degerleri=saat_degerleri,
                 kilitli_hedefler=kilitli_hedefler,
                 gorev_kota_overrides=gorev_kota_overrides,
-                kaynak=(plan_kontrati.kaynak if plan_kontrati else None),
+                kaynak=(
+                    plan_kontrati.get("kaynak")
+                    if isinstance(plan_kontrati, dict)
+                    else (plan_kontrati.kaynak if plan_kontrati else None)
+                ),
                 gorev_havuzlari=gorev_havuzlari,
                 kisitlama_istisnalari=kisitlama_istisnalari,
                 birlikte_istisnalari=birlikte_istisnalari,
@@ -816,6 +946,11 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
                 resmi_tatil_gunleri={_safe_int(t.get("gun", 0), 0) for t in (resmi_tatiller or [])},
             )
 
+        plan_solver_dict = (
+            plan_kontrati.to_dict()
+            if hasattr(plan_kontrati, "to_dict")
+            else plan_kontrati
+        )
         sonuc, gevsetme_bilgisi, teshis_bilgisi, kullanilan_ara_gun = solve_with_diagnostics(
             gun_sayisi=gun_sayisi, gun_tipleri=gun_tipleri,
             personeller=personeller, gorevler=gorevler,
@@ -826,7 +961,7 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
             manuel_atamalar=manuel_atamalar, hedefler=hedefler,
             ara_gun=ara_gun, max_sure=max_sure,
             yil=yil, ay=ay, resmi_tatiller=resmi_tatiller, data=data,
-            plan_kontrati=plan_kontrati.to_dict() if plan_kontrati else None,
+            plan_kontrati=plan_solver_dict if plan_solver_dict else None,
             plan_yenileyici=_plan_yenileyici,
         )
         son_plan_kontrati, aktif_hedefler = _sonuc_plan_ve_hedefler(sonuc, hedefler)
@@ -871,6 +1006,13 @@ def nobet_coz(req: https_fn.Request) -> https_fn.Response:
 
         cikti = {
             "basari": sonuc.basarili, "mesaj": sonuc.mesaj, "sureMs": sonuc.sure_ms,
+            "asama": "FINAL",
+            "durum": "FEASIBLE" if sonuc.basarili else str(
+                (sonuc.istatistikler or {}).get("status") or "UNKNOWN"
+            ).upper(),
+            "karar_durumu": "FEASIBLE" if sonuc.basarili else str(
+                (sonuc.istatistikler or {}).get("status") or "UNKNOWN"
+            ).upper(),
             "cizelge": cizelge, "atamalar": sonuc.atamalar,
             "istatistikler": sonuc.istatistikler,
             "kaliteUyarilari": kalite_uyarilari,

@@ -25,10 +25,14 @@ from parsers import (
 )
 from planlayici import (
     frontend_kilitli_hedefleri_topla, plan_kontrati_hash_yenile, plan_girdi_hash,
+    _hedef_hizli_on_kontrolu,
 )
 from preflight_analyzer import analyze_preflight
 from solve_strategy import solve_with_diagnostics
-from solver_models import SolverAtama, SolverGorev, SolverKural, SolverPersonel, SolverSonuc
+from solver_models import (
+    HedefSonuc, SolverAtama, SolverGorev, SolverKural, SolverPersonel,
+    SolverSonuc, PlanKontrati,
+)
 from utils import JS_MAX_SAFE_INTEGER, normalize_id
 
 
@@ -104,6 +108,39 @@ def test_preview_and_final_plan_input_hash_ignores_generated_targets():
     assert plan_girdi_hash(payload) != plan_girdi_hash(degisen)
 
 
+def test_hedef_hizli_on_kontrol_cuma_mazeretini_solverdan_once_yakalar():
+    """Tüm Cuma adayları mazeretliyse ağır hedef CP-SAT'i çalıştırma."""
+    personeller = [
+        SolverPersonel(id=1, ad="Ayşe", mazeret_gunleri={5}),
+        SolverPersonel(id=2, ad="Veli", mazeret_gunleri={5}),
+    ]
+    gorevler = [SolverGorev(id=1, ad="Acil", slot_idx=0, base_name="Acil")]
+    sonuc = _hedef_hizli_on_kontrolu(
+        gun_sayisi=7,
+        gun_tipleri={1: "hici", 2: "hici", 3: "hici", 4: "prs", 5: "cum", 6: "cmt", 7: "pzr"},
+        personeller=personeller,
+        gorevler=gorevler,
+    )
+    assert sonuc is not None
+    assert sonuc.istatistikler["karar_durumu"] == "INFEASIBLE"
+    assert sonuc.istatistikler["on_kontrol"]["kod"] == "GUN_BAZLI_MAZERET_KAPASITESI"
+    assert sonuc.istatistikler["hedef_tanisi"]["neden"] == "gun_bazli_kapasite"
+
+
+def test_hedef_hizli_on_kontrol_yeterli_arzda_modeli_engellemez():
+    personeller = [
+        SolverPersonel(id=1, ad="Ayşe", mazeret_gunleri=set()),
+        SolverPersonel(id=2, ad="Veli", mazeret_gunleri=set()),
+    ]
+    gorevler = [SolverGorev(id=1, ad="Acil", slot_idx=0, base_name="Acil")]
+    assert _hedef_hizli_on_kontrolu(
+        gun_sayisi=2,
+        gun_tipleri={1: "hici", 2: "hici"},
+        personeller=personeller,
+        gorevler=gorevler,
+    ) is None
+
+
 def test_ara_gun_semantigi():
     gun_tipleri = {g: "hici" for g in range(1, 6)}
     personel = SolverPersonel(id=1, ad="A")
@@ -157,6 +194,7 @@ def test_p0_http_preview_solve_and_stale_manual_edit():
         final_data.pop('gunSayisi')
         final_data.pop('gunTipleri')
         final_data['planHash'] = plan['planHash']
+        final_data['planKontrati'] = plan['planKontrati']
         for personel, hedef in zip(final_data['personeller'], plan['hedefler']):
             assert personel['id'] == hedef['id']
             personel['gorevKotalari'] = hedef.get('gorev_kotalari', {})
@@ -182,6 +220,251 @@ def test_p0_http_preview_solve_and_stale_manual_edit():
         assert refreshed['basari'], refreshed
         assert refreshed['planHash'] != plan['planHash']
         assert refreshed['planKontrati']['personeller'][0]['kilitli_gunler'] == [1]
+
+
+def test_kapasite_hedef_asama_statusu_korunur():
+    """Kapasite ön kontrolü hedefte durduğunda karar durumu maskelenmemeli."""
+    import main
+    from flask import Flask, request
+
+    app = Flask(__name__)
+    data = {
+        "yil": 2026,
+        "ay": 2,
+        "slotSayisi": 1,
+        "araGun": 2,
+        "personeller": [{"id": 1, "ad": "A"}],
+        "gorevler": [{"id": 10, "ad": "Acil", "baseName": "Acil"}],
+    }
+
+    def call(payload):
+        with app.test_request_context('/', method='POST', json=payload):
+            return main.nobet_kapasite.__wrapped__(request)
+
+    for status in ("INFEASIBLE", "UNKNOWN"):
+        hedef_sonuc = HedefSonuc(
+            False, [], [], {},
+            {"status": status, "karar_durumu": status},
+            f"hedef {status}",
+        )
+        with patch.object(main, '_authorized', return_value=True), \
+             patch.object(main, 'log_session'), \
+             patch.object(main, 'ortak_plan_uret', return_value={
+                 "basarili": False,
+                 "mesaj": hedef_sonuc.mesaj,
+                 "hedef_sonuc": hedef_sonuc,
+                 "hedefler_map": {},
+                 "plan_kontrati": None,
+             }):
+            response = call(data)
+
+        assert response.status_code == 200
+        result = response.get_json()
+        assert result["durum"] == status
+        assert result["karar_durumu"] == status
+        assert result["asama"] == "HEDEF"
+        assert result["kapsam"]["asama"] == "HEDEF"
+        if status == "INFEASIBLE":
+            assert result["uygulanabilir"] is False
+        else:
+            assert result["uygulanabilir"] is None
+
+
+def test_kapasite_plan_hash_final_girdi_hashidir():
+    """Kapasite ön izlemesinin hash'i final endpoint'inin bayatlık sözleşmesiyle aynı olmalı."""
+    import main
+    from flask import Flask, request
+
+    app = Flask(__name__)
+    data = {
+        "yil": 2026,
+        "ay": 2,
+        "slotSayisi": 1,
+        "araGun": 0,
+        "personeller": [{"id": 1, "ad": "A"}],
+        "gorevler": [{"id": 10, "ad": "Acil", "baseName": "Acil"}],
+    }
+
+    def call(payload):
+        with app.test_request_context('/', method='POST', json=payload):
+            return main.nobet_kapasite.__wrapped__(request)
+
+    hedef = HedefSonuc(
+        True,
+        [{"id": 1, "ad": "A", "hedef_toplam": 1,
+          "hedef_tipler": {"hici": 1, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0}}],
+        [], {}, {"status": "FEASIBLE"}, "ok",
+    )
+    from solver_models import PlanKontrati
+    kontrat = PlanKontrati(
+        plan_hash="contract-content-hash", kaynak="test", olusturulan_ara_gun=0,
+        hedefler={1: {"hedef_toplam": 1,
+                      "hedef_tipler": {"hici": 1, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0},
+                      "gorev_kotalari": {}, "ad": "A"}},
+        personeller=[], meta={}, uygulama={}, istatistikler={}, gun_iskeleti={},
+    )
+    with patch.object(main, '_authorized', return_value=True), \
+         patch.object(main, 'log_session'), \
+         patch.object(main, 'ortak_plan_uret', return_value={
+             "basarili": True,
+             "mesaj": "ok",
+             "hedef_sonuc": hedef,
+             "hedefler_map": kontrat.hedefler,
+             "plan_kontrati": kontrat,
+         }), \
+         patch.object(main, 'kapasite_hesapla', return_value={
+             "durum": "FEASIBLE", "fizibilite": {"durum": "FEASIBLE"},
+         }):
+        response = call(data)
+
+    assert response.status_code == 200
+    result = response.get_json()
+    assert result["planHash"] == main.plan_girdi_hash(data)
+    assert result["planHash"] != kontrat.plan_hash
+
+
+def test_kapasite_gecerli_plan_snapshotini_yeniden_hedeflemez():
+    """Hazırlık kapasitesi, hedef ekranından gelen planı tekrar üretmemeli."""
+    import main
+    from flask import Flask, request
+
+    app = Flask(__name__)
+    data = {
+        "yil": 2026,
+        "ay": 2,
+        "slotSayisi": 1,
+        "araGun": 0,
+        "personeller": [{"id": 1, "ad": "A"}, {"id": 2, "ad": "B"}],
+        "gorevler": [{"id": 10, "ad": "Acil", "baseName": "Acil"}],
+    }
+    snapshot = {
+        "plan_hash": "",
+        "kaynak": "nobet_hedef_hesapla_ortak_plan",
+        "olusturulan_ara_gun": 0,
+        "hedefler": {
+            1: {"hedef_toplam": 1, "hedef_tipler": {"hici": 1, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0}, "gorev_kotalari": {}, "ad": "A"},
+            2: {"hedef_toplam": 0, "hedef_tipler": {"hici": 0, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0}, "gorev_kotalari": {}, "ad": "B"},
+        },
+        "personeller": [], "meta": {}, "uygulama": {}, "istatistikler": {},
+        "gun_iskeleti": {},
+    }
+    snapshot["plan_hash"] = plan_kontrati_hash_yenile(snapshot)["plan_hash"]
+    payload = {**data, "planHash": main.plan_girdi_hash(data), "planKontrati": snapshot}
+
+    def call(body):
+        with app.test_request_context('/', method='POST', json=body):
+            return main.nobet_kapasite.__wrapped__(request)
+
+    captured = {}
+    def fake_kapasite(**kwargs):
+        captured.update(kwargs)
+        return {"durum": "FEASIBLE", "fizibilite": {"durum": "FEASIBLE"}}
+
+    with patch.object(main, '_authorized', return_value=True), \
+         patch.object(main, 'log_session'), \
+         patch.object(main, 'ortak_plan_uret') as planner, \
+         patch.object(main, 'kapasite_hesapla', side_effect=fake_kapasite):
+        response = call(payload)
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    result = response.get_json()
+    assert result["basari"] is True
+    assert result["hedefler"][0]["id"] == 1
+    assert result["hedefler"][0]["hedef_hici"] == 1
+    planner.assert_not_called()
+    assert captured["plan_kontrati"]["hedefler"][1]["hedef_toplam"] == 1
+
+
+def test_nobet_coz_gecerli_plan_snapshotini_yeniden_hedeflemez():
+    """Final endpoint'i kapasite/önizleme kontratını aynı hedeflerle tüketmeli."""
+    import main
+    from flask import Flask, request
+
+    app = Flask(__name__)
+    data = {
+        "sozlesmeSurumu": 2,
+        "yil": 2026,
+        "ay": 2,
+        "slotSayisi": 1,
+        "araGun": 0,
+        "personeller": [{"id": 1, "ad": "A"}, {"id": 2, "ad": "B"}],
+        "gorevler": [{"id": 10, "ad": "Acil", "baseName": "Acil"}],
+    }
+    snapshot = {
+        "plan_hash": "",
+        "kaynak": "backend_ortak_plan",
+        "olusturulan_ara_gun": 0,
+        "hedefler": {
+            1: {"hedef_toplam": 1, "hedef_tipler": {"hici": 1, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0}, "gorev_kotalari": {}, "ad": "A"},
+            2: {"hedef_toplam": 0, "hedef_tipler": {"hici": 0, "prs": 0, "cum": 0, "cmt": 0, "pzr": 0}, "gorev_kotalari": {}, "ad": "B"},
+        },
+        "personeller": [], "meta": {}, "uygulama": {}, "istatistikler": {},
+        "gun_iskeleti": {},
+    }
+    snapshot["plan_hash"] = plan_kontrati_hash_yenile(snapshot)["plan_hash"]
+    payload = {**data, "planHash": main.plan_girdi_hash(data), "planKontrati": snapshot}
+
+    def call(body):
+        with app.test_request_context('/', method='POST', json=body):
+            return main.nobet_coz.__wrapped__(request)
+
+    captured = {}
+
+    def fake_solver(**kwargs):
+        captured.update(kwargs)
+        return SolverSonuc(
+            True,
+            [{"personel_id": 1, "personel_ad": "A", "gun": 1, "slot_idx": 0}],
+            {"status": "FEASIBLE", "plan": {"kontrat": snapshot}, "kalite_skoru": {}},
+            1,
+            "ok",
+        ), {}, {}, 0
+
+    with patch.object(main, '_authorized', return_value=True), \
+         patch.object(main, 'log_session'), \
+         patch.object(main, 'ortak_plan_uret') as planner, \
+         patch.object(main, 'solve_with_diagnostics', side_effect=fake_solver):
+        response = call(payload)
+
+    assert response.status_code == 200, response.get_data(as_text=True)
+    result = response.get_json()
+    assert result["basari"] is True
+    planner.assert_not_called()
+    assert captured["hedefler"][1]["hedef_toplam"] == 1
+    assert captured["plan_kontrati"]["hedefler"][2]["hedef_toplam"] == 0
+
+
+def test_nobet_coz_gecersiz_plan_snapshotini_reddeder():
+    """Eksik kişi hedefi bulunan snapshot sessizce yeniden üretilmemeli."""
+    import main
+    from flask import Flask, request
+
+    app = Flask(__name__)
+    data = {
+        "yil": 2026,
+        "ay": 2,
+        "slotSayisi": 1,
+        "araGun": 0,
+        "personeller": [{"id": 1, "ad": "A"}, {"id": 2, "ad": "B"}],
+        "gorevler": [{"id": 10, "ad": "Acil", "baseName": "Acil"}],
+    }
+    invalid = {
+        "plan_hash": "preview-contract",
+        "kaynak": "test",
+        "olusturulan_ara_gun": 0,
+        "hedefler": {
+            1: {"hedef_toplam": 0, "hedef_tipler": {"hici": 0}, "gorev_kotalari": {}, "ad": "A"},
+        },
+    }
+    payload = {**data, "planHash": main.plan_girdi_hash(data), "planKontrati": invalid}
+    with app.test_request_context('/', method='POST', json=payload):
+        with patch.object(main, '_authorized', return_value=True), \
+             patch.object(main, 'log_session'), \
+             patch.object(main, 'ortak_plan_uret') as planner:
+            response = main.nobet_coz.__wrapped__(request)
+    assert response.status_code == 409, response.get_data(as_text=True)
+    assert response.get_json()["error_type"] == "PlanSnapshotGecersiz"
+    planner.assert_not_called()
 
 
 def test_contract_v2_fields_and_explicit_target_locks():
