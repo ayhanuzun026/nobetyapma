@@ -872,6 +872,24 @@
       </div>
     </div>
 
+    <!-- Tanı merkezi: tüm adımlarda görünen, indirilebilir deneme kaydı -->
+    <div id="tanilama-merkezi" class="rule-box mt-3" style="display:none; background:#f8fafc; border-left:4px solid #2563eb;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div>
+          <strong>Tanı Merkezi</strong>
+          <div id="tanilama-ozet" class="help" style="margin-top:4px;">Deneme başlatılmadı.</div>
+        </div>
+        <div class="flex gap-1">
+          <button type="button" class="btn btn-sm btn-secondary" onclick="tanilamaRaporunuIndir()">Tanı raporunu indir</button>
+          <button type="button" class="btn btn-sm btn-secondary" onclick="tanilamaRaporunuKopyala()">Özeti kopyala</button>
+        </div>
+      </div>
+      <details id="tanilama-detay" style="margin-top:10px;">
+        <summary style="cursor:pointer; font-weight:700;">Aşama kaydı ve karar kanıtı</summary>
+        <div id="tanilama-olaylar" style="margin-top:8px; max-height:240px; overflow:auto;"></div>
+      </details>
+    </div>
+
     <!-- STEP 1: Genel Ayarlar -->
     <div class="step-content active" id="step-1">
       <h2>📅 Dönem Ayarları</h2>
@@ -1547,6 +1565,136 @@
     let bekleyenHazirlikKarari = null;
     let aktifPlanKontrati = null;
     let aktifPlanHash = null;
+    // Her hedef/kapasite/final denemesini tek bir izde birleştirir.
+    let tanilamaDenemeId = null;
+    let tanilamaIstekSayac = 0;
+    let tanilamaOlaylar = [];
+    const TANILAMA_SURUMU = 'web-diagnostics-v1';
+
+    function tanilamaIdOlustur(prefix = 'deneme') {
+      const rastgele = (globalThis.crypto && typeof globalThis.crypto.randomUUID === 'function')
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      return `${prefix}-${rastgele}`;
+    }
+
+    function tanilamaDenemesiBaslat(neden = 'kullanici') {
+      if (!tanilamaDenemeId) {
+        tanilamaDenemeId = tanilamaIdOlustur();
+        tanilamaOlayi('istemci', 'DENEME_BASLADI', { neden });
+      }
+      return tanilamaDenemeId;
+    }
+
+    function tanilamaYeniDeneme(neden = 'kullanici') {
+      tanilamaDenemeId = tanilamaIdOlustur();
+      tanilamaIstekSayac = 0;
+      tanilamaOlaylar = [];
+      tanilamaDenemesiBaslat(neden);
+    }
+
+    function tanilamaOlayi(asama, durum, detay = {}) {
+      const olay = {
+        zaman: new Date().toISOString(),
+        asama: String(asama || 'BILINMIYOR').toUpperCase(),
+        durum: String(durum || 'BILINMIYOR').toUpperCase(),
+        detay: detay && typeof detay === 'object' ? detay : { mesaj: String(detay) }
+      };
+      tanilamaOlaylar.push(olay);
+      if (tanilamaOlaylar.length > 120) tanilamaOlaylar.shift();
+      tanilamaMerkeziGuncelle();
+    }
+
+    function tanilamaIstek() {
+      tanilamaDenemesiBaslat('istek');
+      tanilamaIstekSayac += 1;
+      return {
+        denemeId: tanilamaDenemeId,
+        istekId: `${tanilamaDenemeId}-istek-${tanilamaIstekSayac}`,
+        istemciSurum: TANILAMA_SURUMU
+      };
+    }
+
+    function tanilamaKisaDetay(deger) {
+      try {
+        const metin = typeof deger === 'string' ? deger : JSON.stringify(deger);
+        return metin.length > 900 ? `${metin.slice(0, 900)}…` : metin;
+      } catch (_) { return String(deger); }
+    }
+
+    function tanilamaRaporObjesi() {
+      return {
+        surum: TANILAMA_SURUMU,
+        denemeId: tanilamaDenemeId,
+        olusturma: new Date().toISOString(),
+        girdi: {
+          yil: document.getElementById('inp-yil')?.value || null,
+          ay: document.getElementById('inp-ay')?.value || null,
+          gunlukSlot: document.getElementById('inp-gunluk')?.value || null,
+          araGun: document.getElementById('inp-aragun')?.value || null,
+          personel: personelListesi.length,
+          gorev: gorevler.length,
+          kural: kurallar.length,
+          manuelAtama: manuelAtamalar.length
+        },
+        olaylar: tanilamaOlaylar,
+        sonKapasite: hazirlikKapasiteSonucu ? {
+          durum: hazirlikKapasiteSonucu.durum,
+          analiz_id: hazirlikKapasiteSonucu.analiz_id || null,
+          neden: hazirlikKapasiteSonucu.neden || null,
+          teshis: hazirlikKapasiteSonucu.teshis || null,
+          kismi_cozum: hazirlikKapasiteSonucu.kismi_cozum ? {
+            doldurulan_slot: hazirlikKapasiteSonucu.kismi_cozum.doldurulan_slot,
+            bos_slot: hazirlikKapasiteSonucu.kismi_cozum.bos_slot,
+            toplam_slot: hazirlikKapasiteSonucu.kismi_cozum.toplam_slot,
+            solver_status: hazirlikKapasiteSonucu.kismi_cozum.solver_status
+          } : null
+        } : null,
+        sonSolverTanisi: solverSorunRaporu || null
+      };
+    }
+
+    function tanilamaOzetMetni() {
+      const son = tanilamaOlaylar[tanilamaOlaylar.length - 1];
+      if (!son) return 'Deneme başlatılmadı.';
+      let karar = null;
+      for (let i = tanilamaOlaylar.length - 1; i >= 0; i -= 1) {
+        if (['INFEASIBLE', 'UNKNOWN', 'FEASIBLE', 'HATA'].includes(tanilamaOlaylar[i].durum)) {
+          karar = tanilamaOlaylar[i];
+          break;
+        }
+      }
+      return `Deneme: ${tanilamaDenemeId || '-'} · Son aşama: ${son.asama}/${son.durum}`
+        + (karar ? ` · Son karar: ${karar.asama}/${karar.durum}` : '');
+    }
+
+    function tanilamaMerkeziGuncelle() {
+      const panel = document.getElementById('tanilama-merkezi');
+      if (!panel || !tanilamaOlaylar.length) return;
+      panel.style.display = 'block';
+      const ozet = document.getElementById('tanilama-ozet');
+      if (ozet) ozet.textContent = tanilamaOzetMetni();
+      const liste = document.getElementById('tanilama-olaylar');
+      if (liste) liste.innerHTML = tanilamaOlaylar.slice(-40).map(x =>
+        `<div style="padding:5px 7px; margin:3px 0; background:#fff; border-left:3px solid ${['INFEASIBLE','HATA'].includes(x.durum) ? '#dc2626' : x.durum === 'UNKNOWN' ? '#d97706' : '#2563eb'}; font-size:12px;">`
+        + `<strong>${escapeHtml(x.asama)} / ${escapeHtml(x.durum)}</strong> · ${escapeHtml(new Date(x.zaman).toLocaleTimeString('tr-TR'))}`
+        + `<div class="help">${escapeHtml(tanilamaKisaDetay(x.detay))}</div></div>`
+      ).join('');
+    }
+
+    function tanilamaRaporunuIndir() {
+      const blob = new Blob([JSON.stringify(tanilamaRaporObjesi(), null, 2)], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `nobet-tanilama-${tanilamaDenemeId || 'rapor'}.json`; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    async function tanilamaRaporunuKopyala() {
+      const metin = JSON.stringify(tanilamaRaporObjesi(), null, 2);
+      try { await navigator.clipboard.writeText(metin); alert('Tanı raporu panoya kopyalandı.'); }
+      catch (_) { window.prompt('Tanı raporunu kopyalayın:', metin); }
+    }
 
     // Saat değerleri
     const SAAT_DEGER = { hici: 8, prs: 8, cum: 16, cmt: 24, pzr: 16 };
@@ -5088,6 +5236,9 @@
       }
 
       try {
+        if (!tanilamaDenemeId || tanilamaOlaylar.at(-1)?.asama === 'FINAL') {
+          tanilamaYeniDeneme('hedef_hesapla');
+        }
         hedefHesaplamaKilidiAc();
 
         // Personel listesi boşsa uyar
@@ -5111,6 +5262,11 @@
         }
       } catch (error) {
         console.error('Hedef hesaplama hatası:', error);
+        tanilamaOlayi('HEDEF', error?.hazirlikKullaniciIptali ? 'KULLANICI_DURDURDU' : 'HATA', {
+          mesaj: error?.message || String(error),
+          hedefModeliHatasi: error?.hedefModeliHatasi === true,
+          tani: error?.hedefTanisi || null
+        });
         if (!error?.hazirlikKullaniciIptali) hedefHatasiniGoster(error);
       } finally {
         hedefHesaplamaKilidiKapat();
@@ -9378,6 +9534,7 @@
     }
 
     function hazirlikKapasiteEylemiUygula(eylem) {
+      tanilamaOlayi('KAPASITE', `KULLANICI_${String(eylem || 'BILINMIYOR').toUpperCase()}`, {});
       const guncelImza = cozumGirdiImzasiOlustur();
       const analizImzasi = hazirlikKapasiteSonucu?._girdiImzasi;
       if (!analizImzasi || analizImzasi !== guncelImza) {
@@ -9451,6 +9608,12 @@
     async function hazirlikKapasiteKontrolEt(requestData) {
       const girdiImzasi = cozumGirdiImzasiOlustur();
       while (true) {
+        tanilamaOlayi('KAPASITE', 'ISTEK_BASLADI', {
+          personel: requestData?.personeller?.length || 0,
+          gun: requestData?.gunSayisi || '-',
+          slot: requestData?.slotSayisi || 0,
+          araGun: requestData?.araGun
+        });
         console.log('[KAPASITE] Tam görev-slotu hazırlık kapasitesi kontrol ediliyor...');
         const response = await authFetch(BACKEND_URL_KAPASITE, {
           method: 'POST',
@@ -9484,6 +9647,19 @@
         hazirlikKismiCozumOnayi = null;
         const durum = normalize.durum;
         console.log(`[KAPASITE] Hazırlık kapasite sonucu: ${durum}`);
+        tanilamaOlayi('KAPASITE', durum, {
+          http: response.status,
+          mesaj: normalize.fizibilite?.mesaj || normalize.neden?.mesaj || '',
+          trace: result.tanilama || null,
+          neden: normalize.neden || null,
+          teshis: normalize.teshis || null,
+          kismi: normalize.kismiCozum ? {
+            doldurulan_slot: normalize.kismiCozum.doldurulan_slot,
+            bos_slot: normalize.kismiCozum.bos_slot,
+            toplam_slot: normalize.kismiCozum.toplam_slot,
+            solver_status: normalize.kismiCozum.solver_status
+          } : null
+        });
 
         if (durum === 'FEASIBLE') {
           hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
@@ -9494,9 +9670,19 @@
         aktifPlanKontrati = null;
         aktifPlanHash = null;
         cozumuGecersizKil(`Hazırlık kapasite durumu ${durum}`);
+        // Liste oluşturma 6. adımdan başlatıldıysa karar paneli 5. adımda
+        // kalır. Adımı değiştirmeden Promise beklemek spinner'ın sonsuza
+        // kadar "Oluşturuluyor" görünmesine neden olur.
+        if (currentStep !== 5) goStep(5);
         const kararPromise = hazirlikKullaniciKarariBekle(girdiImzasi);
         hazirlikKapasiteSonucuGoster(hazirlikKapasiteSonucu);
+        document.getElementById('hazirlik-analizi')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        tanilamaOlayi('KAPASITE', 'KULLANICI_KARARI_BEKLENIYOR', {
+          durum,
+          mesaj: 'Rapor 5. adımda açıldı; devam için kullanıcı kararı gerekiyor.'
+        });
         const eylem = await kararPromise;
+        tanilamaOlayi('KAPASITE', `KARAR_${String(eylem || 'BILINMIYOR').toUpperCase()}`, {});
         if (eylem === 'retry') continue;
         if (eylem === 'partial_adopted') return { ...result, action: eylem };
         throw hazirlikSessizIptalHatasi(eylem);
@@ -9655,7 +9841,12 @@
         kisitlamaExclusive,
         resmiTatiller: resmiTatiller.map(t => ({ gun: t.gun, tip: t.tip }))
       };
-
+      requestData.tanilama = tanilamaIstek();
+      requestData.frontendLoglar = _debugLogBuffer.slice(-100);
+      tanilamaOlayi('HEDEF', 'ISTEK_BASLADI', {
+        personel: personelData.length, gun: gunSayisi, slot: gorevData.length,
+        kural: kuralData.length, araGun
+      });
       console.log(`[HEDEF] OR-Tools hedef isteği: ${personelData.length} personel, ${gunSayisi} gün, ${gorevData.length} görev, ${kuralData.length} kural`);
 
       // Hedef önizlemesi yalnız hedef modelini çalıştırır. Tam görev-slotu
@@ -9674,6 +9865,12 @@
       const result = await response.json();
 
       console.log(`[HEDEF] OR-Tools hedef sonucu: basari=${result.basari}, ${result.hedefler?.length || 0} hedef, mesaj=${result.mesaj || 'yok'}`);
+      tanilamaOlayi('HEDEF', result.basari ? 'FEASIBLE' : (result.durum || result.karar_durumu || 'UNKNOWN'), {
+        http: response.status, mesaj: result.mesaj || result.error || '',
+        hedef: result.hedefler?.length || 0,
+        trace: result.tanilama || null,
+        onKontrol: result.istatistikler?.on_kontrol || null
+      });
       if (istekImzasi !== cozumGirdiImzasiOlustur()) {
         throw hazirlikSessizIptalHatasi('stale');
       }
@@ -9729,6 +9926,10 @@
       const araGun = (() => { const v = parseInt(document.getElementById('inp-aragun').value); return isNaN(v) ? 2 : v; })();
       const gunluk = parseInt(document.getElementById('inp-gunluk').value) || 5;
       const ozelGorevler = getOzelGorevler();
+
+      if (!tanilamaDenemeId || tanilamaOlaylar.at(-1)?.asama === 'FINAL') {
+        tanilamaYeniDeneme('liste_olustur');
+      }
 
       // Değişim kayıtlarını sıfırla
       gunTipiDegisimKayitlari = [];
@@ -9861,6 +10062,11 @@
 
       } catch (error) {
         console.error('Backend hatası:', error);
+        tanilamaOlayi('UI', error?.hazirlikKullaniciIptali ? 'KULLANICI_DURDURDU' : 'HATA', {
+          mesaj: error?.message || String(error),
+          hazirlikEylemi: error?.hazirlikEylemi || null,
+          hedefModeliHatasi: error?.hedefModeliHatasi === true
+        });
         if (error?.hazirlikKullaniciIptali) {
           console.log('[SOLVER] Hazırlık akışı kullanıcı kararı veya veri değişikliği nedeniyle durduruldu.');
           return;
@@ -9888,6 +10094,7 @@
         solverTeshisGuncelle();
         alert('Nöbet dağıtımı sırasında hata oluştu: ' + error.message + '\n\nOtomatik greedy/yerel fallback kapalı. Lütfen kısıtları gözden geçirip tekrar deneyin.');
       } finally {
+        tanilamaMerkeziGuncelle();
         btnListeOlustur.innerHTML = originalText;
         btnListeOlustur.disabled = false;
       }
@@ -10059,6 +10266,8 @@
         && hazirlikKapasiteSonucu._girdiImzasi === planImzasi
         && String(hazirlikKapasiteSonucu.durum || '').toUpperCase() === 'FEASIBLE';
       if (!kapasiteHazir) {
+        requestData.tanilama = tanilamaIstek();
+        requestData.frontendLoglar = _debugLogBuffer.slice(-100);
         const kapasiteKarari = await hazirlikKapasiteKontrolEt(requestData);
         if (kapasiteKarari?.action === 'partial_adopted') {
           atananlar = hesaplananListe?.atanan || atananlar;
@@ -10067,6 +10276,12 @@
         }
       }
 
+      requestData.tanilama = tanilamaIstek();
+      requestData.frontendLoglar = _debugLogBuffer.slice(-100);
+      tanilamaOlayi('FINAL', 'ISTEK_BASLADI', {
+        personel: requestData.personeller?.length || 0,
+        gun: gunSayisi, slot: requestData.slotSayisi, araGun
+      });
       const response = await authFetch(BACKEND_URL_ORTOOLS, {
         method: 'POST',
         body: JSON.stringify(requestData),
@@ -10074,6 +10289,12 @@
       });
 
       const result = await response.json();
+      tanilamaOlayi('FINAL', result.basari ? 'FEASIBLE' : (result.durum || result.karar_durumu || 'UNKNOWN'), {
+        http: response.status, mesaj: result.mesaj || result.error || '',
+        sureMs: result.sureMs || 0, trace: result.tanilama || null,
+        status: result.istatistikler?.status || null,
+        teshis: result.teshis || result.istatistikler?.feasibility_debug || null
+      });
 
       // Bayat planın yalnız hash'ini benimsemek eski hedefleri korurdu.
       // Önizlemeyi geçersizleştir; sonraki işlem hedefleri de yenilesin.

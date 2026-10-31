@@ -5,6 +5,7 @@ Hata olursa sadece uyarı yazar, orijinal isteği asla engellemez.
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone, timedelta
 
@@ -15,6 +16,7 @@ _CHUNK_BYTES = 700_000        # sub-collection parça boyutu
 _MAX_FRONTEND_LOGS = 100      # maksimum frontend log satırı
 _MAX_FRONTEND_LOG_CHARS = 500
 _RETENTION_DAYS = 30          # debug kayıtları TTL ile bu süre sonunda silinir (expireAt)
+_BACKEND_SURUM = os.environ.get("K_REVISION") or "backend-diagnostics-v1"
 
 # Doğrudan kişisel tanımlayıcı (isim) taşıyan alan anahtarları
 _PII_NAME_KEYS = frozenset({
@@ -140,6 +142,45 @@ def _build_cikti_ozet(cikti: dict | None, hata) -> dict:
     }
 
 
+def _tanilama_olustur(endpoint: str, girdi: dict, cikti: dict | None,
+                      sure_ms: int) -> dict:
+    """İstemci denemesini sunucu kararıyla ortak bir iz kaydına bağlar."""
+    gelen = girdi.get("tanilama") if isinstance(girdi, dict) else None
+    gelen = gelen if isinstance(gelen, dict) else {}
+    trace = {}
+    for key in ("denemeId", "istekId", "istemciSurum"):
+        value = gelen.get(key)
+        if value is not None and str(value).strip():
+            trace[key] = str(value)[:200]
+    try:
+        server_sure_ms = max(0, int(sure_ms or 0))
+    except (TypeError, ValueError, OverflowError):
+        server_sure_ms = 0
+    cikti = cikti if isinstance(cikti, dict) else {}
+    trace.update({
+        "endpoint": endpoint,
+        "serverSureMs": server_sure_ms,
+        "surum": _BACKEND_SURUM,
+        "durum": str((cikti or {}).get("durum") or (cikti or {}).get("karar_durumu") or ("HATA" if not cikti else "BILINMIYOR")).upper(),
+        "asama": str((cikti or {}).get("asama") or "BILINMIYOR").upper(),
+        "kararDurumu": str((cikti or {}).get("karar_durumu") or (cikti or {}).get("durum") or "BILINMIYOR").upper(),
+    })
+    return trace
+
+
+def _yanita_tanilama_ekle(cikti: dict | None, trace: dict) -> None:
+    """Trace bilgisini API yanıtına ekle; eski kayıt kimliğini taşımayı önle."""
+    if not isinstance(cikti, dict):
+        return
+    mevcut = cikti.get("tanilama")
+    if not isinstance(mevcut, dict):
+        mevcut = {}
+    if "kayitId" not in trace:
+        mevcut.pop("kayitId", None)
+    mevcut.update(trace)
+    cikti["tanilama"] = mevcut
+
+
 def log_session(
     endpoint: str,
     girdi: dict,
@@ -152,12 +193,19 @@ def log_session(
     Bir backend oturumunu Firestore debug_sessions koleksiyonuna kaydeder.
     Hata olursa sadece logger.warning yazar — orijinal isteği engellemez.
     """
+    # Log servisi kullanılamasa bile istemci temel karar izini görsün.
+    # Gerçek ``kayitId`` sadece Firestore set() başarısı sonrası eklenir.
+    temel_trace = _tanilama_olustur(endpoint, girdi, cikti, sure_ms)
+    _yanita_tanilama_ekle(cikti, temel_trace)
     try:
         from firebase_admin import firestore as fs
         db = fs.client()
 
         ts = datetime.now(timezone.utc)
         durum = "hata" if hata else ("basarili" if (cikti or {}).get("basari") else "bitti")
+        # Referans kimliği log yazılmadan önce ayır; bunu API yanıtına yalnızca
+        # Firestore set() başarıyla tamamlanırsa ekleyeceğiz.
+        session_ref = db.collection("debug_sessions").document()
 
         # Frontend loglarını hem satır hem toplam belge boyutu açısından sınırla.
         logs = [str(line)[:_MAX_FRONTEND_LOG_CHARS]
@@ -199,12 +247,11 @@ def log_session(
             "frontend_loglar": logs_red,
             "hata_detay": hata_detay,
         }
+        doc_data["tanilama"] = dict(temel_trace)
 
         # TTL: expireAt alanı. Firestore TTL politikası bu alana bağlanmalı
         # (Console/gcloud: debug_sessions için TTL policy 'expireAt' alanında açılmalı).
         doc_data["expireAt"] = ts + timedelta(days=_RETENTION_DAYS)
-
-        session_ref = db.collection("debug_sessions").document()
 
         # Büyük payload'ları inline veya sub-collection'a yaz (maskelenmiş halleriyle)
         girdi_boyut = _json_size(girdi_red)
@@ -223,7 +270,11 @@ def log_session(
             doc_data["cikti_buyuk"] = True
             _write_subcollection(session_ref, "cikti", cikti_red, doc_data["expireAt"])
 
+        trace = dict(doc_data.get("tanilama") or {})
+        trace["kayitId"] = session_ref.id
+        doc_data["tanilama"] = trace
         session_ref.set(doc_data)
+        _yanita_tanilama_ekle(cikti, trace)
         logger.info("Debug session kaydedildi: %s (%s, %dms)", session_ref.id, endpoint, sure_ms)
 
     except Exception as log_err:

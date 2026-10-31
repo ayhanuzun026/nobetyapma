@@ -1796,9 +1796,20 @@ class HedefHesaplayici:
         for g in self.gorevler:
             gorev_adi = g.base_name if g.base_name else g.ad
             if gorev_adi not in kotalari:
+                # Bir görev ailesi birden fazla gerçek slot/sütun içerebilir
+                # (ör. AMELİYATHANE #1/#2/#3). Kapasite, yalnız gün sayısı
+                # değil gerçek gün × slot talebidir; aksi halde hedef özeti
+                # 90 yerine 30 gibi eksik kapasite gösterir.
+                aile_slot_sayisi = sum(
+                    1 for slot in self.gorevler
+                    if (slot.base_name if slot.base_name else slot.ad) == gorev_adi
+                )
                 kotalari[gorev_adi] = {
-                    'toplam': self.gun_sayisi,
-                    'tip_dagilimi': {t: self.tip_sayilari[t] for t in GUN_TIPLERI}
+                    'toplam': self.gun_sayisi * aile_slot_sayisi,
+                    'tip_dagilimi': {
+                        t: self.tip_sayilari[t] * aile_slot_sayisi
+                        for t in GUN_TIPLERI
+                    }
                 }
         return kotalari
 
